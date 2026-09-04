@@ -15,7 +15,7 @@ Update the marker when state changes; this file is the plan of record.
 
 ---
 
-## M1 — Grant registry and audit journal — PLANNED
+## M1 — Grant registry and audit journal — DONE (2026-09-04)
 
 The daemon learns to hold state. No network, no drivers.
 
@@ -47,6 +47,10 @@ absence of entries for refused operations asserted too).
 **Acceptance** — kill `lychgated` at any point, restart it, and the registry
 observes the same truth; a hand-corrupted store produces a refusal naming the
 file, not an empty registry.
+
+Also landed in M1 (scope added during planning): FreeBSD rc.d script, systemd
+unit, and a DESTDIR-honoring service installer with its own test battery.
+Starting the daemon under rc/systemd for real remains an M5 claim.
 
 ## M2 — Daemon transport and CLI wiring — PLANNED, bumps to v0.2.0
 

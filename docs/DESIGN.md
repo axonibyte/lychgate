@@ -49,8 +49,11 @@ Policy decisions, all enforced in core and all tested:
   parameters), no I/O. This is the Tier-1 test surface.
 - **`lychgated`** — the control-plane daemon, FreeBSD/Linux. Will own the
   inventory, execute drivers, enforce grants, and install the dead-man revert.
-  Today it is honestly a config validator: it loads and validates the
-  inventory, reports counts, says the control plane is unimplemented, exits.
+  Today (M1) it holds real state: a locked, atomic, versioned grant store
+  (grants.json), an append-only audit journal (journal.jsonl, synced per
+  line, written only after state commits), and a loop that reaps observed
+  expiries — while saying plainly that no transport and no drivers exist, so
+  an expiry changes bookkeeping and journal, not any host.
 - **`lychgate`** — the operator CLI, built for FreeBSD, Linux, and Windows
   (an operator's workstation may be anything; the daemon's host may not).
   Today its subcommands validate their inputs through core and then fail

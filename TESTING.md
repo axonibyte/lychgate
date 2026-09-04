@@ -21,24 +21,60 @@ These govern every change here, scaffold included:
 
 ## Tier 1 — pure unit tests: EXISTS
 
-37 tests on `lychgate-core`, in-crate under `#[cfg(test)]`, named as full
+56 tests on `lychgate-core`, in-crate under `#[cfg(test)]`, named as full
 sentences stating the claim (`a_grant_past_its_ttl_is_expired_rather_than_left_open`).
 They cover the TTL policy (zero/cap/cap+1 boundaries, unit parsing, overflow
 refused rather than wrapped, multibyte input refused rather than panicking),
 the grant state machine (expiry at the exact instant, open/close/renew
 transitions, the 2-hour renewal window at its boundary, renewal anchored at
 now rather than the old expiry, clock overflow refused rather than saturated),
-and inventory validation (strict schema, duplicate/empty rejections).
+inventory validation (strict schema, duplicate/empty rejections), the grant
+registry (fail-closed refusal of unknown hosts, reap-exactly-once), and the
+snapshot layer (observation-free persistence, unknown/inverted/over-cap state
+refused at load, epoch overflow refused rather than panicking).
 
-All 35 planned mutations were applied and observed killed at scaffold time
-(35 checked, 0 survived).
+## Daemon state and process tier: EXISTS (M1)
 
-**What this tier does NOT prove:** that any access is actually opened or
-closed anywhere. There are no drivers yet — nothing here touches sshd,
-authorized_keys, a BMC, or a VNC console. The state machine being right is
-necessary and nowhere near sufficient; the suites that will carry the stronger
-claims are listed below, in the order the methodology's §15 says to build
-them.
+29 tests on `lychgated`: the locked atomic store (absent-is-empty,
+corrupt-names-the-file, version-mismatch-quotes-both, tmp-then-rename with no
+leftovers, stale locks aged out by rename-steal, a wedged steal ending in
+Locked rather than a spin), the append-only journal (one JSON line per entry,
+append across reopens, gapless per-process sequence numbers, kebab-case
+channel vocabulary), and an end-to-end battery driving the real binary: a
+`--once` pass reaps and journals an expired grant; SIGKILL mid-run and a
+restart observe the same truth (the M1 acceptance); corrupt, newer-version,
+and unknown-host stores are refusals that journal nothing; SIGTERM ends the
+loop with a daemon-stop entry. The service installer has its own battery
+(`tools/install-service-test.sh`), run by the gate and CI.
+
+Mutation record: 35 mutations at scaffold time, 49 more for M1 (registry 10,
+snapshot 11, store 11, journal/loop 14, installer 3) — 84 checked, 0
+survived. Two mutations hung the suite (the lock spin and the zero-interval
+spin); a hang is the observed failure for a spin.
+
+Cross-platform record: the full battery ran green on both reaper guests
+(freebsd-15.1 on pkg rust 1.96, ubuntu-26.04 in the pinned rust:1.97 image)
+at M1 close — the store's rename/lock semantics and the signal handling are
+proven on both deployment platforms, not assumed from the workstation.
+
+**What these tiers do NOT prove:**
+
+- No access is actually opened or closed anywhere. There are no drivers —
+  "a grant expired" changes grants.json and a journal line, not sshd, not
+  authorized_keys, not a BMC, not a console.
+- The registry's open/close/renew are unreachable from any binary until M2's
+  transport; they are Tier-1-proven only, and the journal's open/close/renew
+  event kinds are deferred with them.
+- Journal durability is fsync-per-line by construction, not by test; the
+  residual power-loss windows (a lost line detectable as a pid/seq gap; a
+  duplicated observation) are documented in the journal module, not tested.
+- Single mutator only: lock behavior is exercised synthetically, not by
+  concurrent daemons (real contention is Tier 6 territory, M7+).
+- The service files stage correctly; whether rc(8)/systemd actually start the
+  daemon from them belongs to M5's full-stack tier on the reaper guests.
+
+The suites that will carry the stronger claims are listed below, in the order
+the methodology's §15 says to build them.
 
 ## Tier roadmap — NOT YET BUILT
 
