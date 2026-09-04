@@ -18,6 +18,12 @@ name = "db-01"
 address = "10.0.4.11"
 os = "freebsd"
 channels = ["ssh", "authorized-keys", "bmc"]
+
+[hosts.ssh]
+agent_user = "lychgate"
+root_posture_default = "no"
+root_posture_emergency = "prohibit-password"
+emergency_keys = ["ssh-ed25519 EMERG breakglass"]
 "#;
 
 struct Harness {

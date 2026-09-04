@@ -14,7 +14,7 @@ fn a_single_host_with_its_fields_parses_intact() {
         name = "db-01"
         address = "10.0.4.11"
         os = "freebsd"
-        channels = ["ssh", "authorized-keys", "bmc"]
+        channels = ["bmc", "vnc"]
         "#,
     )
     .unwrap();
@@ -24,7 +24,8 @@ fn a_single_host_with_its_fields_parses_intact() {
             name: "db-01".into(),
             address: "10.0.4.11".into(),
             os: Os::Freebsd,
-            channels: vec![Channel::Ssh, Channel::AuthorizedKeys, Channel::Bmc],
+            channels: vec![Channel::Bmc, Channel::Vnc],
+            ssh: None,
         }]
     );
 }
@@ -43,7 +44,7 @@ fn multiple_hosts_parse_in_declaration_order() {
         name = "db-01"
         address = "10.0.4.11"
         os = "freebsd"
-        channels = ["ssh"]
+        channels = ["bmc"]
         "#,
     )
     .unwrap();
@@ -65,7 +66,7 @@ fn host_with(name: &str, address: &str, channels: &str) -> String {
 
 #[test]
 fn two_hosts_with_the_same_name_are_rejected() {
-    let toml = host_with("db-01", "10.0.4.11", r#"["ssh"]"#)
+    let toml = host_with("db-01", "10.0.4.11", r#"["bmc"]"#)
         + &host_with("db-01", "10.0.4.12", r#"["vnc"]"#);
     assert_eq!(
         Inventory::parse(&toml),
@@ -75,13 +76,13 @@ fn two_hosts_with_the_same_name_are_rejected() {
 
 #[test]
 fn a_host_with_an_empty_name_is_rejected() {
-    let toml = host_with("", "10.0.4.11", r#"["ssh"]"#);
+    let toml = host_with("", "10.0.4.11", r#"["bmc"]"#);
     assert_eq!(Inventory::parse(&toml), Err(InventoryError::EmptyHostName));
 }
 
 #[test]
 fn a_host_with_an_empty_address_is_rejected() {
-    let toml = host_with("db-01", "", r#"["ssh"]"#);
+    let toml = host_with("db-01", "", r#"["bmc"]"#);
     assert_eq!(
         Inventory::parse(&toml),
         Err(InventoryError::EmptyAddress {
@@ -103,7 +104,7 @@ fn a_host_with_no_channels_is_rejected() {
 
 #[test]
 fn a_host_listing_the_same_channel_twice_is_rejected() {
-    let toml = host_with("db-01", "10.0.4.11", r#"["ssh", "ssh"]"#);
+    let toml = host_with("db-01", "10.0.4.11", r#"["bmc", "bmc"]"#);
     assert_eq!(
         Inventory::parse(&toml),
         Err(InventoryError::DuplicateChannel {
@@ -128,7 +129,7 @@ fn an_unknown_operating_system_is_rejected() {
         name = "db-01"
         address = "10.0.4.11"
         os = "plan9"
-        channels = ["ssh"]
+        channels = ["bmc"]
     "#;
     assert!(matches!(
         Inventory::parse(toml),
@@ -145,8 +146,150 @@ fn an_unrecognized_field_is_rejected_rather_than_ignored() {
         name = "db-01"
         address = "10.0.4.11"
         os = "linux"
-        channels = ["ssh"]
+        channels = ["bmc"]
         favourite_colour = "red"
+    "#;
+    assert!(matches!(
+        Inventory::parse(toml),
+        Err(InventoryError::Toml(_))
+    ));
+}
+
+// --- [hosts.ssh] coupling (M4) ---------------------------------------------
+
+const SSH_HOST: &str = r#"
+[[hosts]]
+name = "db-01"
+address = "10.0.4.11"
+os = "freebsd"
+channels = ["ssh", "authorized-keys"]
+
+[hosts.ssh]
+agent_user = "lychgate"
+port = 2222
+root_posture_default = "no"
+root_posture_emergency = "prohibit-password"
+authorized_keys_path = "/root/.ssh/authorized_keys"
+emergency_keys = ["ssh-ed25519 EMERG claude-breakglass"]
+become_cmd = "doas"
+"#;
+
+#[test]
+fn a_full_ssh_config_parses_with_its_fields_intact() {
+    let inv = Inventory::parse(SSH_HOST).unwrap();
+    let ssh = inv.hosts[0].ssh.as_ref().unwrap();
+    assert_eq!(ssh.agent_user, "lychgate");
+    assert_eq!(ssh.port, 2222);
+    assert_eq!(ssh.root_posture_default, crate::ssh::Posture::No);
+    assert_eq!(
+        ssh.root_posture_emergency,
+        crate::ssh::Posture::ProhibitPassword
+    );
+    assert_eq!(ssh.emergency_keys, ["ssh-ed25519 EMERG claude-breakglass"]);
+    assert_eq!(ssh.become_cmd.as_deref(), Some("doas"));
+    // Defaults fill what the config omits.
+    assert_eq!(ssh.identity_file, None);
+    assert_eq!(ssh.reload_cmd, None);
+}
+
+#[test]
+fn an_ssh_channel_without_ssh_config_is_refused() {
+    let toml = r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "freebsd"
+        channels = ["ssh"]
+    "#;
+    assert_eq!(
+        Inventory::parse(toml),
+        Err(InventoryError::SshConfigMissing {
+            host: "db-01".into()
+        })
+    );
+}
+
+#[test]
+fn ssh_config_on_a_host_without_ssh_channels_is_refused_as_dead_config() {
+    let toml = r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "freebsd"
+        channels = ["bmc"]
+
+        [hosts.ssh]
+        agent_user = "lychgate"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+    "#;
+    assert_eq!(
+        Inventory::parse(toml),
+        Err(InventoryError::SshConfigUnused {
+            host: "db-01".into()
+        })
+    );
+}
+
+#[test]
+fn the_authorized_keys_channel_without_emergency_keys_is_refused() {
+    let toml = r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "freebsd"
+        channels = ["authorized-keys"]
+
+        [hosts.ssh]
+        agent_user = "lychgate"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+    "#;
+    assert_eq!(
+        Inventory::parse(toml),
+        Err(InventoryError::NoEmergencyKeys {
+            host: "db-01".into()
+        })
+    );
+}
+
+#[test]
+fn a_bad_emergency_key_is_refused_at_load_not_at_three_am() {
+    let toml = r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "freebsd"
+        channels = ["authorized-keys"]
+
+        [hosts.ssh]
+        agent_user = "lychgate"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+        emergency_keys = ["contains LYCHGATE text"]
+    "#;
+    match Inventory::parse(toml) {
+        Err(InventoryError::BadEmergencyKey { host, message }) => {
+            assert_eq!(host, "db-01");
+            assert!(message.contains("marker"), "{message}");
+        }
+        other => panic!("wanted BadEmergencyKey, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_unknown_posture_is_refused() {
+    let toml = r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "freebsd"
+        channels = ["ssh"]
+
+        [hosts.ssh]
+        agent_user = "lychgate"
+        root_posture_default = "maybe"
+        root_posture_emergency = "yes"
     "#;
     assert!(matches!(
         Inventory::parse(toml),

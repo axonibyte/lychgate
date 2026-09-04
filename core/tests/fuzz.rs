@@ -17,6 +17,7 @@
 //!   permanently, with a comment naming what it found.
 
 use lychgate_core::proto::decode_request;
+use lychgate_core::ssh::{fence_remove, fence_upsert, parse_effective_posture};
 use lychgate_core::{Inventory, Ttl};
 
 /// Committed seeds run on every invocation. Promote defect-finding seeds
@@ -189,6 +190,16 @@ fn check(input: &str) {
             "empty inventory error for {input:?}"
         );
     }
+    // The fence functions chew on authorized_keys content fetched from
+    // remote hosts: hostile by definition.
+    if let Err(e) = fence_upsert(input, &["ssh-ed25519 FUZZ key".to_string()]) {
+        assert!(!e.to_string().is_empty(), "empty fence error for {input:?}");
+    }
+    if let Err(e) = fence_remove(input) {
+        assert!(!e.to_string().is_empty(), "empty fence error for {input:?}");
+    }
+    // And sshd -T output likewise arrives over the transport.
+    let _ = parse_effective_posture(input);
 }
 
 fn iters() -> u32 {

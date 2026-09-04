@@ -15,7 +15,7 @@ fn inventory() -> Inventory {
         name = "db-01"
         address = "10.0.4.11"
         os = "freebsd"
-        channels = ["ssh", "bmc"]
+        channels = ["bmc"]
 
         [[hosts]]
         name = "web-02"

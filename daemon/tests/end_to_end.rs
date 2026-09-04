@@ -41,12 +41,16 @@ impl Drop for Scratch {
     }
 }
 
+// Flow fixtures use channels with no registered driver (bmc/vnc), so the
+// operator-flow battery exercises the lifecycle without reaching for a live
+// sshd; the SSH drivers are proven by unit tests over a scripted transport
+// and by the guest acceptance script.
 const INVENTORY: &str = r#"
 [[hosts]]
 name = "db-01"
 address = "10.0.4.11"
 os = "freebsd"
-channels = ["ssh", "authorized-keys"]
+channels = ["bmc"]
 
 [[hosts]]
 name = "web-02"
@@ -453,10 +457,7 @@ fn the_operator_flow_works_end_to_end_through_both_binaries() {
     // No drivers yet: nothing was applied, but the declared channels are
     // recorded so the audit trail shows what a grant reaches for.
     assert_eq!(open["applied"], serde_json::json!([]));
-    assert_eq!(
-        open["declared"],
-        serde_json::json!(["ssh", "authorized-keys"])
-    );
+    assert_eq!(open["declared"], serde_json::json!(["bmc"]));
     assert!(open["expires_at"].is_u64());
     assert_eq!(lines[2]["host"], "db-01");
 }

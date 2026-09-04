@@ -150,7 +150,44 @@ Met: `no_sequence_of_apply_failures_ever_reports_a_cleanly_open_grant`
 sweeps the failing channel across the set; a failed unwind lands in
 needs-revert, retried every pass; a crash mid-open is demoted at boot.
 
-## M4 — SSH driver — PLANNED, bumps to v0.3.0
+## M4 — SSH driver — IN PROGRESS, bumps to v0.3.0
+
+Design decisions, resolved at milestone start:
+
+- **Pure string logic in core** (`core/src/ssh.rs`): posture vocabulary
+  (`no` / `prohibit-password` / `yes`, accepting sshd's legacy
+  `without-password` on parse), drop-in rendering, fenced authorized_keys
+  block upsert/remove, and `sshd -T` output parsing — all Tier-1-testable
+  and fuzzable. Effectful pieces stay in the daemon.
+- **Transport is a seam**: an `SshTransport` trait whose production
+  implementation shells out to ssh(1) (BatchMode, agent account, optional
+  identity file and become-prefix like doas) — no SSH library dependency.
+  File content always travels via stdin, never embedded in command lines.
+  A scripted fake transport gives the Tier-3 mid-operation failures.
+- **The drop-in is verified, not trusted**: apply writes the lychgate-owned
+  drop-in, reloads sshd, then runs `sshd -T` remotely and compares the
+  effective posture. A main config without the Include directive fails the
+  verify immediately, and the lifecycle unwinds — the prerequisite is
+  documented AND enforced, not guessed at. Revert removes the drop-in and
+  verifies the effective posture equals the inventory's declared default,
+  so config drift between inventory and host surfaces as a loud stuck
+  revert instead of silence.
+- **The fence contract**: everything between the lychgate BEGIN/END markers
+  belongs to lychgate and is rewritten freely; everything outside is
+  preserved byte-for-byte. Malformed markers (unbalanced, duplicated,
+  reordered) are an error — reported, never clobbered.
+- **Inventory grows `[hosts.ssh]`**, required exactly when the host
+  declares an `ssh` or `authorized-keys` channel and refused otherwise
+  (dead config is a typo): agent account, port, default and emergency
+  root postures, authorized_keys path, emergency keys (validated: single
+  line, no fence-marker text), optional identity file / reload command /
+  become prefix.
+- **e2e flow fixtures move to undrivable channels** (bmc/vnc) so the
+  operator-flow battery keeps exercising the lifecycle without reaching
+  for a live sshd; the SSH drivers are proven by unit tests over the
+  scripted transport, and the M4 acceptance runs the real thing against a
+  disposable reaper guest via `e2e/ssh-acceptance.sh` (wired into the
+  reaper [run] battery at M5).
 
 The first real channel: root posture and keys, FreeBSD first.
 

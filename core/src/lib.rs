@@ -10,6 +10,7 @@ pub mod inventory;
 pub mod proto;
 pub mod registry;
 pub mod snapshot;
+pub mod ssh;
 pub mod ttl;
 
 pub use channel::{

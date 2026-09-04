@@ -22,6 +22,55 @@ pub struct Host {
     pub address: String,
     pub os: Os,
     pub channels: Vec<Channel>,
+    /// Required exactly when the host declares an `ssh` or
+    /// `authorized-keys` channel; refused otherwise (dead config is a typo).
+    #[serde(default)]
+    pub ssh: Option<SshConfig>,
+}
+
+fn default_ssh_port() -> u16 {
+    22
+}
+
+fn default_authorized_keys_path() -> String {
+    "/root/.ssh/authorized_keys".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SshConfig {
+    /// The unprivileged account the daemon connects as. Whatever rights it
+    /// needs (writing the drop-in, reloading sshd, editing authorized_keys)
+    /// come from `become_cmd`, or from the account itself being root.
+    pub agent_user: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    /// What PermitRootLogin must be when no grant is open. Revert verifies
+    /// the host's effective value equals this — drift is a loud stuck
+    /// revert, not silence.
+    pub root_posture_default: crate::ssh::Posture,
+    /// What the ssh channel sets while a grant is open.
+    pub root_posture_emergency: crate::ssh::Posture,
+    #[serde(default = "default_authorized_keys_path")]
+    pub authorized_keys_path: String,
+    /// authorized_keys lines installed inside the lychgate fence while a
+    /// grant is open. Required (non-empty) when the authorized-keys channel
+    /// is declared.
+    #[serde(default)]
+    pub emergency_keys: Vec<String>,
+    /// Passed to ssh -i when set; otherwise the client's own config decides.
+    #[serde(default)]
+    pub identity_file: Option<String>,
+    /// Privilege prefix for remote commands, e.g. "doas" or "sudo -n".
+    /// Absent means the agent account already has the rights it needs.
+    #[serde(default)]
+    pub become_cmd: Option<String>,
+    /// Overrides the per-OS default sshd reload command.
+    #[serde(default)]
+    pub reload_cmd: Option<String>,
+    /// Overrides the per-OS default drop-in path.
+    #[serde(default)]
+    pub dropin_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -47,9 +96,29 @@ pub enum InventoryError {
     Toml(String),
     EmptyHostName,
     DuplicateHostName(String),
-    EmptyAddress { host: String },
-    NoChannels { host: String },
-    DuplicateChannel { host: String },
+    EmptyAddress {
+        host: String,
+    },
+    NoChannels {
+        host: String,
+    },
+    DuplicateChannel {
+        host: String,
+    },
+    /// ssh/authorized-keys channels need [hosts.ssh]; and vice versa.
+    SshConfigMissing {
+        host: String,
+    },
+    SshConfigUnused {
+        host: String,
+    },
+    NoEmergencyKeys {
+        host: String,
+    },
+    BadEmergencyKey {
+        host: String,
+        message: String,
+    },
 }
 
 impl fmt::Display for InventoryError {
@@ -68,6 +137,21 @@ impl fmt::Display for InventoryError {
             }
             InventoryError::DuplicateChannel { host } => {
                 write!(f, "host {host:?} lists the same channel more than once")
+            }
+            InventoryError::SshConfigMissing { host } => write!(
+                f,
+                "host {host:?} declares an ssh or authorized-keys channel but has no [hosts.ssh] config"
+            ),
+            InventoryError::SshConfigUnused { host } => write!(
+                f,
+                "host {host:?} has [hosts.ssh] config but declares neither the ssh nor the authorized-keys channel; dead config is a typo"
+            ),
+            InventoryError::NoEmergencyKeys { host } => write!(
+                f,
+                "host {host:?} declares the authorized-keys channel but [hosts.ssh] lists no emergency_keys"
+            ),
+            InventoryError::BadEmergencyKey { host, message } => {
+                write!(f, "host {host:?}: {message}")
             }
         }
     }
@@ -107,6 +191,41 @@ impl Inventory {
                 return Err(InventoryError::DuplicateChannel {
                     host: host.name.clone(),
                 });
+            }
+
+            let wants_ssh = host.channels.contains(&Channel::Ssh)
+                || host.channels.contains(&Channel::AuthorizedKeys);
+            match (&host.ssh, wants_ssh) {
+                (None, true) => {
+                    return Err(InventoryError::SshConfigMissing {
+                        host: host.name.clone(),
+                    })
+                }
+                (Some(_), false) => {
+                    return Err(InventoryError::SshConfigUnused {
+                        host: host.name.clone(),
+                    })
+                }
+                (Some(ssh), true) => {
+                    if host.channels.contains(&Channel::AuthorizedKeys)
+                        && ssh.emergency_keys.is_empty()
+                    {
+                        return Err(InventoryError::NoEmergencyKeys {
+                            host: host.name.clone(),
+                        });
+                    }
+                    for key in &ssh.emergency_keys {
+                        // The same refusals the fence enforces, moved to
+                        // load time: a bad key must fail here, not at 03:00.
+                        if let Err(e) = crate::ssh::validate_key_line(key) {
+                            return Err(InventoryError::BadEmergencyKey {
+                                host: host.name.clone(),
+                                message: e.to_string(),
+                            });
+                        }
+                    }
+                }
+                (None, false) => {}
             }
         }
         Ok(())
