@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -31,7 +31,9 @@ pub enum Os {
     Linux,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+// Serialize too: the daemon's audit journal writes channel names, and they
+// must be the same kebab-case vocabulary the inventory reads.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
 pub enum Channel {
     Ssh,
