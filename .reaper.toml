@@ -1,7 +1,10 @@
-# lychgate as a reaper tenant. Two guests: Ubuntu runs the suite in the same
-# pinned rust:1.97 image the Bitbucket pipeline uses; FreeBSD runs it natively,
-# because FreeBSD is a first-class deployment target and must not be the
-# platform nothing exercises.
+# lychgate as a reaper tenant. Two guests: Ubuntu builds and unit-tests in
+# the same pinned rust:1.97 image the Bitbucket pipeline uses, then runs the
+# Tier-4 battery on the guest host (where a real sshd, cron and systemd
+# live); FreeBSD builds, tests and runs everything natively, because FreeBSD
+# is a first-class deployment target and must not be the platform nothing
+# exercises. The FreeBSD template needs a Rust toolchain (pkg install rust)
+# — a known template gap.
 
 schema = 1
 project = "lychgate"
@@ -15,24 +18,28 @@ name = "ubuntu-26.04"
 exec = "container"
 # docker.io/library/rust:1.97; matches the dev host toolchain and the CI image.
 build = { image = "docker.io/library/rust@sha256:3382bd20aa942806c533e9a73cd000474fb3ef173f71e684cc9b942675781769" }
+run = { exec = "host" }
 
 # Shared defaults. CARGO_HOME/CARGO_TARGET_DIR must point at the declared
 # caches or every loop rebuilds the world; the variables expand because these
-# are shell commands (manifest `env` values never interpolate). No pipes here:
-# /bin/sh on the Ubuntu guest is dash, and a pipe would report the right-hand
-# side's status.
+# are shell commands (manifest `env` values never interpolate). No pipes in
+# any cmd: /bin/sh on the Ubuntu guest is dash, and a pipe would report the
+# right-hand side's status. --all-targets builds the binaries too — the
+# host-exec battery runs them out of the target cache.
 [build]
 cmd = """
 CARGO_HOME=$REAPER_CACHE_CARGO \
 CARGO_TARGET_DIR=$REAPER_CACHE_TARGET \
-cargo build --locked --workspace --tests"""
-cache = ["cargo", "target"]
-
-[run]
-cmd = """
+cargo build --locked --workspace --all-targets && \
 CARGO_HOME=$REAPER_CACHE_CARGO \
 CARGO_TARGET_DIR=$REAPER_CACHE_TARGET \
 cargo test --workspace --locked"""
+cache = ["cargo", "target"]
+
+# The Tier-4 battery: ssh acceptance, revert-under-kill (with its sabotaged
+# oracle self-test), and the rc/systemd service proof. Root on the guest.
+[run]
+cmd = "sh e2e/run.sh"
 
 [sync]
 # Built on the dev host for a different OS; rebuilt into the session cache
