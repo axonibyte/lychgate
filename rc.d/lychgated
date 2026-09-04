@@ -3,9 +3,9 @@
 # shellcheck disable=SC1091,SC1094,SC2034
 #   SC1091/SC1094: /etc/rc.subr exists (and parses) on the FreeBSD hosts this
 #   script runs on, not on the machines that lint it.
-#   SC2034: name, rcvar, pidfile, required_files, command, command_args and
-#   start_precmd are the rc.subr contract — consumed by run_rc_command, not
-#   by this file. Every one of them is load-bearing.
+#   SC2034: name, rcvar, pidfile, required_files, command, command_args,
+#   procname and start_precmd are the rc.subr contract — consumed by
+#   run_rc_command, not by this file. Every one of them is load-bearing.
 
 # PROVIDE: lychgated
 # REQUIRE: NETWORKING FILESYSTEMS
@@ -41,6 +41,12 @@ command="/usr/sbin/daemon"
 command_args="-p ${pidfile} -t ${name} ${lychgated_bin} \
     --inventory ${lychgated_inventory} \
     --state-dir ${lychgated_statedir} ${lychgated_flags}"
+
+# daemon(8) writes lychgated's pid to ${pidfile} and then exec-wraps it away,
+# so the process rc.subr must match against that pid is lychgated itself, not
+# /usr/sbin/daemon. Without this, `service ... status` and `stop` look for the
+# wrong procname and conclude nothing is running.
+procname="${lychgated_bin}"
 
 start_precmd="lychgated_prestart"
 lychgated_prestart() {

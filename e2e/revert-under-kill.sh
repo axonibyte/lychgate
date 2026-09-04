@@ -154,16 +154,22 @@ daemon_pid=""
 # --- the wait: the target must close itself ---------------------------------
 
 # Cron granularity is one minute; allow the deadline plus a generous margin.
+# The single dead-man invocation reverts access AND cleans up its own
+# schedule and deadline before exiting; wait for the whole thing so the
+# hygiene asserts below do not race its final rm.
 note "waiting for the dead-man (deadline in $(( deadline_at - $(date +%s) ))s)"
 reverted=0
 while [ "$(date +%s)" -lt $(( deadline_at + 150 )) ]; do
-    if [ "$(posture)" = "${current}" ] && ! grep -q 'LYCHGATE BEGIN' "${akeys}"; then
+    if [ "$(posture)" = "${current}" ] \
+        && ! grep -q 'LYCHGATE BEGIN' "${akeys}" \
+        && [ ! -f /etc/lychgate.deadman.deadline ] \
+        && ! { crontab -l 2>/dev/null | grep -q 'LYCHGATE-DEADMAN'; }; then
         reverted=1
         break
     fi
     sleep 5
 done
-[ "${reverted}" -eq 1 ] || fail "the target never reverted itself: posture $(posture)"
+[ "${reverted}" -eq 1 ] || fail "the target never fully reverted itself: posture $(posture)"
 
 # --- post oracles -----------------------------------------------------------
 
