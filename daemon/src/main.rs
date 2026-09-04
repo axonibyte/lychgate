@@ -1,4 +1,5 @@
 mod journal;
+mod listener;
 mod store;
 
 #[cfg(test)]
@@ -7,6 +8,7 @@ mod scratch;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -28,16 +30,21 @@ struct Cli {
     #[arg(long)]
     state_dir: PathBuf,
 
+    /// Control socket path (default: <state-dir>/lychgated.sock)
+    #[arg(long)]
+    socket: Option<PathBuf>,
+
     /// Seconds between passes. Zero is refused: a zero interval is a spin.
     #[arg(long, default_value_t = 10)]
     interval: u64,
 
-    /// One pass, then exit. For cron and for tests driving the real binary.
+    /// One pass, then exit, serving no requests. For cron and for tests
+    /// driving the real binary.
     #[arg(long)]
     once: bool,
 }
 
-/// Set by the signal handler, read by the loop. SIGKILL-safety is not this
+/// Set by the signal handler, read by the loops. SIGKILL-safety is not this
 /// handler — it is the atomic state write plus per-line journal sync, proven
 /// by the end-to-end battery.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -56,13 +63,13 @@ fn install_signal_handlers() {
     }
 }
 
-fn epoch_secs(t: SystemTime) -> u64 {
+pub(crate) fn epoch_secs(t: SystemTime) -> u64 {
     t.duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
-fn channels_of(inventory: &Inventory, host: &str) -> Vec<Channel> {
+pub(crate) fn channels_of(inventory: &Inventory, host: &str) -> Vec<Channel> {
     inventory
         .hosts
         .iter()
@@ -74,7 +81,7 @@ fn channels_of(inventory: &Inventory, host: &str) -> Vec<Channel> {
 /// One pass: reap observed expiries under the store lock, then journal them.
 /// The journal write comes after the state commit on purpose — see the
 /// journal module docs for what that ordering does and does not promise.
-fn pass(inventory: &Inventory, store: &Store, journal: &mut Journal) -> anyhow::Result<()> {
+fn pass(inventory: &Inventory, store: &Store, journal: &Mutex<Journal>) -> anyhow::Result<()> {
     let now = SystemTime::now();
     let (expired, statuses) = store.mutate(|doc| {
         let before = doc.open_grants.clone();
@@ -100,7 +107,7 @@ fn pass(inventory: &Inventory, store: &Store, journal: &mut Journal) -> anyhow::
     for (host, interval) in &expired {
         // A journal that cannot record is fatal: accruing unrecorded
         // transitions would defeat the audit record.
-        journal.record(
+        journal.lock().expect("journal mutex poisoned").record(
             now,
             &Event::Expire {
                 host: host.clone(),
@@ -139,10 +146,12 @@ fn main() -> anyhow::Result<()> {
 
     let text = fs::read_to_string(&cli.inventory)
         .with_context(|| format!("reading {}", cli.inventory.display()))?;
-    let inventory = Inventory::parse(&text)
-        .with_context(|| format!("validating {}", cli.inventory.display()))?;
+    let inventory = Arc::new(
+        Inventory::parse(&text)
+            .with_context(|| format!("validating {}", cli.inventory.display()))?,
+    );
 
-    let store = Store::at(cli.state_dir.join("grants.json"));
+    let store = Arc::new(Store::at(cli.state_dir.join("grants.json")));
     store.probe_writable()?;
     // Boot refusals happen before the first journal line: a run that is
     // refused journals nothing.
@@ -150,8 +159,23 @@ fn main() -> anyhow::Result<()> {
     GrantRegistry::from_parts(&inventory, &doc)
         .with_context(|| format!("validating {}", store.path().display()))?;
 
-    let mut journal = Journal::open(cli.state_dir.join("journal.jsonl"))?;
-    journal.record(
+    let socket_path = cli
+        .socket
+        .clone()
+        .unwrap_or_else(|| cli.state_dir.join("lychgated.sock"));
+    // --once serves no requests, so it must not fight a running daemon for
+    // the socket; it is the cron shape, and cron passes coexist with a
+    // daemon by design (the store lock serializes them).
+    let listener = if cli.once {
+        None
+    } else {
+        Some(listener::bind(&socket_path)?)
+    };
+
+    let journal = Arc::new(Mutex::new(Journal::open(
+        cli.state_dir.join("journal.jsonl"),
+    )?));
+    journal.lock().expect("journal mutex poisoned").record(
         SystemTime::now(),
         &Event::DaemonStart {
             inventory: cli.inventory.display().to_string(),
@@ -161,13 +185,24 @@ fn main() -> anyhow::Result<()> {
     install_signal_handlers();
 
     println!(
-        "lychgated: watching {} host(s); no transport and no drivers yet — \
-         this process journals observed expiries and nothing more",
+        "lychgated: watching {} host(s); grants can be opened over the \
+         control socket, but no drivers exist yet — an open grant changes \
+         bookkeeping and journal, not any host",
         inventory.hosts.len()
     );
 
+    let listener_thread = listener.map(|listener| {
+        let inventory = Arc::clone(&inventory);
+        let store = Arc::clone(&store);
+        let journal = Arc::clone(&journal);
+        std::thread::spawn(move || {
+            listener::serve(&listener, &inventory, &store, &journal, &SHUTDOWN)
+        })
+    });
+
+    let mut fatal: Option<anyhow::Error> = None;
     loop {
-        pass(&inventory, &store, &mut journal)?;
+        pass(&inventory, &store, &journal)?;
 
         if cli.once {
             break;
@@ -179,6 +214,12 @@ fn main() -> anyhow::Result<()> {
             if SHUTDOWN.load(Ordering::SeqCst) {
                 break;
             }
+            // A listener that stopped without a shutdown request hit the
+            // fatal path (journal failure): stop the daemon with it.
+            if listener_thread.as_ref().is_some_and(|h| h.is_finished()) {
+                SHUTDOWN.store(true, Ordering::SeqCst);
+                break;
+            }
             std::thread::sleep(Duration::from_millis(250));
         }
         if SHUTDOWN.load(Ordering::SeqCst) {
@@ -186,7 +227,23 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    journal.record(SystemTime::now(), &Event::DaemonStop)?;
+    if let Some(handle) = listener_thread {
+        SHUTDOWN.store(true, Ordering::SeqCst);
+        match handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => fatal = Some(e),
+            Err(_) => fatal = Some(anyhow::anyhow!("listener thread panicked")),
+        }
+        let _ = fs::remove_file(&socket_path);
+    }
+
+    journal
+        .lock()
+        .expect("journal mutex poisoned")
+        .record(SystemTime::now(), &Event::DaemonStop)?;
     println!("lychgated: stopping");
-    Ok(())
+    match fatal {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }

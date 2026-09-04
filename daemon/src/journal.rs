@@ -40,9 +40,6 @@ impl std::fmt::Display for JournalError {
 
 impl std::error::Error for JournalError {}
 
-/// Only the events the daemon can actually emit today. open/close/renew
-/// arrive in M2 with the transport that makes them reachable; an event kind
-/// nothing can construct would be dead code, not a contract.
 #[derive(Debug, Serialize)]
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum Event {
@@ -51,6 +48,20 @@ pub enum Event {
         hosts: usize,
     },
     DaemonStop,
+    Open {
+        host: String,
+        channels: Vec<Channel>,
+        ttl_secs: u64,
+        expires_at: u64,
+    },
+    Renew {
+        host: String,
+        ttl_secs: u64,
+        expires_at: u64,
+    },
+    Close {
+        host: String,
+    },
     Expire {
         host: String,
         channels: Vec<Channel>,
