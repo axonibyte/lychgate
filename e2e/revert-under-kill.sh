@@ -38,6 +38,12 @@ for f in "${bin}/lychgated" "${bin}/lychgate"; do
     [ -x "${f}" ] || { echo "missing binary ${f}" >&2; exit 2; }
 done
 
+# The dead-man rides cron; a managed host without it cannot hold a grant.
+command -v crontab >/dev/null 2>&1 || {
+    echo "crontab not found: cron must be installed and running on the target" >&2
+    exit 2
+}
+
 akeys="/root/.ssh/authorized_keys"
 mkdir -p /root/.ssh
 touch "${akeys}"

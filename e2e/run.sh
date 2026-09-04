@@ -19,6 +19,23 @@ if [ -z "${LYCHGATE_BIN_DIR:-}" ]; then
 fi
 export LYCHGATE_BIN_DIR
 
+# The dead-man rides cron on the managed host. FreeBSD ships it in base;
+# stock Ubuntu server does not, so install and start it here. A managed host
+# without cron is a real, documented prerequisite — the daemon fails an open
+# closed when it is missing (see README), and these guests must provide it.
+ensure_cron() {
+    if command -v crontab >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "=== provisioning cron (the dead-man's scheduler) ==="
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get -qq update >/dev/null 2>&1 || true
+        apt-get -qq install -y cron >/dev/null 2>&1 || true
+        systemctl enable --now cron >/dev/null 2>&1 || service cron start >/dev/null 2>&1 || true
+    fi
+    command -v crontab >/dev/null 2>&1
+}
+
 failed=0
 phase() {
     label=$1
@@ -32,6 +49,11 @@ phase() {
         failed=1
     fi
 }
+
+if ! ensure_cron; then
+    echo "e2e battery: FAILED (could not provision cron; the dead-man cannot run)"
+    exit 1
+fi
 
 # Unit suites: run here when a toolchain exists (the FreeBSD guest); on the
 # Ubuntu guest they already ran inside the pinned build container — said

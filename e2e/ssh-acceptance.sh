@@ -41,6 +41,12 @@ for f in "${bin}/lychgated" "${bin}/lychgate"; do
     fi
 done
 
+# The dead-man rides cron; a managed host without it cannot hold a grant.
+command -v crontab >/dev/null 2>&1 || {
+    echo "crontab not found: cron must be installed and running on the target" >&2
+    exit 2
+}
+
 # --- prerequisites on the disposable host ----------------------------------
 
 akeys="/root/.ssh/authorized_keys"

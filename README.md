@@ -112,6 +112,13 @@ The ssh channel needs the host's `sshd_config` to
 line (sshd honors the first value it reads); a missing Include is caught by
 the post-apply verify, not silently tolerated.
 
+Managed hosts with an ssh-borne channel also need **cron installed and
+running** (FreeBSD ships it in base; on Debian/Ubuntu, `apt install cron`).
+lychgate installs a dead-man timer in root's crontab so break-glass access
+reverts on schedule even if the daemon dies — a host without cron cannot
+hold that guarantee, so opening a grant there is refused rather than opened
+without a backstop.
+
 ## Testing
 
 ```sh
