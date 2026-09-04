@@ -1,0 +1,55 @@
+# lychgate as a reaper tenant. Two guests: Ubuntu runs the suite in the same
+# pinned rust:1.97 image the Bitbucket pipeline uses; FreeBSD runs it natively,
+# because FreeBSD is a first-class deployment target and must not be the
+# platform nothing exercises.
+
+schema = 1
+project = "lychgate"
+
+[[guests]]
+name = "freebsd-15.1"
+exec = "host"
+
+[[guests]]
+name = "ubuntu-26.04"
+exec = "container"
+# docker.io/library/rust:1.97; matches the dev host toolchain and the CI image.
+build = { image = "docker.io/library/rust@sha256:3382bd20aa942806c533e9a73cd000474fb3ef173f71e684cc9b942675781769" }
+
+# Shared defaults. CARGO_HOME/CARGO_TARGET_DIR must point at the declared
+# caches or every loop rebuilds the world; the variables expand because these
+# are shell commands (manifest `env` values never interpolate). No pipes here:
+# /bin/sh on the Ubuntu guest is dash, and a pipe would report the right-hand
+# side's status.
+[build]
+cmd = """
+CARGO_HOME=$REAPER_CACHE_CARGO \
+CARGO_TARGET_DIR=$REAPER_CACHE_TARGET \
+cargo build --locked --workspace --tests"""
+cache = ["cargo", "target"]
+
+[run]
+cmd = """
+CARGO_HOME=$REAPER_CACHE_CARGO \
+CARGO_TARGET_DIR=$REAPER_CACHE_TARGET \
+cargo test --workspace --locked"""
+
+[sync]
+# Built on the dev host for a different OS; rebuilt into the session cache
+# anyway.
+exclude = ["/target/"]
+
+[reset]
+datasets = ["state"]
+
+[resources]
+cores = 4
+ram_gb = 8
+
+[profiles.dev]
+ttl = "2h"
+warm_cache = true
+
+[profiles.nightly]
+ttl = "12h"
+warm_cache = false
