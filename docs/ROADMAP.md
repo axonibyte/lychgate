@@ -90,7 +90,7 @@ request/response surface as a table.
 close a grant against a fake host entry, entirely through the real binaries,
 and the journal shows every step.
 
-## M3 — Driver trait and error-injection fakes — IN PROGRESS
+## M3 — Driver trait and error-injection fakes — DONE (2026-09-04)
 
 Design decisions, resolved at milestone start:
 
@@ -146,6 +146,9 @@ assert the precondition before the success indicator.
 
 **Acceptance** — no sequence of scripted driver failures can leave the
 registry claiming a grant is cleanly open when any channel's apply failed.
+Met: `no_sequence_of_apply_failures_ever_reports_a_cleanly_open_grant`
+sweeps the failing channel across the set; a failed unwind lands in
+needs-revert, retried every pass; a crash mid-open is demoted at boot.
 
 ## M4 — SSH driver — PLANNED, bumps to v0.3.0
 

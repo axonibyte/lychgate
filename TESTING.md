@@ -47,13 +47,17 @@ and unknown-host stores are refusals that journal nothing; SIGTERM ends the
 loop with a daemon-stop entry. The service installer has its own battery
 (`tools/install-service-test.sh`), run by the gate and CI.
 
-Mutation record: 35 mutations at scaffold time, 49 for M1 (registry 10,
-snapshot 11, store 11, journal/loop 14, installer 3), 25 for M2 (proto 15,
-listener/CLI 10) — 109 checked. Three initially survived; every survivor
-exposed a real gap and none survives now: two redundant guards were removed
-(the proto version arm, the listener cap check) and one missing assertion
-was added (the renew transition's payload). Five mutations hung the suite,
-which for a spin or a wedged flow is the observed failure.
+Mutation record: 35 at scaffold, 49 for M1, 25 for M2, and for M3 the
+channel seam (12), the write-ahead machine and lifecycle (13) — ~134
+checked to date, 0 surviving now. Across the project, five survivors have
+appeared and each exposed a real gap rather than being waved through:
+redundant guards removed (the proto version arm, the listener cap check,
+the empty-needs-revert refusal that turned out to be a legitimate
+transient) and missing assertions added (the renew transition payload, the
+journal side of boot recovery). Several mutations hung the suite, which for
+a spin or a wedged flow is the observed failure. Two behaviour decisions
+were forced by tests along the way: expiry now expires-then-closes (revert
+completes), and close stays idempotent.
 
 Cross-platform record: the full battery ran green on both reaper guests
 (freebsd-15.1 on pkg rust 1.96, ubuntu-26.04 in the pinned rust:1.97 image)
@@ -74,6 +78,23 @@ permanently. The harness self-tests: the fixed seeds rediscover a
 resurrected real defect (the multibyte split_at panic), and a two-sidedness
 check fails if the generators collapse into only-rejected inputs.
 
+## Tier 3 — error-injection integration: EXISTS (M3)
+
+`daemon/src/lifecycle/tests.rs` drives the write-ahead grant lifecycle
+against scripted fake drivers (`lychgate-core`'s `fakes` feature — test-only,
+never a release binary), with two oracles per claim: the grant state read
+back from the committed store, AND the fakes' shared call log showing which
+driver calls happened and, by their absence, which did not. It proves the
+headline M3 property — no sequence of apply failures ever reports a cleanly
+open grant (swept across the failing channel) — plus: a failed unwind lands
+in needs-revert naming the stuck channels, stuck reverts are retried by
+later passes until they clear rather than swallowed, an operator close and
+an expiry both revert through needs-revert, boot recovery demotes a stored
+`Opening` and journals it, and the empty production driver set opens and
+closes end to end with nothing applied. `core/src/channel/tests.rs` proves
+the orchestration primitives (apply-in-order, unwind-in-reverse,
+revert-every-channel, undrivable-is-stuck) directly.
+
 ## Wire contract and operator-flow tiers: EXISTS (M2)
 
 The request/response surface is pinned by a contract table in
@@ -87,9 +108,11 @@ the first listens, a stale socket replaced, a missing daemon failing fast.
 
 **What these tiers do NOT prove:**
 
-- No access is actually opened or closed anywhere. There are no drivers —
-  an open grant changes grants.json and a journal line, not sshd, not
-  authorized_keys, not a BMC, not a console. The CLI and daemon both say so.
+- No access is actually opened or closed on any host. The driver seam and
+  its orchestration exist and are proven against fakes, but no *real* driver
+  ships (the production driver set is empty until M4), so an open grant
+  changes grants.json and a journal line, not sshd, not authorized_keys, not
+  a BMC, not a console. The CLI and daemon both say so.
 - Authorization is the socket's file mode and nothing else: any process that
   can reach the owner-only socket can open grants. The operator-approval
   design is M8; until then, root on the daemon host is the trust boundary.
@@ -113,9 +136,6 @@ the methodology's §15 says to build them.
 
 In adoption order (return on effort, per methodology §15):
 
-3. **Error-injection integration** — drivers exercised against fake SSH/BMC/
-   VNC transports that fail mid-operation; a half-applied grant must present
-   as needing revert, never as open. Arrives with the driver trait.
 4. **Full stack, hostile** — `lychgated` driving real hosts (reaper guests),
    started hostile; the load-bearing claim is *revert-under-kill*: open a
    grant, kill the daemon, prove the dead-man timer on the target closes

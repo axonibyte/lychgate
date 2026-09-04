@@ -47,15 +47,16 @@ Policy decisions, all enforced in core and all tested:
 - **`lychgate-core`** — grant state machine, TTL parsing/policy, inventory
   schema and validation. Pure logic, injected time (`now: SystemTime`
   parameters), no I/O. This is the Tier-1 test surface.
-- **`lychgated`** — the control-plane daemon, FreeBSD/Linux. Will execute
-  drivers and install the dead-man revert. Today (M2) it holds real state —
-  a locked, atomic, versioned grant store (grants.json), an append-only
-  audit journal (journal.jsonl, synced per line, written only after state
-  commits), a reaping loop — and serves the CLI over an owner-only unix
-  socket speaking newline-delimited JSON with an explicit protocol version.
-  The socket doubles as single-instance enforcement. No drivers exist, so
-  every grant change is bookkeeping and journal, not any host, and the
-  daemon says so.
+- **`lychgated`** — the control-plane daemon, FreeBSD/Linux. Today (M3) it
+  holds real state — a locked, atomic, versioned grant store (grants.json),
+  an append-only audit journal (journal.jsonl) — serves the CLI over an
+  owner-only unix socket (newline-delimited JSON, explicit protocol version,
+  single-instance enforcement), and runs the write-ahead grant lifecycle
+  over a `ChannelDriver` seam: open persists intent before driving, commits
+  Open on success or NeedsRevert on failure; close and expiry revert through
+  NeedsRevert; a crash mid-open is demoted at boot. The production driver
+  set is empty until M4, so a grant change is still bookkeeping and journal,
+  not any host — and the daemon says so.
 - **`lychgate`** — the operator CLI, built for FreeBSD, Linux, and Windows
   (an operator's workstation may be anything; the daemon's host may not).
   open/renew/close/status work end to end against a local daemon; refusals
