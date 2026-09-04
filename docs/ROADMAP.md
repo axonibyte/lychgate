@@ -222,7 +222,7 @@ Ubuntu 26.04). The first live run caught a real race — sshd's SIGHUP
 restart window refusing the post-reload verify — fixed with a bounded
 transport-error retry and a regression test.
 
-## M5 — Dead-man revert and the hostile full stack — IN PROGRESS
+## M5 — Dead-man revert and the hostile full stack — DONE (2026-09-04)
 
 Design decisions, resolved at milestone start:
 
@@ -283,6 +283,12 @@ The property that makes lychgate trustworthy, and the tier that proves it.
 **Acceptance** — the revert-under-kill test exists, has been observed failing
 (run once with the dead-man deliberately not installed — the oracle
 self-test), and passes on both guests.
+Met: `e2e/revert-under-kill.sh` passes on both reaper guests (open a 90s
+grant, SIGKILL the daemon, and the target's own crontab dead-man reverts
+posture + fence before the daemon returns to reconcile), and its
+`--sabotage` mode — run.sh's oracle self-test — correctly FAILS when the
+backstop is removed. `e2e/service-start.sh` redeems the M1-deferred claim:
+rc(8) and systemd really start and stop the daemon.
 
 ## M6 — BMC driver — PLANNED, bumps to v0.4.0
 

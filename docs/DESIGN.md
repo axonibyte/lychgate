@@ -88,10 +88,13 @@ step, is [ROADMAP.md](ROADMAP.md). The sketch below is the shape of it:
    emergency value via an sshd_config drop-in plus reload; manage
    authorized_keys entries inside fenced, lychgate-owned blocks so human keys
    are never touched.
-2. **Dead-man revert** — opening a grant installs a local timer (`at`/cron) on
-   the target that reverts the drop-in and strips the fenced keys at expiry,
-   so revert survives the death of the controller that opened the gate. The
-   daemon's close merely does it early and confirms.
+2. **Dead-man revert** (done, M5) — opening a grant installs a self-contained
+   script plus a marked crontab line on the target; past the deadline it
+   reverts the drop-in and strips the fenced keys with no daemon
+   participation, so revert survives the controller's death. The daemon's
+   close removes it (doing the revert early) and journals whether it had
+   already fired. Requires cron on the managed host — a grant is refused
+   rather than opened without a working backstop.
 3. **bmc** — iDRAC account enable/disable via Redfish `AccountService`, with
    racadm-over-SSH and ipmitool fallbacks; generated passwords go to escrow.
 4. **vnc** — brokered console sessions via

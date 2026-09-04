@@ -47,10 +47,9 @@ and unknown-host stores are refusals that journal nothing; SIGTERM ends the
 loop with a daemon-stop entry. The service installer has its own battery
 (`tools/install-service-test.sh`), run by the gate and CI.
 
-Mutation record: 35 at scaffold, 49 for M1, 25 for M2, 25 for M3, and 25
-for M4 (ssh string logic and inventory coupling 14, drivers over the
-scripted transport 10, the restart-window retry 1) — ~159 checked to date,
-0 surviving now. Across the project, five survivors have
+Mutation record: 35 at scaffold, 49 for M1, 25 for M2, 25 for M3, 25 for
+M4, and 17 for M5 (dead-man rendering 8, lifecycle + ExecDeadman wiring 9)
+— ~176 checked to date, 0 surviving now. Across the project, five survivors have
 appeared and each exposed a real gap rather than being waved through:
 redundant guards removed (the proto version arm, the listener cap check,
 the empty-needs-revert refusal that turned out to be a legitimate
@@ -62,8 +61,9 @@ completes), and close stays idempotent.
 
 Cross-platform record: the full battery ran green on both reaper guests
 (freebsd-15.1 on pkg rust 1.96, ubuntu-26.04 in the pinned rust:1.97 image)
-at M1, M2, M3 and M4 close — the store's rename/lock semantics,
-signal handling, and unix-socket transport are proven on both deployment
+at M1–M5 close — the store's rename/lock semantics,
+signal handling, unix-socket transport, the SSH drivers, and the
+crontab dead-man's revert-under-kill are proven on both deployment
 platforms, not assumed from the workstation.
 
 ## Tier 2 — seeded fuzz: EXISTS (M2)
@@ -117,6 +117,30 @@ reaper [run] battery yet (that wiring is M5); and it exercises one host
 driving itself over loopback — real network partitions mid-apply are the
 scripted transport's territory until M5's revert-under-kill.
 
+## Tier 4 — full stack, revert-under-kill: EXISTS (M5)
+
+The dead-man rendering is Tier-1 tested (crontab upsert/removal, the script
+baking in every revert ingredient, sh -n over both OS variants, quote
+refusal) and fuzzed; ExecDeadman and the lifecycle wiring are proven against
+scripted transports (install/reschedule/remove, the fail-closed open and
+renew orders, removal-last-on-revert). The full stack runs on both reaper
+guests via `e2e/run.sh` (the tenant [run] command): unit suites, the ssh
+acceptance, service start/stop under rc(8)/systemd, and the headline —
+`e2e/revert-under-kill.sh`: open a 90s grant, assert access is open and the
+backstop armed, SIGKILL the daemon, and the target's own crontab dead-man
+reverts posture and keys before the daemon returns to reconcile (journaling
+the expire and a close with deadman_fired true, idempotent on a second
+boot). Its oracle self-test is run.sh's sabotage pass: remove the installed
+dead-man and the run MUST fail — a harness that passes with a dead backstop
+measures nothing.
+
+**What Tier 4 does NOT prove:** it drives one host over loopback, so a
+network partition *between* the daemon and a remote target mid-apply is
+still the scripted transport's territory, not the live tier's. The dead-man
+depends on cron running on the managed host; the daemon refuses an open
+where it is absent, but a cron daemon that is installed yet not actually
+scheduling is beyond what the acceptance asserts.
+
 ## Wire contract and operator-flow tiers: EXISTS (M2)
 
 The request/response surface is pinned by a contract table in
@@ -133,9 +157,8 @@ the first listens, a stale socket replaced, a missing daemon failing fast.
 - The ssh and authorized-keys channels really change hosts (M4); bmc and
   vnc remain bookkeeping-only until their drivers exist, and the daemon
   says so at startup.
-- Nothing yet reverts a grant if the daemon host itself dies: the dead-man
-  timer on the target is M5. Until then, expiry enforcement lives solely in
-  lychgated.
+- The dead-man timer on the target reverts access if the daemon host dies
+  (M5), but it depends on cron; a host without cron is refused an open.
 - Authorization is the socket's file mode and nothing else: any process that
   can reach the owner-only socket can open grants. The operator-approval
   design is M8; until then, root on the daemon host is the trust boundary.
