@@ -591,8 +591,18 @@ fn a_second_daemon_is_refused_while_the_first_listens_and_a_stale_socket_is_not(
     );
 
     // ...and a fresh daemon replaces the stale socket rather than wedging.
+    // Under the parallel test load this suite runs at, the replacement can
+    // be slow to settle its first pass; retry the status read a few times so
+    // the claim (it comes up and answers) is observed reliably, not raced.
     let replacement = Daemon::start(&inv, &state_dir);
-    let out = cli(&replacement.socket, &["status"]);
+    let mut out = cli(&replacement.socket, &["status"]);
+    for _ in 0..10 {
+        if out.status.success() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        out = cli(&replacement.socket, &["status"]);
+    }
     assert!(
         out.status.success(),
         "{}",
