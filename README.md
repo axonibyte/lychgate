@@ -26,19 +26,23 @@ Grant policy, by design:
 
 ## Status
 
-The control plane is real: the daemon holds grant state durably, enforces
-TTL policy, and serves the CLI over an owner-only unix socket, with every
-transition in an append-only audit journal. **No driver exists yet**, so an
-open grant changes daemon state and journal — not sshd, not a BMC, not a
-console. See [TESTING.md](TESTING.md) for exactly what is and is not proven,
+The control plane is real, and the SSH channels are live: opening a grant
+flips the host's `PermitRootLogin` posture through a verified drop-in and
+installs break-glass keys inside a lychgate-owned fence in authorized_keys —
+both verified against the host's actual state and both reverted on close or
+expiry. The daemon holds grant state durably, serves the CLI over an
+owner-only unix socket, and journals every transition. The `bmc` and `vnc`
+channels remain bookkeeping-only until their drivers exist. See
+[TESTING.md](TESTING.md) for exactly what is and is not proven,
 [docs/DESIGN.md](docs/DESIGN.md) for the architecture, and
 [docs/ROADMAP.md](docs/ROADMAP.md) for the milestone plan of record.
 
 ## Components
 
 - `lychgate` — the operator CLI. Builds for FreeBSD, Linux, and Windows.
-- `lychgated` — the control-plane daemon. FreeBSD and Linux only. Today it
-  validates an inventory file and exits; it says so when it runs.
+- `lychgated` — the control-plane daemon. FreeBSD and Linux only. Holds
+  grant state, drives the channels, reverts on close and expiry, retries
+  stuck reverts, and journals everything.
 - `lychgate-core` — the grant/TTL/inventory library both binaries share.
 
 ## Installation
@@ -93,7 +97,20 @@ name = "db-01"
 address = "10.0.4.11"
 os = "freebsd"
 channels = ["ssh", "authorized-keys", "bmc"]
+
+# Required when ssh or authorized-keys channels are declared.
+[hosts.ssh]
+agent_user = "lychgate"              # connects via ssh(1); see become_cmd
+root_posture_default = "no"          # what PermitRootLogin must be at rest
+root_posture_emergency = "prohibit-password"
+emergency_keys = ["ssh-ed25519 AAAA... claude-breakglass"]
+become_cmd = "doas"                  # omit if the agent account is root
 ```
+
+The ssh channel needs the host's `sshd_config` to
+`Include /etc/ssh/sshd_config.d/*.conf` **before** any `PermitRootLogin`
+line (sshd honors the first value it reads); a missing Include is caught by
+the post-apply verify, not silently tolerated.
 
 ## Testing
 

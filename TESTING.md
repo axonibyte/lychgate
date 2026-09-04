@@ -47,9 +47,10 @@ and unknown-host stores are refusals that journal nothing; SIGTERM ends the
 loop with a daemon-stop entry. The service installer has its own battery
 (`tools/install-service-test.sh`), run by the gate and CI.
 
-Mutation record: 35 at scaffold, 49 for M1, 25 for M2, and for M3 the
-channel seam (12), the write-ahead machine and lifecycle (13) — ~134
-checked to date, 0 surviving now. Across the project, five survivors have
+Mutation record: 35 at scaffold, 49 for M1, 25 for M2, 25 for M3, and 25
+for M4 (ssh string logic and inventory coupling 14, drivers over the
+scripted transport 10, the restart-window retry 1) — ~159 checked to date,
+0 surviving now. Across the project, five survivors have
 appeared and each exposed a real gap rather than being waved through:
 redundant guards removed (the proto version arm, the listener cap check,
 the empty-needs-revert refusal that turned out to be a legitimate
@@ -61,7 +62,7 @@ completes), and close stays idempotent.
 
 Cross-platform record: the full battery ran green on both reaper guests
 (freebsd-15.1 on pkg rust 1.96, ubuntu-26.04 in the pinned rust:1.97 image)
-at M1 close and again at M2 close — the store's rename/lock semantics,
+at M1, M2, M3 and M4 close — the store's rename/lock semantics,
 signal handling, and unix-socket transport are proven on both deployment
 platforms, not assumed from the workstation.
 
@@ -95,6 +96,27 @@ closes end to end with nothing applied. `core/src/channel/tests.rs` proves
 the orchestration primitives (apply-in-order, unwind-in-reverse,
 revert-every-channel, undrivable-is-stuck) directly.
 
+## SSH driver tier: EXISTS (M4)
+
+The pure string logic (posture vocabulary, drop-in, fence, sshd -T parsing)
+is Tier-1 tested with a hostile corpus and fuzzed (authorized_keys content
+and sshd -T output arrive from remote hosts). The drivers are proven twice:
+against a scripted transport (mid-operation drops, silently lost writes,
+drifted host configs, nonzero exits, the become prefix, quoting), and
+against a real sshd by `e2e/ssh-acceptance.sh` on a disposable host — open
+flips the effective posture (sshd -T AND a live connection with the
+emergency key), close restores authorized_keys byte-for-byte and the
+default posture (AND the emergency key stops working), a hand-added key
+survives the whole cycle. Green on both reaper guests at M4 close. The
+first live run caught the sshd SIGHUP restart window — a race the fakes
+could not show — now ridden out by a bounded post-reload retry with its own
+regression test.
+
+**What the acceptance run does NOT prove:** it runs on demand, not in the
+reaper [run] battery yet (that wiring is M5); and it exercises one host
+driving itself over loopback — real network partitions mid-apply are the
+scripted transport's territory until M5's revert-under-kill.
+
 ## Wire contract and operator-flow tiers: EXISTS (M2)
 
 The request/response surface is pinned by a contract table in
@@ -108,11 +130,12 @@ the first listens, a stale socket replaced, a missing daemon failing fast.
 
 **What these tiers do NOT prove:**
 
-- No access is actually opened or closed on any host. The driver seam and
-  its orchestration exist and are proven against fakes, but no *real* driver
-  ships (the production driver set is empty until M4), so an open grant
-  changes grants.json and a journal line, not sshd, not authorized_keys, not
-  a BMC, not a console. The CLI and daemon both say so.
+- The ssh and authorized-keys channels really change hosts (M4); bmc and
+  vnc remain bookkeeping-only until their drivers exist, and the daemon
+  says so at startup.
+- Nothing yet reverts a grant if the daemon host itself dies: the dead-man
+  timer on the target is M5. Until then, expiry enforcement lives solely in
+  lychgated.
 - Authorization is the socket's file mode and nothing else: any process that
   can reach the owner-only socket can open grants. The operator-approval
   design is M8; until then, root on the daemon host is the trust boundary.

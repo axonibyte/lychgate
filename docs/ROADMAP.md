@@ -150,7 +150,7 @@ Met: `no_sequence_of_apply_failures_ever_reports_a_cleanly_open_grant`
 sweeps the failing channel across the set; a failed unwind lands in
 needs-revert, retried every pass; a crash mid-open is demoted at boot.
 
-## M4 — SSH driver — IN PROGRESS, bumps to v0.3.0
+## M4 — SSH driver — DONE (2026-09-04), bumped to v0.3.0
 
 Design decisions, resolved at milestone start:
 
@@ -217,6 +217,10 @@ Full-stack assertions arrive in M5 where a real sshd exists.
 the key, `sshd -T` and an actual connection attempt agree (two oracles),
 close restores the per-host default byte-for-byte, and a hand-added key
 survives the whole cycle untouched.
+Met on both reaper guests via `e2e/ssh-acceptance.sh` (FreeBSD 15.1 and
+Ubuntu 26.04). The first live run caught a real race — sshd's SIGHUP
+restart window refusing the post-reload verify — fixed with a bounded
+transport-error retry and a regression test.
 
 ## M5 — Dead-man revert and the hostile full stack — PLANNED
 

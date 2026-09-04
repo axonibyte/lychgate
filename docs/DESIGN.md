@@ -54,9 +54,10 @@ Policy decisions, all enforced in core and all tested:
   single-instance enforcement), and runs the write-ahead grant lifecycle
   over a `ChannelDriver` seam: open persists intent before driving, commits
   Open on success or NeedsRevert on failure; close and expiry revert through
-  NeedsRevert; a crash mid-open is demoted at boot. The production driver
-  set is empty until M4, so a grant change is still bookkeeping and journal,
-  not any host — and the daemon says so.
+  NeedsRevert; a crash mid-open is demoted at boot. As of M4 the ssh and
+  authorized-keys channels are live: a grant really flips PermitRootLogin
+  via a verified drop-in and installs break-glass keys in the fence; bmc
+  and vnc stay bookkeeping-only until their drivers exist.
 - **`lychgate`** — the operator CLI, built for FreeBSD, Linux, and Windows
   (an operator's workstation may be anything; the daemon's host may not).
   open/renew/close/status work end to end against a local daemon; refusals
@@ -73,11 +74,12 @@ Structural rules beyond the schema — unique non-empty host names, non-empty
 addresses, at least one channel per host, no duplicate channels — are
 validated by hand-written code so that tests can kill mutations of them.
 
-Per-host SSH posture defaults (`no` / `prohibit-password` / `yes`) will live
-here when the ssh driver arrives; they are deliberately absent until the code
-that honors them exists.
+Per-host SSH config lives in `[hosts.ssh]` (agent account, default and
+emergency `PermitRootLogin` postures, emergency keys, become prefix) — and is
+required exactly when an ssh-borne channel is declared, refused as dead
+config otherwise.
 
-## Driver roadmap (none of this exists yet)
+## Driver roadmap (1 is done; 2 onward is future)
 
 The milestone-level plan of record, with tests and acceptance criteria per
 step, is [ROADMAP.md](ROADMAP.md). The sketch below is the shape of it:
