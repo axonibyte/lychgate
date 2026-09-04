@@ -157,6 +157,30 @@ impl Remote<'_> {
         self.run_ok(host, ssh, reload_argv(host, ssh), None, "reloading sshd")?;
         Ok(())
     }
+
+    /// The post-reload posture check. A reload briefly closes sshd's
+    /// listener while it re-executes (FreeBSD's SIGHUP restart window —
+    /// found by the acceptance run, invisible to the fakes), so connection
+    /// failures are retried for a bounded interval. A successful query that
+    /// reports the wrong posture fails immediately: once sshd answers, its
+    /// config is current.
+    fn effective_posture_after_reload(
+        &mut self,
+        host: &Host,
+        ssh: &SshConfig,
+    ) -> Result<Posture, DriverError> {
+        let mut last = None;
+        for attempt in 0..20 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            match self.effective_posture(host, ssh) {
+                Ok(posture) => return Ok(posture),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.expect("twenty attempts produce at least one error"))
+    }
 }
 
 /// The `ssh` channel: PermitRootLogin posture via the drop-in.
@@ -187,7 +211,7 @@ impl ChannelDriver for SshPostureDriver {
             &render_dropin(ssh.root_posture_emergency),
         )?;
         remote.reload_sshd(host, ssh)?;
-        let effective = remote.effective_posture(host, ssh)?;
+        let effective = remote.effective_posture_after_reload(host, ssh)?;
         if effective != ssh.root_posture_emergency {
             return Err(DriverError(format!(
                 "posture verify failed on {:?}: effective {effective}, wanted {}; \
@@ -205,7 +229,7 @@ impl ChannelDriver for SshPostureDriver {
         };
         remote.remove_file(host, ssh, &dropin_path(ssh))?;
         remote.reload_sshd(host, ssh)?;
-        let effective = remote.effective_posture(host, ssh)?;
+        let effective = remote.effective_posture_after_reload(host, ssh)?;
         if effective != ssh.root_posture_default {
             return Err(DriverError(format!(
                 "posture verify failed on {:?} after revert: effective {effective}, but the \

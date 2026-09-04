@@ -98,16 +98,15 @@ fn run() -> anyhow::Result<ExitCode> {
         (Command::Open { host, .. }, r) => {
             let expires = r.expires_at.unwrap_or(0);
             println!("grant open on {host} until epoch {expires}");
-            println!("note: no drivers are wired yet; this changes daemon state, not the host");
         }
         (Command::Renew { host, .. }, r) => {
             let expires = r.expires_at.unwrap_or(0);
             println!("grant on {host} renewed until epoch {expires}");
         }
         (Command::Close { host }, r) => match r.outcome.as_deref() {
-            Some("was-open") => println!("grant on {host} closed"),
+            Some("closed") => println!("grant on {host} closed"),
             Some("already-closed") => println!("grant on {host} was already closed"),
-            other => println!("grant on {host} closed ({})", other.unwrap_or("?")),
+            other => println!("grant on {host}: {}", other.unwrap_or("(no outcome)")),
         },
         (Command::Status, r) => {
             for g in r.grants.as_deref().unwrap_or(&[]) {

@@ -320,3 +320,33 @@ fn shell_quoting_survives_spaces_and_embedded_quotes() {
     assert_eq!(shell_quote("with space"), "'with space'");
     assert_eq!(shell_quote("it's"), r#"'it'\''s'"#);
 }
+
+#[test]
+fn the_post_reload_verify_survives_the_sshd_restart_window() {
+    // Found on the FreeBSD guest: service sshd reload briefly closes the
+    // listener while sshd re-executes, and an immediate sshd -T gets
+    // connection-refused. The verify must ride out transport errors for a
+    // bounded interval — and still fail immediately on a wrong answer.
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let refusals = Arc::new(AtomicU32::new(0));
+    let r = Arc::clone(&refusals);
+    let responder: Responder = Box::new(move |argv, _| {
+        let cmd = argv.join(" ");
+        if cmd == "sshd -T" {
+            // Refuse the first two queries, then answer with the emergency
+            // posture, as a restarting sshd would.
+            if r.fetch_add(1, Ordering::SeqCst) < 2 {
+                return Err(DriverError("connect to host 127.0.0.1: refused".into()));
+            }
+            return Ok(CommandOutput::ok("permitrootlogin prohibit-password\n"));
+        }
+        Ok(CommandOutput::ok(""))
+    });
+    let (transport, _log) = Scripted::new(responder);
+    let mut driver = SshPostureDriver::new(transport);
+    driver.apply(&host()).unwrap();
+    assert!(
+        refusals.load(Ordering::SeqCst) >= 3,
+        "the retry never happened"
+    );
+}

@@ -35,7 +35,7 @@ definitions:
           - cargo fmt --check
           - cargo clippy --workspace --all-targets --locked -- -D warnings
           - cargo test --workspace --release --locked
-          - shellcheck -x ci/build-target.sh tools/*.sh rc.d/lychgated
+          - shellcheck -x ci/build-target.sh tools/*.sh rc.d/lychgated e2e/*.sh
           - ./tools/install-service-test.sh
 
     - step: &buildLinuxAmd64
