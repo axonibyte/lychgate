@@ -1,7 +1,9 @@
+mod drivers;
 mod journal;
 mod lifecycle;
 mod listener;
 mod store;
+mod transport;
 
 #[cfg(test)]
 mod scratch;
@@ -111,22 +113,33 @@ fn main() -> anyhow::Result<()> {
         },
     )?;
 
-    // The production driver set is empty until M4: an open grant changes
-    // bookkeeping and journal, not any host, and the daemon says so.
+    // The SSH-borne channels are live as of M4; BMC and VNC drivers do not
+    // exist yet, so those channels stay bookkeeping-only for now.
+    let mut driver_set = DriverSet::new();
+    driver_set
+        .register(drivers::ssh::SshPostureDriver::new(Box::new(
+            transport::ExecSshTransport,
+        )))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    driver_set
+        .register(drivers::ssh::AuthorizedKeysDriver::new(Box::new(
+            transport::ExecSshTransport,
+        )))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let daemon = Arc::new(Daemon {
         inventory,
         store,
         journal: Mutex::new(journal),
-        drivers: Mutex::new(DriverSet::new()),
+        drivers: Mutex::new(driver_set),
     });
 
     // Recover from a crash mid-open before serving anything.
     daemon.boot_recover(SystemTime::now())?;
 
     println!(
-        "lychgated: watching {} host(s); grants can be opened over the \
-         control socket, but no drivers exist yet — an open grant changes \
-         bookkeeping and journal, not any host",
+        "lychgated: watching {} host(s); ssh and authorized-keys channels \
+         are live, bmc and vnc are bookkeeping-only until their drivers \
+         exist",
         daemon.inventory.hosts.len()
     );
 

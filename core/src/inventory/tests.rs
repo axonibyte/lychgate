@@ -296,3 +296,25 @@ fn an_unknown_posture_is_refused() {
         Err(InventoryError::Toml(_))
     ));
 }
+
+#[test]
+fn an_ssh_channel_whose_emergency_posture_equals_the_default_is_refused() {
+    let toml = r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "freebsd"
+        channels = ["ssh"]
+
+        [hosts.ssh]
+        agent_user = "lychgate"
+        root_posture_default = "no"
+        root_posture_emergency = "no"
+    "#;
+    assert_eq!(
+        Inventory::parse(toml),
+        Err(InventoryError::PostureUnchanged {
+            host: "db-01".into()
+        })
+    );
+}

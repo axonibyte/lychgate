@@ -115,6 +115,10 @@ pub enum InventoryError {
     NoEmergencyKeys {
         host: String,
     },
+    /// The ssh channel would set the posture to what it already must be.
+    PostureUnchanged {
+        host: String,
+    },
     BadEmergencyKey {
         host: String,
         message: String,
@@ -149,6 +153,10 @@ impl fmt::Display for InventoryError {
             InventoryError::NoEmergencyKeys { host } => write!(
                 f,
                 "host {host:?} declares the authorized-keys channel but [hosts.ssh] lists no emergency_keys"
+            ),
+            InventoryError::PostureUnchanged { host } => write!(
+                f,
+                "host {host:?}: root_posture_emergency equals root_posture_default, so the ssh channel would change nothing; drop the ssh channel or change a posture"
             ),
             InventoryError::BadEmergencyKey { host, message } => {
                 write!(f, "host {host:?}: {message}")
@@ -207,6 +215,13 @@ impl Inventory {
                     })
                 }
                 (Some(ssh), true) => {
+                    if host.channels.contains(&Channel::Ssh)
+                        && ssh.root_posture_default == ssh.root_posture_emergency
+                    {
+                        return Err(InventoryError::PostureUnchanged {
+                            host: host.name.clone(),
+                        });
+                    }
                     if host.channels.contains(&Channel::AuthorizedKeys)
                         && ssh.emergency_keys.is_empty()
                     {
