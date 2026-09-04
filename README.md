@@ -26,10 +26,12 @@ Grant policy, by design:
 
 ## Status
 
-This is a scaffold. The grant state machine, TTL policy, and inventory schema
-are real and tested; no driver exists yet, so nothing opens or closes access
-on an actual host. See [TESTING.md](TESTING.md) for exactly what is and is not
-proven, [docs/DESIGN.md](docs/DESIGN.md) for the architecture, and
+The control plane is real: the daemon holds grant state durably, enforces
+TTL policy, and serves the CLI over an owner-only unix socket, with every
+transition in an append-only audit journal. **No driver exists yet**, so an
+open grant changes daemon state and journal — not sshd, not a BMC, not a
+console. See [TESTING.md](TESTING.md) for exactly what is and is not proven,
+[docs/DESIGN.md](docs/DESIGN.md) for the architecture, and
 [docs/ROADMAP.md](docs/ROADMAP.md) for the milestone plan of record.
 
 ## Components
@@ -60,21 +62,27 @@ checksum sidecar.
 ## Usage
 
 ```sh
-lychgated --inventory /usr/local/etc/lychgate/inventory.toml
+lychgated --inventory /usr/local/etc/lychgate/inventory.toml \
+          --state-dir /var/db/lychgate
 ```
 
-Validates the inventory and reports host and channel counts. The control plane
-is not yet implemented; the daemon says so and exits.
+Validates the inventory and grant state, binds the control socket
+(`<state-dir>/lychgated.sock`, owner-only), reaps expired grants on an
+interval, and journals every transition to `<state-dir>/journal.jsonl`.
+`--once` runs a single pass for cron; a second daemon on the same socket is
+refused.
 
 ```sh
-lychgate open --host db-01 --ttl 4h
-lychgate close --host db-01
+lychgate open  --host db-01 --ttl 4h
 lychgate status
+lychgate renew --host db-01 --ttl 2h   # accepted only within 2h of expiry
+lychgate close --host db-01
 ```
 
-TTLs take the forms `90s`, `15m`, `2h`; a unit is required. `open` enforces the
-24-hour cap before anything else happens. All three subcommands currently fail
-with an honest error: there is no daemon transport yet.
+TTLs take the forms `90s`, `15m`, `2h`; a unit is required, and the 24-hour
+cap is enforced client-side before a connection is attempted and daemon-side
+regardless. Refusals are printed in the daemon's words verbatim and exit
+nonzero. `--socket` overrides the per-OS default socket path.
 
 An inventory names each host, its address, its operating system (`freebsd` or
 `linux`), and the access channels lychgate may drive for it:

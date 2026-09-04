@@ -47,29 +47,62 @@ and unknown-host stores are refusals that journal nothing; SIGTERM ends the
 loop with a daemon-stop entry. The service installer has its own battery
 (`tools/install-service-test.sh`), run by the gate and CI.
 
-Mutation record: 35 mutations at scaffold time, 49 more for M1 (registry 10,
-snapshot 11, store 11, journal/loop 14, installer 3) — 84 checked, 0
-survived. Two mutations hung the suite (the lock spin and the zero-interval
-spin); a hang is the observed failure for a spin.
+Mutation record: 35 mutations at scaffold time, 49 for M1 (registry 10,
+snapshot 11, store 11, journal/loop 14, installer 3), 25 for M2 (proto 15,
+listener/CLI 10) — 109 checked. Three initially survived; every survivor
+exposed a real gap and none survives now: two redundant guards were removed
+(the proto version arm, the listener cap check) and one missing assertion
+was added (the renew transition's payload). Five mutations hung the suite,
+which for a spin or a wedged flow is the observed failure.
 
 Cross-platform record: the full battery ran green on both reaper guests
 (freebsd-15.1 on pkg rust 1.96, ubuntu-26.04 in the pinned rust:1.97 image)
-at M1 close — the store's rename/lock semantics and the signal handling are
-proven on both deployment platforms, not assumed from the workstation.
+at M1 close and again at M2 close — the store's rename/lock semantics,
+signal handling, and unix-socket transport are proven on both deployment
+platforms, not assumed from the workstation.
+
+## Tier 2 — seeded fuzz: EXISTS (M2)
+
+`core/tests/fuzz.rs` fuzzes every externally-reachable decoder (wire
+requests, TTL strings, inventory TOML) with three generators — random
+bytes, token soup steered at the seams, mutated-valid — over a committed
+fixed seed set. Oracle: no panic, every rejection a well-formed error.
+Seeds print before use; `LYCHGATE_FUZZ_SEED` replays one,
+`LYCHGATE_FUZZ_ITERS` extends the hunt (a 20k-iteration run passed at
+introduction). Any seed that finds a defect is promoted into the fixed set
+permanently. The harness self-tests: the fixed seeds rediscover a
+resurrected real defect (the multibyte split_at panic), and a two-sidedness
+check fails if the generators collapse into only-rejected inputs.
+
+## Wire contract and operator-flow tiers: EXISTS (M2)
+
+The request/response surface is pinned by a contract table in
+`core/src/proto/tests.rs` (every op against every grant state, response
+fields and journal-transition expectations per row), and the operator flow
+runs end to end through both real binaries in the e2e battery:
+open/status/renew-both-ways/close over the real socket, refusals verbatim
+with nonzero exits, future-protocol and oversized requests refused over a
+raw socket connection, the socket owner-only, a second daemon refused while
+the first listens, a stale socket replaced, a missing daemon failing fast.
 
 **What these tiers do NOT prove:**
 
 - No access is actually opened or closed anywhere. There are no drivers —
-  "a grant expired" changes grants.json and a journal line, not sshd, not
-  authorized_keys, not a BMC, not a console.
-- The registry's open/close/renew are unreachable from any binary until M2's
-  transport; they are Tier-1-proven only, and the journal's open/close/renew
-  event kinds are deferred with them.
+  an open grant changes grants.json and a journal line, not sshd, not
+  authorized_keys, not a BMC, not a console. The CLI and daemon both say so.
+- Authorization is the socket's file mode and nothing else: any process that
+  can reach the owner-only socket can open grants. The operator-approval
+  design is M8; until then, root on the daemon host is the trust boundary.
+- The listener's take() allocation bound (a writer that never sends a
+  newline) has no behavioral oracle — the observable is memory — and is
+  stated in a comment rather than pretend-tested.
+- The non-unix transport stub compiles for Windows only in CI's cross-build;
+  nothing local proves it.
 - Journal durability is fsync-per-line by construction, not by test; the
   residual power-loss windows (a lost line detectable as a pid/seq gap; a
   duplicated observation) are documented in the journal module, not tested.
-- Single mutator only: lock behavior is exercised synthetically, not by
-  concurrent daemons (real contention is Tier 6 territory, M7+).
+- Concurrency is serialized by the store lock and exercised synthetically,
+  not by racing clients (Tier 6 harnesses are M7+ territory).
 - The service files stage correctly; whether rc(8)/systemd actually start the
   daemon from them belongs to M5's full-stack tier on the reaper guests.
 
@@ -80,10 +113,6 @@ the methodology's §15 says to build them.
 
 In adoption order (return on effort, per methodology §15):
 
-2. **Seeded fuzz** over `Ttl::parse` and `Inventory::parse` — the oracle is
-   "no panic, every rejection well-formed", the seed printed and replayable
-   through the environment. Arrives with the first externally-reachable input
-   surface (the daemon transport).
 3. **Error-injection integration** — drivers exercised against fake SSH/BMC/
    VNC transports that fail mid-operation; a half-applied grant must present
    as needing revert, never as open. Arrives with the driver trait.

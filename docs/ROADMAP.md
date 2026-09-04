@@ -52,7 +52,7 @@ Also landed in M1 (scope added during planning): FreeBSD rc.d script, systemd
 unit, and a DESTDIR-honoring service installer with its own test battery.
 Starting the daemon under rc/systemd for real remains an M5 claim.
 
-## M2 — Daemon transport and CLI wiring — IN PROGRESS, bumps to v0.2.0
+## M2 — Daemon transport and CLI wiring — DONE (2026-09-04), bumped to v0.2.0
 
 Wire-format decision (open question 1, resolved at milestone start):
 newline-delimited JSON over the unix socket — one request line, one response
