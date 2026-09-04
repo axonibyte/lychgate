@@ -140,6 +140,13 @@ fn pass(inventory: &Inventory, store: &Store, journal: &Mutex<Journal>) -> anyho
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // Handlers go in before anything observable happens — the moment the
+    // socket accepts, a SIGTERM must already shut down cleanly. Installing
+    // them after the bind left a window (widened by the journal's fsync)
+    // where a prompt SIGTERM killed the daemon with default disposition;
+    // the FreeBSD guest's e2e run caught it.
+    install_signal_handlers();
+
     if cli.interval == 0 {
         anyhow::bail!("--interval 0 is refused: a zero interval is a spin, not a daemon");
     }
@@ -182,7 +189,6 @@ fn main() -> anyhow::Result<()> {
             hosts: inventory.hosts.len(),
         },
     )?;
-    install_signal_handlers();
 
     println!(
         "lychgated: watching {} host(s); grants can be opened over the \
