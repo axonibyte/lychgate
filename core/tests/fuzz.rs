@@ -126,10 +126,10 @@ fn token_soup(rng: &mut Rng) -> String {
 
 fn mutated_valid(rng: &mut Rng) -> String {
     let valid = [
-        r#"{"proto":1,"op":"open","host":"db-01","ttl":"4h"}"#,
-        r#"{"proto":1,"op":"close","host":"db-01"}"#,
-        r#"{"proto":1,"op":"renew","host":"db-01","ttl":"90s"}"#,
-        r#"{"proto":1,"op":"status"}"#,
+        r#"{"proto":2,"op":"open","host":"db-01","ttl":"4h"}"#,
+        r#"{"proto":2,"op":"close","host":"db-01"}"#,
+        r#"{"proto":2,"op":"renew","host":"db-01","ttl":"90s"}"#,
+        r#"{"proto":2,"op":"status"}"#,
         "[[hosts]]\nname = \"a\"\naddress = \"b\"\nos = \"linux\"\nchannels = [\"ssh\"]\n",
         "15m",
     ];

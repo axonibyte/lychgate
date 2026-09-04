@@ -12,8 +12,12 @@ pub mod registry;
 pub mod snapshot;
 pub mod ttl;
 
-pub use grant::{CloseOutcome, Grant, GrantError, GrantStatus};
+pub use channel::{
+    apply_channels, revert_channels, ApplyOutcome, ChannelDriver, ChannelState, DriverError,
+    DriverSet, RevertOutcome,
+};
+pub use grant::{Grant, GrantError, GrantStatus};
 pub use inventory::{Channel, Host, Inventory, InventoryError, Os};
-pub use registry::{GrantRegistry, RegistryError};
-pub use snapshot::{OpenGrant, SnapshotError, StateDoc, STATE_VERSION};
+pub use registry::{ExpiredGrant, GrantRegistry, RegistryError};
+pub use snapshot::{GrantRecord, SnapshotError, StateDoc, STATE_VERSION};
 pub use ttl::{Ttl, TtlError, MAX_TTL_SECS, RENEWAL_WINDOW_SECS};

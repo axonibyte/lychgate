@@ -4,19 +4,21 @@ use crate::scratch::scratch_dir;
 use std::collections::BTreeMap;
 use std::time::UNIX_EPOCH;
 
-use lychgate_core::OpenGrant;
-
-fn open_grant(opened: u64, expires: u64) -> OpenGrant {
-    OpenGrant {
-        opened_at: UNIX_EPOCH + Duration::from_secs(opened),
-        expires_at: UNIX_EPOCH + Duration::from_secs(expires),
-    }
-}
+use lychgate_core::{Channel, GrantRecord};
 
 fn doc_with(host: &str) -> StateDoc {
     StateDoc {
         version: STATE_VERSION,
-        open_grants: BTreeMap::from([(host.to_string(), open_grant(1_000, 1_600))]),
+        grants: BTreeMap::from([(
+            host.to_string(),
+            GrantRecord {
+                state: "open".to_string(),
+                opened_at: Some(UNIX_EPOCH + Duration::from_secs(1_000)),
+                expires_at: Some(UNIX_EPOCH + Duration::from_secs(1_600)),
+                since: None,
+                channels: vec![Channel::Ssh],
+            },
+        )]),
     }
 }
 
@@ -85,10 +87,14 @@ fn a_corrupt_store_is_reported_not_silently_emptied() {
 fn a_store_from_another_version_is_refused_rather_than_misread() {
     let dir = scratch_dir("version");
     let path = dir.join("grants.json");
-    std::fs::write(&path, r#"{"version":99,"open_grants":{}}"#).unwrap();
+    std::fs::write(&path, r#"{"version":99,"grants":{}}"#).unwrap();
     let e = Store::at(&path).read().expect_err("should refuse");
     let msg = e.to_string();
-    assert!(msg.contains("99") && msg.contains('1'), "{msg}");
+    // Both versions named: the file's (99) and the one this binary speaks.
+    assert!(
+        msg.contains("99") && msg.contains(&STATE_VERSION.to_string()),
+        "{msg}"
+    );
     assert!(msg.contains("different version"), "{msg}");
 }
 

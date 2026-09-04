@@ -8,6 +8,11 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[features]
+# Exposes the scripted fake drivers to other crates' test suites (the
+# daemon's lifecycle tests). Never enabled by a release dependency.
+fakes = []
+
 [dependencies]
 serde = { workspace = true }
 # Production since M2: the wire protocol is JSON.

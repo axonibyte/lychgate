@@ -3,25 +3,20 @@
 //! Connections are handled one at a time — every mutation serializes on the
 //! store's lock anyway, and a break-glass control socket has no concurrency
 //! story worth buying complexity for. Transport failures on a connection are
-//! that connection's problem (logged, next accept proceeds); a journal
-//! failure is the daemon's problem and fatal, because accruing unrecorded
-//! transitions would defeat the audit record.
+//! that connection's problem (logged, next accept proceeds); a daemon-fatal
+//! failure (store I/O, journal write) stops the daemon.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 
-use lychgate_core::proto::{self, Response, Transition};
-use lychgate_core::{GrantRegistry, Inventory};
+use lychgate_core::proto::{self, Response};
 
-use crate::journal::{Event, Journal};
-use crate::store::Store;
-use crate::{channels_of, epoch_secs};
+use crate::lifecycle::Daemon;
 
 /// Claims the socket path. A live listener there means another daemon is
 /// running — a refusal, not a takeover. A dead one (connect refused) is
@@ -63,12 +58,10 @@ pub fn bind(path: &Path) -> anyhow::Result<UnixListener> {
 }
 
 /// Accept loop. Returns when `shutdown` is set; returns Err only on the
-/// fatal case (journal failure).
+/// daemon-fatal case surfaced by the lifecycle (store I/O, journal write).
 pub fn serve(
     listener: &UnixListener,
-    inventory: &Inventory,
-    store: &Store,
-    journal: &Mutex<Journal>,
+    daemon: &Daemon,
     shutdown: &AtomicBool,
 ) -> anyhow::Result<()> {
     loop {
@@ -76,11 +69,7 @@ pub fn serve(
             return Ok(());
         }
         match listener.accept() {
-            Ok((stream, _)) => {
-                // Journal failures are the only errors handle() returns;
-                // everything connection-scoped is dealt with inline.
-                handle(stream, inventory, store, journal)?;
-            }
+            Ok((stream, _)) => handle(stream, daemon)?,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -92,12 +81,7 @@ pub fn serve(
     }
 }
 
-fn handle(
-    stream: UnixStream,
-    inventory: &Inventory,
-    store: &Store,
-    journal: &Mutex<Journal>,
-) -> anyhow::Result<()> {
+fn handle(stream: UnixStream, daemon: &Daemon) -> anyhow::Result<()> {
     // Blocking I/O with a deadline on this one connection; the listener's
     // non-blocking flag must not leak onto the stream.
     stream.set_nonblocking(false).ok();
@@ -117,32 +101,9 @@ fn handle(
         return Ok(());
     }
 
-    let response = {
-        match proto::decode_request(line.trim_end_matches('\n')) {
-            Err(e) => Response::refused(e),
-            Ok(op) => {
-                let now = SystemTime::now();
-                let outcome = store.mutate(|doc| {
-                    let mut registry = GrantRegistry::from_parts(inventory, doc)
-                        .with_context(|| format!("validating {}", store.path().display()))?;
-                    let (response, transition) = proto::apply(&mut registry, &op, now);
-                    *doc = registry.snapshot();
-                    Ok((response, transition))
-                });
-                match outcome {
-                    Ok((response, transition)) => {
-                        if let Some(t) = transition {
-                            // After the state commit, and fatal on failure —
-                            // see the journal module docs.
-                            let mut journal = journal.lock().expect("journal mutex poisoned");
-                            journal.record(now, &transition_event(inventory, t))?;
-                        }
-                        response
-                    }
-                    Err(e) => Response::refused(format!("daemon error: {e:#}")),
-                }
-            }
-        }
+    let response = match proto::decode_request(line.trim_end_matches('\n')) {
+        Err(e) => Response::refused(e),
+        Ok(op) => daemon.dispatch(&op, SystemTime::now())?,
     };
 
     let mut out = response.encode();
@@ -151,29 +112,4 @@ fn handle(
         eprintln!("lychgated: response write failed: {e}");
     }
     Ok(())
-}
-
-fn transition_event(inventory: &Inventory, t: Transition) -> Event {
-    match t {
-        Transition::Opened {
-            host,
-            ttl_secs,
-            expires_at,
-        } => Event::Open {
-            channels: channels_of(inventory, &host),
-            host,
-            ttl_secs,
-            expires_at: epoch_secs(expires_at),
-        },
-        Transition::Renewed {
-            host,
-            ttl_secs,
-            expires_at,
-        } => Event::Renew {
-            host,
-            ttl_secs,
-            expires_at: epoch_secs(expires_at),
-        },
-        Transition::Closed { host } => Event::Close { host },
-    }
 }

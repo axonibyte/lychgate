@@ -1,4 +1,5 @@
 mod journal;
+mod lifecycle;
 mod listener;
 mod store;
 
@@ -9,14 +10,15 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 use clap::Parser;
 
-use lychgate_core::{Channel, GrantRegistry, GrantStatus, Inventory, OpenGrant};
+use lychgate_core::{DriverSet, GrantRegistry, Inventory};
 
 use crate::journal::{Event, Journal};
+use crate::lifecycle::Daemon;
 use crate::store::Store;
 
 #[derive(Parser)]
@@ -63,88 +65,11 @@ fn install_signal_handlers() {
     }
 }
 
-pub(crate) fn epoch_secs(t: SystemTime) -> u64 {
-    t.duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-pub(crate) fn channels_of(inventory: &Inventory, host: &str) -> Vec<Channel> {
-    inventory
-        .hosts
-        .iter()
-        .find(|h| h.name == host)
-        .map(|h| h.channels.clone())
-        .unwrap_or_default()
-}
-
-/// One pass: reap observed expiries under the store lock, then journal them.
-/// The journal write comes after the state commit on purpose — see the
-/// journal module docs for what that ordering does and does not promise.
-fn pass(inventory: &Inventory, store: &Store, journal: &Mutex<Journal>) -> anyhow::Result<()> {
-    let now = SystemTime::now();
-    let (expired, statuses) = store.mutate(|doc| {
-        let before = doc.open_grants.clone();
-        let mut registry = GrantRegistry::from_parts(inventory, doc)
-            .with_context(|| format!("validating {}", store.path().display()))?;
-        let reaped = registry.reap(now);
-        let expired: Vec<(String, OpenGrant)> = reaped
-            .into_iter()
-            .map(|host| {
-                let interval = before[&host];
-                (host, interval)
-            })
-            .collect();
-        let statuses: Vec<(String, GrantStatus)> = registry
-            .statuses(now)
-            .into_iter()
-            .map(|(h, s)| (h.to_string(), s))
-            .collect();
-        *doc = registry.snapshot();
-        Ok((expired, statuses))
-    })?;
-
-    for (host, interval) in &expired {
-        // A journal that cannot record is fatal: accruing unrecorded
-        // transitions would defeat the audit record.
-        journal.lock().expect("journal mutex poisoned").record(
-            now,
-            &Event::Expire {
-                host: host.clone(),
-                channels: channels_of(inventory, host),
-                opened_at: epoch_secs(interval.opened_at),
-                expires_at: epoch_secs(interval.expires_at),
-            },
-        )?;
-        println!(
-            "lychgated: grant for {host} expired; bookkeeping closed — \
-             no drivers yet, nothing was reverted on the host"
-        );
-    }
-
-    for (host, status) in &statuses {
-        match status {
-            GrantStatus::Closed => println!("lychgated: {host} closed"),
-            GrantStatus::Open { remaining } => {
-                println!("lychgated: {host} open, {}s remaining", remaining.as_secs())
-            }
-            // reap() ran in the same locked mutation, so nothing can still be
-            // observed expired here at the same `now`.
-            GrantStatus::Expired => println!("lychgated: {host} expired, reap pending"),
-        }
-    }
-
-    Ok(())
-}
-
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Handlers go in before anything observable happens — the moment the
-    // socket accepts, a SIGTERM must already shut down cleanly. Installing
-    // them after the bind left a window (widened by the journal's fsync)
-    // where a prompt SIGTERM killed the daemon with default disposition;
-    // the FreeBSD guest's e2e run caught it.
+    // socket accepts, a SIGTERM must already shut down cleanly.
     install_signal_handlers();
 
     if cli.interval == 0 {
@@ -153,12 +78,10 @@ fn main() -> anyhow::Result<()> {
 
     let text = fs::read_to_string(&cli.inventory)
         .with_context(|| format!("reading {}", cli.inventory.display()))?;
-    let inventory = Arc::new(
-        Inventory::parse(&text)
-            .with_context(|| format!("validating {}", cli.inventory.display()))?,
-    );
+    let inventory = Inventory::parse(&text)
+        .with_context(|| format!("validating {}", cli.inventory.display()))?;
 
-    let store = Arc::new(Store::at(cli.state_dir.join("grants.json")));
+    let store = Store::at(cli.state_dir.join("grants.json"));
     store.probe_writable()?;
     // Boot refusals happen before the first journal line: a run that is
     // refused journals nothing.
@@ -179,10 +102,8 @@ fn main() -> anyhow::Result<()> {
         Some(listener::bind(&socket_path)?)
     };
 
-    let journal = Arc::new(Mutex::new(Journal::open(
-        cli.state_dir.join("journal.jsonl"),
-    )?));
-    journal.lock().expect("journal mutex poisoned").record(
+    let mut journal = Journal::open(cli.state_dir.join("journal.jsonl"))?;
+    journal.record(
         SystemTime::now(),
         &Event::DaemonStart {
             inventory: cli.inventory.display().to_string(),
@@ -190,25 +111,33 @@ fn main() -> anyhow::Result<()> {
         },
     )?;
 
+    // The production driver set is empty until M4: an open grant changes
+    // bookkeeping and journal, not any host, and the daemon says so.
+    let daemon = Arc::new(Daemon {
+        inventory,
+        store,
+        journal: Mutex::new(journal),
+        drivers: Mutex::new(DriverSet::new()),
+    });
+
+    // Recover from a crash mid-open before serving anything.
+    daemon.boot_recover(SystemTime::now())?;
+
     println!(
         "lychgated: watching {} host(s); grants can be opened over the \
          control socket, but no drivers exist yet — an open grant changes \
          bookkeeping and journal, not any host",
-        inventory.hosts.len()
+        daemon.inventory.hosts.len()
     );
 
     let listener_thread = listener.map(|listener| {
-        let inventory = Arc::clone(&inventory);
-        let store = Arc::clone(&store);
-        let journal = Arc::clone(&journal);
-        std::thread::spawn(move || {
-            listener::serve(&listener, &inventory, &store, &journal, &SHUTDOWN)
-        })
+        let daemon = Arc::clone(&daemon);
+        std::thread::spawn(move || listener::serve(&listener, &daemon, &SHUTDOWN))
     });
 
     let mut fatal: Option<anyhow::Error> = None;
     loop {
-        pass(&inventory, &store, &journal)?;
+        daemon.pass(SystemTime::now())?;
 
         if cli.once {
             break;
@@ -221,7 +150,7 @@ fn main() -> anyhow::Result<()> {
                 break;
             }
             // A listener that stopped without a shutdown request hit the
-            // fatal path (journal failure): stop the daemon with it.
+            // fatal path: stop the daemon with it.
             if listener_thread.as_ref().is_some_and(|h| h.is_finished()) {
                 SHUTDOWN.store(true, Ordering::SeqCst);
                 break;
@@ -243,7 +172,8 @@ fn main() -> anyhow::Result<()> {
         let _ = fs::remove_file(&socket_path);
     }
 
-    journal
+    daemon
+        .journal
         .lock()
         .expect("journal mutex poisoned")
         .record(SystemTime::now(), &Event::DaemonStop)?;

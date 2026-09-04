@@ -103,7 +103,7 @@ fn a_single_pass_reaps_an_expired_grant_and_journals_it_before_exiting() {
     // clock this test runs under.
     let state_dir = state_with(
         &dir,
-        r#"{"version":1,"open_grants":{"db-01":{"opened_at":1000,"expires_at":1600}}}"#,
+        r#"{"version":2,"grants":{"db-01":{"state":"open","opened_at":1000,"expires_at":1600,"channels":[]}}}"#,
     );
 
     let out = run_once(&inv, &state_dir);
@@ -113,30 +113,27 @@ fn a_single_pass_reaps_an_expired_grant_and_journals_it_before_exiting() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // State rewritten: the grant is closed (absent), the version intact.
+    // State rewritten: the grant reverted to closed (absent), version intact.
     let doc = grants_doc(&state_dir);
-    assert_eq!(doc["version"], 1);
-    assert_eq!(doc["open_grants"], serde_json::json!({}));
+    assert_eq!(doc["version"], 2);
+    assert_eq!(doc["grants"], serde_json::json!({}));
 
-    // Journal: start, expire (with the interval and the host's channels),
-    // stop — seq counting from zero.
+    // Journal: the grant is observed expired (expire), then — with an empty
+    // driver set, nothing to revert — closed in the same pass (close). Seq
+    // counts from zero.
     let lines = journal_lines(&state_dir);
     let events: Vec<&str> = lines.iter().map(|l| l["event"].as_str().unwrap()).collect();
-    assert_eq!(events, ["daemon-start", "expire", "daemon-stop"]);
+    assert_eq!(events, ["daemon-start", "expire", "close", "daemon-stop"]);
     let seqs: Vec<u64> = lines.iter().map(|l| l["seq"].as_u64().unwrap()).collect();
-    assert_eq!(seqs, [0, 1, 2]);
+    assert_eq!(seqs, [0, 1, 2, 3]);
     let expire = &lines[1];
     assert_eq!(expire["host"], "db-01");
-    assert_eq!(
-        expire["channels"],
-        serde_json::json!(["ssh", "authorized-keys"])
-    );
+    // The stored grant recorded no applied channels (none were driven), so
+    // that is what the expire event carries.
+    assert_eq!(expire["channels"], serde_json::json!([]));
     assert_eq!(expire["opened_at"], 1000);
     assert_eq!(expire["expires_at"], 1600);
-
-    // The operator is told the truth about what "expired" means today.
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("nothing was reverted"), "{stdout}");
+    assert_eq!(lines[2]["host"], "db-01");
 }
 
 #[test]
@@ -151,7 +148,7 @@ fn a_kill_and_restart_observes_the_same_truth() {
         .as_secs();
     let (opened_at, expires_at) = (now - 3_600, now + 3_600);
     let future = format!(
-        r#"{{"version":1,"open_grants":{{"db-01":{{"opened_at":{opened_at},"expires_at":{expires_at}}}}}}}"#
+        r#"{{"version":2,"grants":{{"db-01":{{"state":"open","opened_at":{opened_at},"expires_at":{expires_at},"channels":[]}}}}}}"#
     );
     let state_dir = state_with(&dir, &future);
 
@@ -164,8 +161,8 @@ fn a_kill_and_restart_observes_the_same_truth() {
         String::from_utf8_lossy(&out.stderr)
     );
     let doc = grants_doc(&state_dir);
-    assert_eq!(doc["open_grants"]["db-01"]["opened_at"], opened_at);
-    assert_eq!(doc["open_grants"]["db-01"]["expires_at"], expires_at);
+    assert_eq!(doc["grants"]["db-01"]["opened_at"], opened_at);
+    assert_eq!(doc["grants"]["db-01"]["expires_at"], expires_at);
 
     // Kill a running daemon mid-flight (SIGKILL: no handler, no cleanup)...
     let mut child = Command::new(env!("CARGO_BIN_EXE_lychgated"))
@@ -191,8 +188,8 @@ fn a_kill_and_restart_observes_the_same_truth() {
         String::from_utf8_lossy(&out.stderr)
     );
     let doc = grants_doc(&state_dir);
-    assert_eq!(doc["open_grants"]["db-01"]["opened_at"], opened_at);
-    assert_eq!(doc["open_grants"]["db-01"]["expires_at"], expires_at);
+    assert_eq!(doc["grants"]["db-01"]["opened_at"], opened_at);
+    assert_eq!(doc["grants"]["db-01"]["expires_at"], expires_at);
 }
 
 #[test]
@@ -214,12 +211,13 @@ fn a_hand_corrupted_store_is_a_refusal_naming_the_file() {
 fn a_store_from_a_newer_version_is_refused_quoting_both_versions() {
     let dir = Scratch::new("newer");
     let inv = write_inventory(&dir);
-    let state_dir = state_with(&dir, r#"{"version":99,"open_grants":{}}"#);
+    let state_dir = state_with(&dir, r#"{"version":99,"grants":{}}"#);
 
     let out = run_once(&inv, &state_dir);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("99") && stderr.contains('1'), "{stderr}");
+    // Both versions named: the file's (99) and the one this binary speaks (2).
+    assert!(stderr.contains("99") && stderr.contains('2'), "{stderr}");
 }
 
 #[test]
@@ -228,7 +226,7 @@ fn a_store_naming_a_host_absent_from_the_inventory_is_refused_and_journals_nothi
     let inv = write_inventory(&dir);
     let state_dir = state_with(
         &dir,
-        r#"{"version":1,"open_grants":{"ghost":{"opened_at":1000,"expires_at":1600}}}"#,
+        r#"{"version":2,"grants":{"ghost":{"state":"open","opened_at":1000,"expires_at":1600,"channels":[]}}}"#,
     );
 
     let out = run_once(&inv, &state_dir);
@@ -237,7 +235,7 @@ fn a_store_naming_a_host_absent_from_the_inventory_is_refused_and_journals_nothi
     assert!(stderr.contains("ghost"), "{stderr}");
     assert_eq!(journal_lines(&state_dir).len(), 0);
     // Fail-closed: the refusal must not have rewritten the state either.
-    assert!(grants_doc(&state_dir)["open_grants"]["ghost"].is_object());
+    assert!(grants_doc(&state_dir)["grants"]["ghost"].is_object());
 }
 
 #[test]
@@ -452,8 +450,11 @@ fn the_operator_flow_works_end_to_end_through_both_binaries() {
     let open = &lines[1];
     assert_eq!(open["host"], "db-01");
     assert_eq!(open["ttl_secs"], 4 * 3600);
+    // No drivers yet: nothing was applied, but the declared channels are
+    // recorded so the audit trail shows what a grant reaches for.
+    assert_eq!(open["applied"], serde_json::json!([]));
     assert_eq!(
-        open["channels"],
+        open["declared"],
         serde_json::json!(["ssh", "authorized-keys"])
     );
     assert!(open["expires_at"].is_u64());
@@ -509,7 +510,7 @@ fn a_request_from_a_future_protocol_is_refused_over_the_socket() {
     let v: serde_json::Value = serde_json::from_str(reply.trim()).unwrap();
     assert_eq!(v["result"], "refused");
     let err = v["error"].as_str().unwrap();
-    assert!(err.contains("protocol 9") && err.contains('1'), "{err}");
+    assert!(err.contains("protocol 9") && err.contains('2'), "{err}");
 
     daemon.stop();
 }

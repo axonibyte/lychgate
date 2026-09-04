@@ -2,8 +2,7 @@ use super::fakes::{CallLog, FakeDriver, Script};
 use super::*;
 use crate::inventory::Inventory;
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 fn host() -> Host {
     Inventory::parse(
@@ -21,10 +20,10 @@ fn host() -> Host {
 }
 
 fn set_with(scripts: &[(Channel, Script)]) -> (DriverSet, CallLog) {
-    let log: CallLog = Rc::new(RefCell::new(Vec::new()));
+    let log: CallLog = Arc::new(Mutex::new(Vec::new()));
     let mut set = DriverSet::new();
     for &(channel, script) in scripts {
-        set.register(FakeDriver::new(channel, script, Rc::clone(&log)))
+        set.register(FakeDriver::new(channel, script, Arc::clone(&log)))
             .unwrap();
     }
     (set, log)
@@ -47,7 +46,7 @@ fn a_clean_apply_opens_every_channel_in_declaration_order() {
         }
     );
     assert_eq!(
-        *log.borrow(),
+        *log.lock().unwrap(),
         vec![
             (Channel::Ssh, "apply"),
             (Channel::AuthorizedKeys, "apply"),
@@ -85,7 +84,7 @@ fn a_mid_sequence_failure_reverts_the_applied_prefix_in_reverse() {
     // Second oracle: the calls themselves, in order — the unwind really
     // happened, and nothing was applied after the failure.
     assert_eq!(
-        *log.borrow(),
+        *log.lock().unwrap(),
         vec![
             (Channel::Ssh, "apply"),
             (Channel::AuthorizedKeys, "apply"),
@@ -120,7 +119,7 @@ fn a_first_channel_failure_applies_nothing_else() {
     }
     // Absence asserted, not just presence: the later channels were never
     // touched.
-    let touched: Vec<Channel> = log.borrow().iter().map(|(c, _)| *c).collect();
+    let touched: Vec<Channel> = log.lock().unwrap().iter().map(|(c, _)| *c).collect();
     assert!(!touched.contains(&Channel::AuthorizedKeys), "{touched:?}");
     assert!(!touched.contains(&Channel::Bmc), "{touched:?}");
 }
@@ -167,7 +166,7 @@ fn revert_attempts_every_channel_even_after_a_failure() {
     }
     // All three were attempted, in reverse of application order.
     assert_eq!(
-        *log.borrow(),
+        *log.lock().unwrap(),
         vec![
             (Channel::Bmc, "revert"),
             (Channel::AuthorizedKeys, "revert"),
@@ -207,12 +206,12 @@ fn reverting_a_channel_with_no_driver_is_stuck_not_skipped() {
 
 #[test]
 fn a_second_driver_for_the_same_channel_is_refused() {
-    let log: CallLog = Rc::new(RefCell::new(Vec::new()));
+    let log: CallLog = Arc::new(Mutex::new(Vec::new()));
     let mut set = DriverSet::new();
     set.register(FakeDriver::new(
         Channel::Ssh,
         Script::Succeed,
-        Rc::clone(&log),
+        Arc::clone(&log),
     ))
     .unwrap();
     let err = set
@@ -240,7 +239,7 @@ fn fake_verify_reads_the_state_the_fake_host_is_actually_in() {
     // higher tiers' second oracle is reading a constant.
     let (mut set, log) = set_with(&[(Channel::Ssh, Script::Succeed)]);
     let h = host();
-    fn driver(set: &mut DriverSet) -> &mut Box<dyn ChannelDriver> {
+    fn driver(set: &mut DriverSet) -> &mut Box<dyn ChannelDriver + Send> {
         set.drivers.get_mut(&Channel::Ssh).unwrap()
     }
     assert_eq!(driver(&mut set).verify(&h).unwrap(), ChannelState::Closed);
@@ -248,7 +247,7 @@ fn fake_verify_reads_the_state_the_fake_host_is_actually_in() {
     assert_eq!(driver(&mut set).verify(&h).unwrap(), ChannelState::Open);
     driver(&mut set).revert(&h).unwrap();
     assert_eq!(driver(&mut set).verify(&h).unwrap(), ChannelState::Closed);
-    assert_eq!(log.borrow().len(), 5);
+    assert_eq!(log.lock().unwrap().len(), 5);
 }
 
 #[test]

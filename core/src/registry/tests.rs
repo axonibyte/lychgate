@@ -1,5 +1,5 @@
 use super::*;
-use crate::inventory::Inventory;
+use crate::grant::GrantStatus;
 
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -30,12 +30,20 @@ fn inventory() -> Inventory {
     .expect("test inventory is legal")
 }
 
+fn chans() -> Vec<Channel> {
+    vec![Channel::Ssh, Channel::Bmc]
+}
+
+fn open(reg: &mut GrantRegistry, host: &str, now: SystemTime, secs: u64) {
+    reg.begin_open(host, now, &ttl(secs), chans()).unwrap();
+    reg.finish_open(host).unwrap();
+}
+
 #[test]
 fn every_inventory_host_starts_closed() {
     let reg = GrantRegistry::new(&inventory());
-    let statuses = reg.statuses(t(0));
     assert_eq!(
-        statuses,
+        reg.statuses(t(0)),
         vec![
             ("db-01", GrantStatus::Closed),
             ("web-02", GrantStatus::Closed)
@@ -47,19 +55,26 @@ fn every_inventory_host_starts_closed() {
 fn operations_on_unknown_hosts_are_refused_by_name() {
     let mut reg = GrantRegistry::new(&inventory());
     let refused = RegistryError::UnknownHost("ghost".into());
-    assert_eq!(reg.open("ghost", t(0), &ttl(600)), Err(refused.clone()));
-    assert_eq!(reg.close("ghost"), Err(refused.clone()));
+    assert_eq!(
+        reg.begin_open("ghost", t(0), &ttl(600), chans()),
+        Err(refused.clone())
+    );
+    assert_eq!(reg.finish_open("ghost"), Err(refused.clone()));
+    assert_eq!(reg.begin_revert("ghost", t(0)), Err(refused.clone()));
     assert_eq!(reg.renew("ghost", t(0), &ttl(600)), Err(refused.clone()));
     assert_eq!(reg.status("ghost", t(0)), Err(refused.clone()));
-    // The refusal names the host so the operator can spot the typo.
     assert!(refused.to_string().contains("ghost"));
 }
 
 #[test]
-fn opening_through_the_registry_delegates_to_the_grant() {
+fn the_full_open_lifecycle_delegates_to_the_grant() {
     let mut reg = GrantRegistry::new(&inventory());
-    let expires = reg.open("db-01", t(1_000), &ttl(600)).unwrap();
+    let expires = reg
+        .begin_open("db-01", t(1_000), &ttl(600), chans())
+        .unwrap();
     assert_eq!(expires, t(1_600));
+    assert_eq!(reg.status("db-01", t(1_100)), Ok(GrantStatus::Opening));
+    reg.finish_open("db-01").unwrap();
     assert_eq!(
         reg.status("db-01", t(1_100)),
         Ok(GrantStatus::Open {
@@ -73,79 +88,90 @@ fn opening_through_the_registry_delegates_to_the_grant() {
 #[test]
 fn grant_refusals_surface_through_the_registry_unaltered() {
     let mut reg = GrantRegistry::new(&inventory());
-    reg.open("db-01", t(1_000), &ttl(600)).unwrap();
+    open(&mut reg, "db-01", t(1_000), 600);
     assert_eq!(
-        reg.open("db-01", t(1_100), &ttl(600)),
+        reg.begin_open("db-01", t(1_100), &ttl(600), chans()),
         Err(RegistryError::Grant(GrantError::AlreadyOpen))
     );
 }
 
 #[test]
-fn renewing_through_the_registry_delegates_and_reports_the_new_expiry() {
+fn reap_transitions_every_expired_grant_to_needs_revert_with_its_interval() {
     let mut reg = GrantRegistry::new(&inventory());
-    reg.open("db-01", t(0), &ttl(600)).unwrap();
-    // 600s ttl, observed at 500s: 100s remain, inside the renewal window.
-    let expires = reg.renew("db-01", t(500), &ttl(600)).unwrap();
-    assert_eq!(expires, t(1_100));
-}
-
-#[test]
-fn closing_through_the_registry_reports_the_outcome() {
-    let mut reg = GrantRegistry::new(&inventory());
-    reg.open("db-01", t(0), &ttl(600)).unwrap();
-    assert_eq!(reg.close("db-01"), Ok(CloseOutcome::WasOpen));
-    assert_eq!(reg.close("db-01"), Ok(CloseOutcome::AlreadyClosed));
-}
-
-#[test]
-fn reap_closes_every_observed_expired_grant_and_returns_its_name() {
-    let mut reg = GrantRegistry::new(&inventory());
-    reg.open("db-01", t(0), &ttl(600)).unwrap();
-    reg.open("web-02", t(0), &ttl(600)).unwrap();
-    let reaped = reg.reap(t(1_000));
-    assert_eq!(reaped, vec!["db-01".to_string(), "web-02".to_string()]);
-    assert_eq!(reg.status("db-01", t(1_000)), Ok(GrantStatus::Closed));
-    assert_eq!(reg.status("web-02", t(1_000)), Ok(GrantStatus::Closed));
+    open(&mut reg, "db-01", t(0), 600);
+    open(&mut reg, "web-02", t(100), 600);
+    let expired = reg.reap_to_revert(t(1_000));
+    assert_eq!(
+        expired,
+        vec![
+            ExpiredGrant {
+                host: "db-01".into(),
+                opened_at: t(0),
+                expires_at: t(600),
+                channels: chans(),
+            },
+            ExpiredGrant {
+                host: "web-02".into(),
+                opened_at: t(100),
+                expires_at: t(700),
+                channels: chans(),
+            },
+        ]
+    );
+    assert_eq!(
+        reg.status("db-01", t(1_000)),
+        Ok(GrantStatus::NeedsRevert { channels: chans() })
+    );
 }
 
 #[test]
 fn reap_reports_an_expiry_exactly_once() {
     let mut reg = GrantRegistry::new(&inventory());
-    reg.open("db-01", t(0), &ttl(600)).unwrap();
-    assert_eq!(reg.reap(t(1_000)).len(), 1);
-    assert_eq!(reg.reap(t(1_000)), Vec::<String>::new());
+    open(&mut reg, "db-01", t(0), 600);
+    assert_eq!(reg.reap_to_revert(t(1_000)).len(), 1);
+    assert_eq!(reg.reap_to_revert(t(1_000)), Vec::new());
 }
 
 #[test]
-fn reap_leaves_open_and_closed_grants_untouched() {
+fn reap_leaves_open_closed_and_mid_open_grants_untouched() {
     let mut reg = GrantRegistry::new(&inventory());
-    // db-01 stays closed; web-02 is open and not yet expired.
-    reg.open("web-02", t(0), &ttl(600)).unwrap();
-    assert_eq!(reg.reap(t(100)), Vec::<String>::new());
-    assert_eq!(reg.status("db-01", t(100)), Ok(GrantStatus::Closed));
+    open(&mut reg, "db-01", t(0), 600);
+    reg.begin_open("web-02", t(0), &ttl(600), vec![Channel::Vnc])
+        .unwrap();
+    assert_eq!(reg.reap_to_revert(t(100)), Vec::new());
     assert_eq!(
-        reg.status("web-02", t(100)),
+        reg.status("db-01", t(100)),
         Ok(GrantStatus::Open {
             remaining: Duration::from_secs(500)
         })
     );
+    assert_eq!(reg.status("web-02", t(100)), Ok(GrantStatus::Opening));
 }
 
 #[test]
-fn statuses_reports_every_host_in_name_order() {
+fn needing_revert_lists_the_retry_set_in_name_order() {
     let mut reg = GrantRegistry::new(&inventory());
-    reg.open("web-02", t(0), &ttl(600)).unwrap();
-    let statuses = reg.statuses(t(100));
+    open(&mut reg, "db-01", t(0), 600);
+    reg.begin_revert("db-01", t(50)).unwrap();
+    reg.retain_stuck("db-01", vec![Channel::Bmc]).unwrap();
     assert_eq!(
-        statuses,
-        vec![
-            ("db-01", GrantStatus::Closed),
-            (
-                "web-02",
-                GrantStatus::Open {
-                    remaining: Duration::from_secs(500)
-                }
-            ),
-        ]
+        reg.needing_revert(t(60)),
+        vec![("db-01".to_string(), vec![Channel::Bmc])]
     );
+    reg.finish_revert("db-01").unwrap();
+    assert_eq!(reg.needing_revert(t(61)), Vec::new());
+}
+
+#[test]
+fn boot_demotion_turns_stored_opening_into_needs_revert_for_every_intended_channel() {
+    let mut reg = GrantRegistry::new(&inventory());
+    reg.begin_open("db-01", t(0), &ttl(600), chans()).unwrap();
+    let demoted = reg.demote_opening(t(10));
+    assert_eq!(demoted, vec![("db-01".to_string(), chans())]);
+    assert_eq!(
+        reg.status("db-01", t(10)),
+        Ok(GrantStatus::NeedsRevert { channels: chans() })
+    );
+    // Nothing else demoted, and a second demotion finds nothing.
+    assert_eq!(reg.demote_opening(t(11)), Vec::new());
 }

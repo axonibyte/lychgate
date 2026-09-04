@@ -10,15 +10,15 @@
 //! transport paraphrase of it.
 
 use std::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use crate::grant::{CloseOutcome, GrantStatus};
+use crate::grant::GrantStatus;
+use crate::inventory::Channel;
 use crate::registry::GrantRegistry;
-use crate::ttl::Ttl;
 
-pub const PROTO_VERSION: u32 = 1;
+pub const PROTO_VERSION: u32 = 2;
 
 /// A request larger than this is refused unread. Nothing legitimate on this
 /// protocol approaches it; without a cap, one connection could balloon the
@@ -154,8 +154,10 @@ pub fn encode_request(op: &Op) -> String {
 #[serde(rename_all = "kebab-case")]
 pub enum GrantState {
     Closed,
+    Opening,
     Open,
     Expired,
+    NeedsRevert,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,6 +166,53 @@ pub struct GrantLine {
     pub state: GrantState,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub remaining_secs: Option<u64>,
+    /// Present for needs-revert: the channels still awaiting revert.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub stuck_channels: Option<Vec<Channel>>,
+}
+
+/// Renders every grant for a status response, in name order. Pure; the
+/// daemon calls it inside its store read.
+pub fn status_lines(registry: &GrantRegistry, now: SystemTime) -> Vec<GrantLine> {
+    registry
+        .statuses(now)
+        .into_iter()
+        .map(|(host, status)| {
+            let host = host.to_string();
+            match status {
+                GrantStatus::Closed => GrantLine {
+                    host,
+                    state: GrantState::Closed,
+                    remaining_secs: None,
+                    stuck_channels: None,
+                },
+                GrantStatus::Opening => GrantLine {
+                    host,
+                    state: GrantState::Opening,
+                    remaining_secs: None,
+                    stuck_channels: None,
+                },
+                GrantStatus::Open { remaining } => GrantLine {
+                    host,
+                    state: GrantState::Open,
+                    remaining_secs: Some(remaining.as_secs()),
+                    stuck_channels: None,
+                },
+                GrantStatus::Expired => GrantLine {
+                    host,
+                    state: GrantState::Expired,
+                    remaining_secs: None,
+                    stuck_channels: None,
+                },
+                GrantStatus::NeedsRevert { channels } => GrantLine {
+                    host,
+                    state: GrantState::NeedsRevert,
+                    remaining_secs: None,
+                    stuck_channels: Some(channels),
+                },
+            }
+        })
+        .collect()
 }
 
 /// Flat on the wire: {"proto":1,"result":"ok",...} or
@@ -190,7 +239,7 @@ pub enum ResponseResult {
 }
 
 impl Response {
-    fn ok() -> Response {
+    pub fn ok() -> Response {
         Response {
             proto: PROTO_VERSION,
             result: ResponseResult::Ok,
@@ -216,132 +265,6 @@ impl Response {
 
     pub fn decode(line: &str) -> Result<Response, String> {
         serde_json::from_str(line).map_err(|e| e.to_string())
-    }
-}
-
-/// A state change the daemon must journal. Refusals and status reads are
-/// not transitions; a close that found the grant already closed is not one
-/// either.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Transition {
-    Opened {
-        host: String,
-        ttl_secs: u64,
-        expires_at: SystemTime,
-    },
-    Renewed {
-        host: String,
-        ttl_secs: u64,
-        expires_at: SystemTime,
-    },
-    Closed {
-        host: String,
-    },
-}
-
-fn epoch_secs(t: SystemTime) -> u64 {
-    t.duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// Executes one operation against the registry. Pure: the daemon wraps this
-/// in its store mutation and journals the returned transition after the
-/// state commits.
-pub fn apply(
-    registry: &mut GrantRegistry,
-    op: &Op,
-    now: SystemTime,
-) -> (Response, Option<Transition>) {
-    match op {
-        Op::Open { host, ttl } => {
-            let ttl = match Ttl::parse(ttl) {
-                Ok(t) => t,
-                Err(e) => return (Response::refused(e), None),
-            };
-            match registry.open(host, now, &ttl) {
-                Ok(expires_at) => (
-                    Response {
-                        expires_at: Some(epoch_secs(expires_at)),
-                        ..Response::ok()
-                    },
-                    Some(Transition::Opened {
-                        host: host.clone(),
-                        ttl_secs: ttl.duration().as_secs(),
-                        expires_at,
-                    }),
-                ),
-                Err(e) => (Response::refused(e), None),
-            }
-        }
-        Op::Renew { host, ttl } => {
-            let ttl = match Ttl::parse(ttl) {
-                Ok(t) => t,
-                Err(e) => return (Response::refused(e), None),
-            };
-            match registry.renew(host, now, &ttl) {
-                Ok(expires_at) => (
-                    Response {
-                        expires_at: Some(epoch_secs(expires_at)),
-                        ..Response::ok()
-                    },
-                    Some(Transition::Renewed {
-                        host: host.clone(),
-                        ttl_secs: ttl.duration().as_secs(),
-                        expires_at,
-                    }),
-                ),
-                Err(e) => (Response::refused(e), None),
-            }
-        }
-        Op::Close { host } => match registry.close(host) {
-            Ok(CloseOutcome::WasOpen) => (
-                Response {
-                    outcome: Some("was-open".to_string()),
-                    ..Response::ok()
-                },
-                Some(Transition::Closed { host: host.clone() }),
-            ),
-            Ok(CloseOutcome::AlreadyClosed) => (
-                Response {
-                    outcome: Some("already-closed".to_string()),
-                    ..Response::ok()
-                },
-                // Nothing changed; nothing to journal.
-                None,
-            ),
-            Err(e) => (Response::refused(e), None),
-        },
-        Op::Status => {
-            let grants = registry
-                .statuses(now)
-                .into_iter()
-                .map(|(host, status)| match status {
-                    GrantStatus::Closed => GrantLine {
-                        host: host.to_string(),
-                        state: GrantState::Closed,
-                        remaining_secs: None,
-                    },
-                    GrantStatus::Open { remaining } => GrantLine {
-                        host: host.to_string(),
-                        state: GrantState::Open,
-                        remaining_secs: Some(remaining.as_secs()),
-                    },
-                    GrantStatus::Expired => GrantLine {
-                        host: host.to_string(),
-                        state: GrantState::Expired,
-                        remaining_secs: None,
-                    },
-                })
-                .collect();
-            (
-                Response {
-                    grants: Some(grants),
-                    ..Response::ok()
-                },
-                None,
-            )
-        }
     }
 }
 

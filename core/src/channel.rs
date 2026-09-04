@@ -50,7 +50,7 @@ pub trait ChannelDriver {
 /// empty; fakes populate it in tests.
 #[derive(Default)]
 pub struct DriverSet {
-    drivers: BTreeMap<Channel, Box<dyn ChannelDriver>>,
+    drivers: BTreeMap<Channel, Box<dyn ChannelDriver + Send>>,
 }
 
 impl DriverSet {
@@ -61,7 +61,7 @@ impl DriverSet {
     /// Registers a driver. A second driver for the same channel is refused:
     /// two implementations fighting over one channel is a configuration
     /// error, not a fallback mechanism.
-    pub fn register(&mut self, driver: Box<dyn ChannelDriver>) -> Result<(), DriverError> {
+    pub fn register(&mut self, driver: Box<dyn ChannelDriver + Send>) -> Result<(), DriverError> {
         let channel = driver.channel();
         if self.drivers.contains_key(&channel) {
             return Err(DriverError(format!(
@@ -175,7 +175,7 @@ pub fn revert_channels(set: &mut DriverSet, host: &Host, channels: &[Channel]) -
     }
 }
 
-#[cfg(test)]
-pub(crate) mod fakes;
+#[cfg(any(test, feature = "fakes"))]
+pub mod fakes;
 #[cfg(test)]
 mod tests;

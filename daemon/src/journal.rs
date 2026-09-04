@@ -50,18 +50,31 @@ pub enum Event {
     DaemonStop,
     Open {
         host: String,
-        channels: Vec<Channel>,
+        /// What was actually applied (drivable channels); empty until M4.
+        applied: Vec<Channel>,
+        /// What the inventory declared for the host, applied or not.
+        declared: Vec<Channel>,
         ttl_secs: u64,
         expires_at: u64,
+    },
+    /// An apply failed; the applied prefix was unwound. `stuck` is what could
+    /// not be reverted and is now needs-revert (empty means a clean abort).
+    OpenFailed {
+        host: String,
+        failed: Channel,
+        stuck: Vec<Channel>,
+        error: String,
     },
     Renew {
         host: String,
         ttl_secs: u64,
         expires_at: u64,
     },
+    /// A grant fully reverted and closed (operator close or post-expiry).
     Close {
         host: String,
     },
+    /// A grant observed at/after expiry and moved to needs-revert.
     Expire {
         host: String,
         channels: Vec<Channel>,

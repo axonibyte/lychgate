@@ -116,10 +116,16 @@ fn run() -> anyhow::Result<ExitCode> {
                         println!("{}\topen\t{} remaining", g.host, human(secs))
                     }
                     (GrantState::Open, None) => println!("{}\topen", g.host),
+                    (GrantState::Opening, _) => println!("{}\topening", g.host),
                     (GrantState::Closed, _) => println!("{}\tclosed", g.host),
                     (GrantState::Expired, _) => {
                         println!("{}\texpired\trevert pending", g.host)
                     }
+                    (GrantState::NeedsRevert, _) => println!(
+                        "{}\tneeds-revert\t{:?}",
+                        g.host,
+                        g.stuck_channels.as_deref().unwrap_or(&[])
+                    ),
                 }
             }
         }

@@ -15,7 +15,7 @@ pub struct Inventory {
     pub hosts: Vec<Host>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Host {
     pub name: String,
