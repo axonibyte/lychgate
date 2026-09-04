@@ -90,7 +90,34 @@ request/response surface as a table.
 close a grant against a fake host entry, entirely through the real binaries,
 and the journal shows every step.
 
-## M3 — Driver trait and error-injection fakes — PLANNED
+## M3 — Driver trait and error-injection fakes — IN PROGRESS
+
+Design decisions, resolved at milestone start:
+
+- **Write-ahead intent.** Side effects never start from unrecorded state:
+  open persists `Opening` (with the channel list) before any driver runs,
+  then commits `Open` on success or `NeedsRevert` on failure. A daemon that
+  crashes mid-apply restarts into a store that says Opening — demoted to
+  NeedsRevert at boot, before the listener starts, when nothing can be
+  legitimately in flight. Driver I/O runs outside the store lock.
+- **The only stored path from Open to Closed is through NeedsRevert**: close
+  and expiry both persist NeedsRevert first, then revert, then commit
+  Closed. A crash mid-revert restarts into a state that keeps retrying —
+  never into a grant that quietly claims to be closed.
+- **NeedsRevert is retried by every pass.** The transition into NeedsRevert
+  is journaled with the error; per-retry failures go to stdout (the journal
+  records transitions, not each tick of a stuck state); the eventual success
+  journals the close.
+- **Open records its applied channels.** Revert targets what was actually
+  applied at open time, not what the inventory says at close time — an
+  inventory edited mid-grant must not change what gets reverted. Until real
+  drivers exist the applied list is honestly empty; the journal's open event
+  carries both applied and declared channels.
+- **State schema bumps to v2, protocol to v2** (new grant states on the
+  wire). v1 stores and v1 requests are refused with the existing
+  version-naming messages; there are no released versions to migrate.
+- Fakes live with the tests, never in release binaries; the daemon ships an
+  empty driver set until M4 and keeps saying so.
 
 The seam every channel plugs into, proven against failure before any real
 driver exists.

@@ -4,6 +4,7 @@
 //! observation (`Grant::status(now)`), so no background thread is required
 //! for a lapsed grant to read as expired.
 
+pub mod channel;
 pub mod grant;
 pub mod inventory;
 pub mod proto;
