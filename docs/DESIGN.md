@@ -72,6 +72,9 @@ that honors them exists.
 
 ## Driver roadmap (none of this exists yet)
 
+The milestone-level plan of record, with tests and acceptance criteria per
+step, is [ROADMAP.md](ROADMAP.md). The sketch below is the shape of it:
+
 1. **ssh** — toggle `PermitRootLogin` between a per-host default and an
    emergency value via an sshd_config drop-in plus reload; manage
    authorized_keys entries inside fenced, lychgate-owned blocks so human keys

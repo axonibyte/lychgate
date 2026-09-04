@@ -29,7 +29,8 @@ Grant policy, by design:
 This is a scaffold. The grant state machine, TTL policy, and inventory schema
 are real and tested; no driver exists yet, so nothing opens or closes access
 on an actual host. See [TESTING.md](TESTING.md) for exactly what is and is not
-proven, and [docs/DESIGN.md](docs/DESIGN.md) for where this is headed.
+proven, [docs/DESIGN.md](docs/DESIGN.md) for the architecture, and
+[docs/ROADMAP.md](docs/ROADMAP.md) for the milestone plan of record.
 
 ## Components
 
