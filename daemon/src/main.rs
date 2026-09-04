@@ -131,6 +131,9 @@ fn main() -> anyhow::Result<()> {
         store,
         journal: Mutex::new(journal),
         drivers: Mutex::new(driver_set),
+        deadman: Mutex::new(drivers::deadman::ExecDeadman::new(Box::new(
+            transport::ExecSshTransport,
+        ))),
     });
 
     // Recover from a crash mid-open before serving anything.

@@ -25,6 +25,7 @@ use lychgate_core::{
     Inventory, RegistryError, RevertOutcome, Ttl,
 };
 
+use crate::drivers::deadman::DeadmanControl;
 use crate::journal::{Event, Journal};
 use crate::store::Store;
 
@@ -39,6 +40,16 @@ pub struct Daemon {
     pub store: Store,
     pub journal: Mutex<Journal>,
     pub drivers: Mutex<DriverSet>,
+    pub deadman: Mutex<Box<dyn DeadmanControl>>,
+}
+
+/// The backstop rides the SSH transport, so only ssh-configured hosts get
+/// one; it exists to revert what the ssh-borne channels applied.
+fn wants_deadman(host: &Host, applied: &[Channel]) -> bool {
+    host.ssh.is_some()
+        && applied
+            .iter()
+            .any(|c| matches!(c, Channel::Ssh | Channel::AuthorizedKeys))
 }
 
 impl Daemon {
@@ -135,6 +146,48 @@ impl Daemon {
         // Step 3: commit the terminal state and journal it.
         match outcome {
             ApplyOutcome::Applied { applied } => {
+                // The backstop goes in before the grant may exist: a grant
+                // without its dead-man must not open. An install failure
+                // unwinds the freshly applied channels.
+                if wants_deadman(&host_cfg, &applied) {
+                    let installed = self
+                        .deadman
+                        .lock()
+                        .expect("deadman poisoned")
+                        .install(&host_cfg, expires);
+                    if let Err(error) = installed {
+                        let outcome = {
+                            let mut drivers = self.drivers.lock().expect("drivers poisoned");
+                            revert_channels(&mut drivers, &host_cfg, &applied)
+                        };
+                        let stuck: Vec<Channel> = match outcome {
+                            RevertOutcome::Reverted => Vec::new(),
+                            RevertOutcome::Stuck { stuck } => {
+                                stuck.into_iter().map(|(c, _)| c).collect()
+                            }
+                        };
+                        if stuck.is_empty() {
+                            self.with_registry(|reg| reg.abort_open(host))?
+                                .expect("an opening grant can always abort");
+                        } else {
+                            self.with_registry(|reg| reg.fail_open(host, stuck.clone(), now))?
+                                .expect("an opening grant can always fail");
+                        }
+                        self.journal(
+                            now,
+                            &Event::OpenFailed {
+                                host: host.to_string(),
+                                failed: Channel::Ssh,
+                                stuck,
+                                error: format!("dead-man install failed: {error}"),
+                            },
+                        )?;
+                        return Ok(Response::refused(format!(
+                            "open refused: the dead-man backstop could not be installed \
+                             ({error}); a grant without its backstop must not exist"
+                        )));
+                    }
+                }
                 self.with_registry(|reg| reg.finish_open(host))?
                     .expect("an opening grant can always finish");
                 self.journal(
@@ -191,6 +244,35 @@ impl Daemon {
             Ok(t) => t,
             Err(e) => return Ok(Response::refused(e)),
         };
+        // Dry-run first, then reschedule the backstop, then commit. Both
+        // failure orders are fail-closed: a rescheduled backstop with an
+        // uncommitted renewal fires late but the daemon still reverts at
+        // the old expiry; a refused reschedule refuses the renewal outright
+        // — extending the grant past its backstop would be fail-open.
+        let dry = {
+            let doc = self.store.read()?;
+            let mut probe = GrantRegistry::from_parts(&self.inventory, &doc)
+                .with_context(|| format!("validating {}", self.store.path().display()))?;
+            probe.renew(host, now, &ttl)
+        };
+        let expires = match dry {
+            Ok(expires) => expires,
+            Err(refusal) => return Ok(Response::refused(refusal)),
+        };
+        if let Some(host_cfg) = self.host(host) {
+            if host_cfg.ssh.is_some() {
+                if let Err(e) = self
+                    .deadman
+                    .lock()
+                    .expect("deadman poisoned")
+                    .reschedule(&host_cfg, expires)
+                {
+                    return Ok(Response::refused(format!(
+                        "renewal refused: the dead-man backstop could not be rescheduled ({e})"
+                    )));
+                }
+            }
+        }
         match self.with_registry(|reg| reg.renew(host, now, &ttl))? {
             Ok(expires) => {
                 self.journal(
@@ -253,12 +335,38 @@ impl Daemon {
         };
         match outcome {
             RevertOutcome::Reverted => {
+                // The backstop comes out only after everything it guards is
+                // reverted — a stuck revert keeps its dead-man. A removal
+                // failure keeps the grant needs-revert and is retried.
+                let mut deadman_fired = false;
+                if host_cfg.ssh.is_some() {
+                    match self
+                        .deadman
+                        .lock()
+                        .expect("deadman poisoned")
+                        .remove(&host_cfg)
+                    {
+                        Ok(fired) => deadman_fired = fired,
+                        Err(e) => {
+                            println!(
+                                "lychgated: {host} channels reverted but the dead-man \
+                                 removal failed ({e}); retrying next pass"
+                            );
+                            let _ = self
+                                .with_registry(|reg| reg.retain_stuck(host, channels.to_vec()))?;
+                            return Ok(RevertProgress::Stuck {
+                                stuck: channels.to_vec(),
+                            });
+                        }
+                    }
+                }
                 self.with_registry(|reg| reg.finish_revert(host))?
                     .expect("a needs-revert grant can always finish");
                 self.journal(
                     now,
                     &Event::Close {
                         host: host.to_string(),
+                        deadman_fired,
                     },
                 )?;
                 Ok(RevertProgress::Closed)

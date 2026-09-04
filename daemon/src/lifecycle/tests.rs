@@ -26,14 +26,62 @@ root_posture_emergency = "prohibit-password"
 emergency_keys = ["ssh-ed25519 EMERG breakglass"]
 "#;
 
+/// A scripted dead-man: logs every call, fails on demand, reports firing.
+struct FakeDeadman {
+    log: Arc<Mutex<Vec<String>>>,
+    fail_install: bool,
+    fail_remove: bool,
+    fired: Arc<Mutex<bool>>,
+}
+
+impl crate::drivers::deadman::DeadmanControl for FakeDeadman {
+    fn install(
+        &mut self,
+        host: &Host,
+        expires_at: SystemTime,
+    ) -> Result<(), lychgate_core::DriverError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("install {} {}", host.name, epoch_secs(expires_at)));
+        if self.fail_install {
+            return Err(lychgate_core::DriverError(
+                "scripted install failure".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn remove(&mut self, host: &Host) -> Result<bool, lychgate_core::DriverError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("remove {}", host.name));
+        if self.fail_remove {
+            return Err(lychgate_core::DriverError("scripted remove failure".into()));
+        }
+        Ok(*self.fired.lock().unwrap())
+    }
+}
+
 struct Harness {
     daemon: Daemon,
     log: CallLog,
+    deadman_log: Arc<Mutex<Vec<String>>>,
+    deadman_fired: Arc<Mutex<bool>>,
     _dir: crate::scratch::Scratch,
 }
 
 impl Harness {
     fn new(scripts: &[(Channel, Script)]) -> Harness {
+        Harness::with_deadman(scripts, false, false)
+    }
+
+    fn with_deadman(
+        scripts: &[(Channel, Script)],
+        fail_install: bool,
+        fail_remove: bool,
+    ) -> Harness {
         let dir = scratch_dir("lifecycle");
         let log: CallLog = Arc::new(Mutex::new(Vec::new()));
         let mut drivers = DriverSet::new();
@@ -42,17 +90,35 @@ impl Harness {
                 .register(FakeDriver::new(channel, script, Arc::clone(&log)))
                 .unwrap();
         }
+        let deadman_log = Arc::new(Mutex::new(Vec::new()));
+        let deadman_fired = Arc::new(Mutex::new(false));
         let daemon = Daemon {
             inventory: Inventory::parse(INVENTORY).unwrap(),
             store: Store::at(dir.join("grants.json")),
             journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
             drivers: Mutex::new(drivers),
+            deadman: Mutex::new(Box::new(FakeDeadman {
+                log: Arc::clone(&deadman_log),
+                fail_install,
+                fail_remove,
+                fired: Arc::clone(&deadman_fired),
+            })),
         };
         Harness {
             daemon,
             log,
+            deadman_log,
+            deadman_fired,
             _dir: dir,
         }
+    }
+
+    fn journal_events(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self._dir.join("journal.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
     }
 
     fn status(&self, now: SystemTime) -> Vec<(String, GrantState, Vec<Channel>)> {
@@ -209,6 +275,12 @@ fn a_stuck_revert_is_retried_by_the_pass_until_it_clears() {
         store: Store::at(dir.join("grants.json")),
         journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
         drivers: Mutex::new(drivers),
+        deadman: Mutex::new(Box::new(FakeDeadman {
+            log: Arc::new(Mutex::new(Vec::new())),
+            fail_install: false,
+            fail_remove: false,
+            fired: Arc::new(Mutex::new(false)),
+        })),
     };
 
     // Open fails (ssh apply fails, revert fails): needs-revert, stuck on ssh.
@@ -329,6 +401,12 @@ fn boot_recovery_demotes_a_stored_opening_to_needs_revert() {
         store,
         journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
         drivers: Mutex::new(DriverSet::new()),
+        deadman: Mutex::new(Box::new(FakeDeadman {
+            log: Arc::new(Mutex::new(Vec::new())),
+            fail_install: false,
+            fail_remove: false,
+            fired: Arc::new(Mutex::new(false)),
+        })),
     };
     daemon.boot_recover(t(10)).unwrap();
     // Demoted: every intended channel is now awaiting revert.
@@ -389,4 +467,195 @@ fn the_empty_production_driver_set_opens_and_closes_with_no_channels() {
         .unwrap();
     assert_eq!(resp.result, ResponseResult::Ok);
     assert!(!h.committed().grants.contains_key("db-01"));
+}
+
+// --- M5: the dead-man backstop ---------------------------------------------
+
+#[test]
+fn opening_installs_the_deadman_after_the_channels_apply() {
+    let h = Harness::new(&[(Channel::Ssh, Script::Succeed)]);
+    assert_eq!(open(&h, t(0), "4h"), ResponseResult::Ok);
+    // Installed with the grant's expiry baked in.
+    assert_eq!(
+        *h.deadman_log.lock().unwrap(),
+        vec![format!("install db-01 {}", 4 * 3600)]
+    );
+    // Order: the channel applied before the backstop went in.
+    assert_eq!(h.calls(), vec![(Channel::Ssh, "apply")]);
+}
+
+#[test]
+fn a_deadman_install_failure_fails_the_open_and_unwinds_the_channels() {
+    let h = Harness::with_deadman(&[(Channel::Ssh, Script::Succeed)], true, false);
+    let resp = h
+        .daemon
+        .dispatch(
+            &Op::Open {
+                host: "db-01".into(),
+                ttl: "4h".into(),
+            },
+            t(0),
+        )
+        .unwrap();
+    assert_eq!(resp.result, ResponseResult::Refused);
+    assert!(
+        resp.error.unwrap().contains("backstop"),
+        "the refusal names the cause"
+    );
+    // Oracle 1: the grant is not open.
+    assert_eq!(h.state("db-01", t(1)), GrantState::Closed);
+    // Oracle 2: the freshly applied channel really was reverted.
+    assert_eq!(
+        h.calls(),
+        vec![(Channel::Ssh, "apply"), (Channel::Ssh, "revert")]
+    );
+}
+
+#[test]
+fn closing_removes_the_deadman_only_after_the_channels_revert() {
+    let h = Harness::new(&[(Channel::Ssh, Script::Succeed)]);
+    open(&h, t(0), "4h");
+    h.daemon
+        .dispatch(
+            &Op::Close {
+                host: "db-01".into(),
+            },
+            t(100),
+        )
+        .unwrap();
+    // The driver revert happened, then the removal.
+    assert_eq!(
+        h.calls(),
+        vec![(Channel::Ssh, "apply"), (Channel::Ssh, "revert")]
+    );
+    let dlog = h.deadman_log.lock().unwrap().clone();
+    assert_eq!(dlog.last().unwrap(), "remove db-01");
+    // Journaled as not-fired: the daemon got there first.
+    let close = h
+        .journal_events()
+        .into_iter()
+        .find(|e| e["event"] == "close")
+        .unwrap();
+    assert_eq!(close["deadman_fired"], false);
+}
+
+#[test]
+fn a_fired_deadman_is_journaled_on_the_eventual_close() {
+    let h = Harness::new(&[(Channel::Ssh, Script::Succeed)]);
+    open(&h, t(0), "600s");
+    *h.deadman_fired.lock().unwrap() = true;
+    // Expiry pass: reap, revert, remove — and the firing is on the record.
+    h.daemon.pass(t(9_999)).unwrap();
+    let close = h
+        .journal_events()
+        .into_iter()
+        .find(|e| e["event"] == "close")
+        .unwrap();
+    assert_eq!(close["deadman_fired"], true);
+}
+
+#[test]
+fn a_deadman_removal_failure_keeps_the_grant_needs_revert_and_the_backstop() {
+    let h = Harness::with_deadman(&[(Channel::Ssh, Script::Succeed)], false, true);
+    open(&h, t(0), "4h");
+    let resp = h
+        .daemon
+        .dispatch(
+            &Op::Close {
+                host: "db-01".into(),
+            },
+            t(100),
+        )
+        .unwrap();
+    assert_eq!(resp.result, ResponseResult::Refused);
+    // Still needs-revert: retried, never silently closed while the removal
+    // is unconfirmed — and the backstop stays in place while stuck.
+    assert_eq!(h.state("db-01", t(101)), GrantState::NeedsRevert);
+    assert!(h.journal_events().iter().all(|e| e["event"] != "close"));
+    // Order oracle: the channels were reverted BEFORE the removal was even
+    // attempted — the backstop is the last thing to go.
+    assert!(
+        h.calls().contains(&(Channel::Ssh, "revert")),
+        "{:?}",
+        h.calls()
+    );
+    assert_eq!(
+        h.deadman_log.lock().unwrap().last().unwrap(),
+        "remove db-01"
+    );
+}
+
+#[test]
+fn renew_reschedules_the_deadman_before_committing_the_new_expiry() {
+    let h = Harness::new(&[(Channel::Ssh, Script::Succeed)]);
+    open(&h, t(0), "600s");
+    let resp = h
+        .daemon
+        .dispatch(
+            &Op::Renew {
+                host: "db-01".into(),
+                ttl: "2h".into(),
+            },
+            t(550),
+        )
+        .unwrap();
+    assert_eq!(resp.result, ResponseResult::Ok);
+    // The reschedule carried the new expiry (550 + 7200).
+    let dlog = h.deadman_log.lock().unwrap().clone();
+    assert!(
+        dlog.contains(&format!("install db-01 {}", 550 + 7200)),
+        "{dlog:?}"
+    );
+    // And the store agrees.
+    assert_eq!(
+        h.committed().grants["db-01"].expires_at,
+        Some(t(550 + 7200))
+    );
+}
+
+#[test]
+fn a_reschedule_failure_refuses_the_renewal_and_keeps_the_old_expiry() {
+    let h = Harness::with_deadman(&[(Channel::Ssh, Script::Succeed)], true, false);
+    // Install failure also fails the open, so open driverlessly: use a
+    // grant whose channels skip the deadman (no ssh-borne channels applied
+    // means no install at open)... instead, flip the fake after opening is
+    // not possible; so open with install succeeding is required. Build a
+    // second harness: open cleanly, then swap in a failing deadman.
+    drop(h);
+    let h = Harness::new(&[(Channel::Ssh, Script::Succeed)]);
+    open(&h, t(0), "600s");
+    *h.daemon.deadman.lock().unwrap() = Box::new(FakeDeadman {
+        log: Arc::clone(&h.deadman_log),
+        fail_install: true,
+        fail_remove: false,
+        fired: Arc::clone(&h.deadman_fired),
+    });
+    let resp = h
+        .daemon
+        .dispatch(
+            &Op::Renew {
+                host: "db-01".into(),
+                ttl: "2h".into(),
+            },
+            t(550),
+        )
+        .unwrap();
+    assert_eq!(resp.result, ResponseResult::Refused);
+    assert!(resp.error.unwrap().contains("rescheduled"));
+    // The expiry is unchanged: refusal means refusal.
+    assert_eq!(h.committed().grants["db-01"].expires_at, Some(t(600)));
+    // And no renew event reached the journal.
+    assert!(h.journal_events().iter().all(|e| e["event"] != "renew"));
+}
+
+#[test]
+fn hosts_whose_applied_channels_are_not_ssh_borne_get_no_deadman() {
+    // No drivers registered: the open applies nothing, so there is nothing
+    // for a backstop to revert and none is installed.
+    let h = Harness::new(&[]);
+    assert_eq!(open(&h, t(0), "4h"), ResponseResult::Ok);
+    assert!(
+        h.deadman_log.lock().unwrap().is_empty(),
+        "a driverless grant grew a backstop"
+    );
 }

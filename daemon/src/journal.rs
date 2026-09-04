@@ -71,8 +71,11 @@ pub enum Event {
         expires_at: u64,
     },
     /// A grant fully reverted and closed (operator close or post-expiry).
+    /// `deadman_fired` records whether the target's own backstop had already
+    /// reverted before the daemon got there.
     Close {
         host: String,
+        deadman_fired: bool,
     },
     /// A grant observed at/after expiry and moved to needs-revert.
     Expire {
