@@ -1,0 +1,138 @@
+# Pinned rather than :latest so a tag build today and a rebuild next year use
+# the same compiler. Bump deliberately, together with rust-version in
+# Cargo.toml and the nightly pin in ci/build-target.sh.
+image: rust:1.97
+
+definitions:
+  caches:
+    cargo:
+      key:
+        files:
+          - Cargo.lock
+      path: .cargo_cache
+
+  steps:
+    - step: &doMirror
+        name: Mirror repository
+        clone:
+          enabled: false
+        script:
+          - git clone --mirror git@bitbucket.org:${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
+          - cd ${BITBUCKET_REPO_SLUG}.git
+          - git push --mirror git@github.com:${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
+
+    - step: &doFetchAndTest
+        name: Fetch dependencies, lint and run tests
+        caches:
+          - cargo
+        script:
+          - export CARGO_HOME="$BITBUCKET_CLONE_DIR/.cargo_cache"
+          - rustup component add rustfmt clippy
+          - apt-get -qq update && apt-get -qq install -y shellcheck
+          - cargo fetch --locked
+          # The repository is kept fmt-clean and clippy-clean; the gate is what
+          # keeps it that way.
+          - cargo fmt --check
+          - cargo clippy --workspace --all-targets --locked -- -D warnings
+          - cargo test --workspace --release --locked
+          - shellcheck -x ci/build-target.sh tools/check.sh tools/lint-shell.sh
+
+    - step: &buildLinuxAmd64
+        name: Build x86_64-unknown-linux-gnu
+        caches:
+          - cargo
+        artifacts:
+          - dist/*
+        script:
+          - bash ci/build-target.sh x86_64-unknown-linux-gnu
+
+    - step: &buildLinuxArm64
+        name: Build aarch64-unknown-linux-gnu
+        caches:
+          - cargo
+        artifacts:
+          - dist/*
+        script:
+          - bash ci/build-target.sh aarch64-unknown-linux-gnu
+
+    - step: &buildFreebsdAmd64
+        name: Build x86_64-unknown-freebsd
+        caches:
+          - cargo
+        artifacts:
+          - dist/*
+        script:
+          - bash ci/build-target.sh x86_64-unknown-freebsd
+
+    - step: &buildFreebsdArm64
+        name: Build aarch64-unknown-freebsd
+        caches:
+          - cargo
+        artifacts:
+          - dist/*
+        script:
+          - bash ci/build-target.sh aarch64-unknown-freebsd
+
+    - step: &buildWindowsAmd64
+        # The daemon manages sshd, authorized_keys and BMCs on unix hosts and
+        # would be dead weight on Windows; the operator's workstation can be
+        # anything, so the client ships there too.
+        name: Build x86_64-pc-windows-gnu (client only)
+        caches:
+          - cargo
+        artifacts:
+          - dist/*
+        script:
+          - bash ci/build-target.sh x86_64-pc-windows-gnu
+
+    - step: &doDeploy
+        name: Deploy multi-target artifacts
+        script:
+          # The tag names the release; the workspace version names the files.
+          # Refuse to publish artifacts whose names contradict the tag.
+          - VERSION=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version *= *"\([^"]*\)".*/\1/p;}' Cargo.toml)
+          - test -n "${VERSION}"
+          - |
+            if [[ "${BITBUCKET_TAG}" != "v${VERSION}" ]]; then
+              echo "tag ${BITBUCKET_TAG} does not match workspace version v${VERSION}" >&2
+              exit 1
+            fi
+          - |
+            for f in dist/*; do
+              if [[ -f "$f" && "$f" != *.sha256 ]]; then
+                echo "Uploading $f..."
+                sha256sum "$f" | awk '{ print $1 }' > "${f}.sha256"
+                curl -sS --fail-with-body \
+                  -H "Authorization: Bearer ${BB_PUB_SECRET}" \
+                  -X POST "https://api.bitbucket.org/2.0/repositories/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}/downloads" \
+                  --form files=@"${f}" --form files=@"${f}.sha256"
+                echo "Uploaded $f + checksum"
+              fi
+            done
+
+pipelines:
+  branches:
+    main:
+      - step: *doMirror
+      - step: *doFetchAndTest
+      - parallel: &buildAll
+          steps:
+            - step: *buildLinuxAmd64
+            - step: *buildLinuxArm64
+            - step: *buildFreebsdAmd64
+            - step: *buildFreebsdArm64
+            - step: *buildWindowsAmd64
+
+    '{feature/**,bugfix/**,release/**,hotfix/**}':
+      - step: *doMirror
+      - step: *doFetchAndTest
+
+    '**':
+      - step: *doMirror
+
+  tags:
+    '**':
+      - step: *doMirror
+      - step: *doFetchAndTest
+      - parallel: *buildAll
+      - step: *doDeploy
