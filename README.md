@@ -43,7 +43,7 @@ proven, [docs/DESIGN.md](docs/DESIGN.md) for the architecture, and
 
 ### From source
 
-Requires Rust 1.97+ and Cargo.
+Requires Rust 1.96+ and Cargo.
 
 ```sh
 cargo build --release --workspace

@@ -5,7 +5,11 @@ members = ["core", "cli", "daemon"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.97"
+# The floor, not the pin: the oldest toolchain the workspace is proven on
+# (FreeBSD 15.1's pkg rust, 1.96). CI builds pin rust:1.97 in
+# bitbucket-pipelines.yml; bump that deliberately and this only when the
+# floor genuinely rises.
+rust-version = "1.96"
 license = "BSD-2-Clause"
 authors = ["Axonibyte Innovations, LLC"]
 repository = "https://bitbucket.org/axonibyte/lychgate"
