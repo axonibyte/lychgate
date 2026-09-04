@@ -10,7 +10,6 @@ repository.workspace = true
 
 [dependencies]
 serde = { workspace = true }
-toml = { workspace = true }
-
-[dev-dependencies]
+# Production since M2: the wire protocol is JSON.
 serde_json = { workspace = true }
+toml = { workspace = true }

@@ -52,7 +52,15 @@ Also landed in M1 (scope added during planning): FreeBSD rc.d script, systemd
 unit, and a DESTDIR-honoring service installer with its own test battery.
 Starting the daemon under rc/systemd for real remains an M5 claim.
 
-## M2 — Daemon transport and CLI wiring — PLANNED, bumps to v0.2.0
+## M2 — Daemon transport and CLI wiring — IN PROGRESS, bumps to v0.2.0
+
+Wire-format decision (open question 1, resolved at milestone start):
+newline-delimited JSON over the unix socket — one request line, one response
+line, `proto` version field on both. serde_json escapes embedded newlines,
+so line framing is unambiguous; it matches the journal's framing discipline
+and is debuggable with nc(1). Requests are capped at 64 KiB per line. The
+socket doubles as single-instance enforcement (the M1 deferral): a second
+daemon refuses to start while the first holds the socket.
 
 The CLI's honest bail messages are replaced by honest work.
 

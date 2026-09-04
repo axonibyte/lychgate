@@ -6,6 +6,7 @@
 
 pub mod grant;
 pub mod inventory;
+pub mod proto;
 pub mod registry;
 pub mod snapshot;
 pub mod ttl;
