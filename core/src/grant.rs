@@ -148,5 +148,31 @@ impl Default for Grant {
     }
 }
 
+impl Grant {
+    /// The recorded open interval, for the snapshot layer. Stored state, not
+    /// an observation: an expired-but-unreaped grant still reports its
+    /// interval.
+    pub(crate) fn open_parts(&self) -> Option<(SystemTime, SystemTime)> {
+        match self.state {
+            GrantState::Open {
+                opened_at,
+                expires_at,
+            } => Some((opened_at, expires_at)),
+            GrantState::Closed => None,
+        }
+    }
+
+    /// Rebuilds a grant a snapshot recorded as open. Interval sanity (order,
+    /// cap) is the snapshot layer's job before this is called.
+    pub(crate) fn restore_open(opened_at: SystemTime, expires_at: SystemTime) -> Grant {
+        Grant {
+            state: GrantState::Open {
+                opened_at,
+                expires_at,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

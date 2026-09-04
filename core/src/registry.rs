@@ -95,6 +95,25 @@ impl GrantRegistry {
             .collect()
     }
 
+    /// For the snapshot layer: stored grants in name order.
+    pub(crate) fn grants(&self) -> impl Iterator<Item = (&str, &Grant)> {
+        self.grants.iter().map(|(name, g)| (name.as_str(), g))
+    }
+
+    /// For the snapshot layer: whether this host is in the inventory the
+    /// registry was built from.
+    pub(crate) fn knows(&self, host: &str) -> bool {
+        self.grants.contains_key(host)
+    }
+
+    /// For the snapshot layer: replace a known host's grant with restored
+    /// state. Membership is checked by the caller before this runs.
+    pub(crate) fn restore(&mut self, host: &str, grant: Grant) {
+        if let Some(slot) = self.grants.get_mut(host) {
+            *slot = grant;
+        }
+    }
+
     /// Transitions every observed-Expired grant to Closed and returns the
     /// host names, in name order. Journal-once: a second reap at the same
     /// instant returns nothing. (M3+: revert slots in before the close.)
