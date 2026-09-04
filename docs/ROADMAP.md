@@ -290,7 +290,46 @@ posture + fence before the daemon returns to reconcile), and its
 backstop is removed. `e2e/service-start.sh` redeems the M1-deferred claim:
 rc(8) and systemd really start and stop the daemon.
 
-## M6 — BMC driver — PLANNED, bumps to v0.4.0
+## M6 — BMC driver — IN PROGRESS, bumps to v0.4.0
+
+Design decisions, resolved at milestone start:
+
+- **No HTTP client dependency in the daemon.** Redfish is driven by shelling
+  out to curl (like the ssh driver shells out to ssh): the request bodies and
+  the response parsing are pure string logic in `core/src/bmc.rs`, fixture-
+  tested and fuzzed; the transport is a `BmcTransport` seam. A real HTTP
+  crate would pull native-tls or a rustls stack across the whole build for
+  one caller.
+- **Password generation lives in core, deterministic under test.** A
+  `PasswordGen` trait (production: `/dev/urandom`; tests: a seeded stub)
+  yields the fresh per-open secret. The generated password is never written
+  to the journal or to stdout logging — the audit trail records that a BMC
+  account was enabled, never its credential. Its one delivery is the CLI
+  open response, shown to the operator once.
+- **Escrow is a seam, off by default.** An `Escrow` trait takes the generated
+  password at open; M6 ships a no-op default and leaves the ddwill-backed
+  implementation for later, so the driver never hard-depends on escrow.
+- **Inventory grows `[hosts.bmc]`**, required exactly when the host declares
+  a `bmc` channel: endpoint URL, the break-glass account's username (and its
+  Redfish account id / slot), TLS trust (`ca-file` path or an explicit
+  `insecure` opt-in that must be spelled out, never defaulted), the
+  authenticating credential source, and a `method` (redfish now; racadm and
+  ipmitool are named-but-unimplemented, refused at load with "not yet" so the
+  vocabulary is reserved without pretending).
+- **Revert disables, never deletes.** The break-glass account is a fixture on
+  the iDRAC that lychgate enables/disables and whose password it rotates;
+  deleting and recreating accounts races the BMC's own slot management.
+  Verify reads `Enabled` back through the same API.
+- **No dead-man for BMC.** The crontab backstop rides SSH to a host with a
+  shell; an iDRAC has neither. Expiry enforcement for the bmc channel lives
+  solely in lychgated (the daemon's reap loop), and that residual — a BMC
+  account stays enabled if the daemon dies for longer than the grant — is
+  documented, not hidden. (A future iDRAC-side scheduled disable, if one
+  exists, is an open question deferred to when it matters.)
+- **Acceptance uses a Redfish simulator** (sushy-emulator in a container on
+  the guest) if one can be stood up; otherwise the BMC claim is fixture- and
+  fake-proven only, stated plainly in TESTING.md. A real bench iDRAC is the
+  ceiling, out of reach in CI.
 
 iDRAC accounts join the grant.
 

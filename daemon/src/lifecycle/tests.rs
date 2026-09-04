@@ -24,6 +24,15 @@ agent_user = "lychgate"
 root_posture_default = "no"
 root_posture_emergency = "prohibit-password"
 emergency_keys = ["ssh-ed25519 EMERG breakglass"]
+
+[hosts.bmc]
+endpoint = "https://10.0.9.5"
+method = "redfish"
+account_user = "breakglass"
+account_id = "4"
+auth_user = "admin"
+auth_password_file = "/etc/lychgate/bmc.pw"
+tls = { mode = "insecure" }
 "#;
 
 /// A scripted dead-man: logs every call, fails on demand, reports firing.

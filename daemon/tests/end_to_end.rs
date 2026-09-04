@@ -52,6 +52,15 @@ address = "10.0.4.11"
 os = "freebsd"
 channels = ["bmc"]
 
+[hosts.bmc]
+endpoint = "https://10.0.9.5"
+method = "redfish"
+account_user = "breakglass"
+account_id = "4"
+auth_user = "admin"
+auth_password_file = "/etc/lychgate/bmc.pw"
+tls = { mode = "insecure" }
+
 [[hosts]]
 name = "web-02"
 address = "10.0.4.12"
@@ -300,7 +309,7 @@ fn sigterm_ends_the_loop_with_a_daemon_stop_entry() {
         .expect("spawn lychgated");
     // Let it get through boot and the first pass. Assert the precondition
     // (it journaled its start) before asserting anything about the stop.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while journal_lines(&state_dir).is_empty() {
         assert!(std::time::Instant::now() < deadline, "daemon never started");
         std::thread::sleep(Duration::from_millis(100));
@@ -323,14 +332,36 @@ fn sigterm_ends_the_loop_with_a_daemon_stop_entry() {
 /// Integration tests only guarantee same-package binaries, so build it if a
 /// narrower test invocation (cargo test -p lychgated) has not.
 fn lychgate_bin() -> PathBuf {
-    let path = Path::new(env!("CARGO_BIN_EXE_lychgated")).with_file_name("lychgate");
-    if !path.exists() {
-        let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-            .args(["build", "-p", "lychgate"])
-            .status()
-            .expect("spawn cargo build");
+    // The CLI is a different package than lychgated, so cargo does not build
+    // it for this integration test — we build it on demand. Two hazards this
+    // guards, both seen in CI and under parallel load: the profile must match
+    // (the pipeline runs the suite with --release, so target/release/lychgate,
+    // not debug), derived from where lychgated itself landed; and the build
+    // must happen exactly once even when many tests call this at once, or
+    // concurrent `cargo build` invocations race and a test spawns a
+    // half-written binary.
+    use std::sync::Once;
+    static BUILD: Once = Once::new();
+
+    let daemon = PathBuf::from(env!("CARGO_BIN_EXE_lychgated"));
+    let dir = daemon.parent().expect("daemon binary has a parent dir");
+    let release = dir.file_name().is_some_and(|n| n == "release");
+    let path = dir.join("lychgate");
+
+    BUILD.call_once(|| {
+        let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+        cmd.args(["build", "-p", "lychgate", "--locked"]);
+        if release {
+            cmd.arg("--release");
+        }
+        let status = cmd.status().expect("spawn cargo build");
         assert!(status.success(), "building the lychgate CLI failed");
-    }
+    });
+    assert!(
+        path.exists(),
+        "lychgate binary missing at {}",
+        path.display()
+    );
     path
 }
 
@@ -353,7 +384,7 @@ impl Daemon {
         // Precondition asserted before anything else: the daemon is up and
         // its socket *accepts* — existence alone is not enough, because a
         // stale socket file from a prior daemon can already be present.
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         loop {
             if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
                 break;

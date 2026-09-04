@@ -26,6 +26,46 @@ pub struct Host {
     /// `authorized-keys` channel; refused otherwise (dead config is a typo).
     #[serde(default)]
     pub ssh: Option<SshConfig>,
+    /// Required exactly when the host declares a `bmc` channel.
+    #[serde(default)]
+    pub bmc: Option<BmcConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BmcMethod {
+    Redfish,
+    Racadm,
+    Ipmitool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "kebab-case")]
+pub enum BmcTls {
+    /// Verify the endpoint's certificate against this CA bundle.
+    CaFile { path: String },
+    /// Skip verification. Must be spelled out in the inventory; never the
+    /// default, because a break-glass control channel over unverified TLS is
+    /// a decision an operator makes on purpose, not one lychgate makes for
+    /// them.
+    Insecure,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BmcConfig {
+    /// The Redfish base URL, e.g. "https://10.0.9.5".
+    pub endpoint: String,
+    pub method: BmcMethod,
+    /// The break-glass account's username and its AccountService slot id.
+    pub account_user: String,
+    pub account_id: String,
+    /// How the daemon authenticates to the BMC to drive AccountService.
+    pub auth_user: String,
+    /// Path to a file holding the auth password (never inline in the
+    /// inventory — the inventory is world-readable config, not a secret store).
+    pub auth_password_file: String,
+    pub tls: BmcTls,
 }
 
 fn default_ssh_port() -> u16 {
@@ -123,6 +163,17 @@ pub enum InventoryError {
         host: String,
         message: String,
     },
+    BmcConfigMissing {
+        host: String,
+    },
+    BmcConfigUnused {
+        host: String,
+    },
+    /// A method named in the schema but not implemented yet.
+    BmcMethodUnimplemented {
+        host: String,
+        method: String,
+    },
 }
 
 impl fmt::Display for InventoryError {
@@ -161,6 +212,18 @@ impl fmt::Display for InventoryError {
             InventoryError::BadEmergencyKey { host, message } => {
                 write!(f, "host {host:?}: {message}")
             }
+            InventoryError::BmcConfigMissing { host } => write!(
+                f,
+                "host {host:?} declares a bmc channel but has no [hosts.bmc] config"
+            ),
+            InventoryError::BmcConfigUnused { host } => write!(
+                f,
+                "host {host:?} has [hosts.bmc] config but declares no bmc channel; dead config is a typo"
+            ),
+            InventoryError::BmcMethodUnimplemented { host, method } => write!(
+                f,
+                "host {host:?}: bmc method {method:?} is not implemented yet; only redfish is"
+            ),
         }
     }
 }
@@ -238,6 +301,31 @@ impl Inventory {
                                 message: e.to_string(),
                             });
                         }
+                    }
+                }
+                (None, false) => {}
+            }
+
+            let wants_bmc = host.channels.contains(&Channel::Bmc);
+            match (&host.bmc, wants_bmc) {
+                (None, true) => {
+                    return Err(InventoryError::BmcConfigMissing {
+                        host: host.name.clone(),
+                    })
+                }
+                (Some(_), false) => {
+                    return Err(InventoryError::BmcConfigUnused {
+                        host: host.name.clone(),
+                    })
+                }
+                (Some(bmc), true) => {
+                    // Reserve the vocabulary without pretending: racadm and
+                    // ipmitool parse but are refused at load until they exist.
+                    if bmc.method != BmcMethod::Redfish {
+                        return Err(InventoryError::BmcMethodUnimplemented {
+                            host: host.name.clone(),
+                            method: format!("{:?}", bmc.method).to_lowercase(),
+                        });
                     }
                 }
                 (None, false) => {}

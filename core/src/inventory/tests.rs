@@ -14,7 +14,7 @@ fn a_single_host_with_its_fields_parses_intact() {
         name = "db-01"
         address = "10.0.4.11"
         os = "freebsd"
-        channels = ["bmc", "vnc"]
+        channels = ["vnc"]
         "#,
     )
     .unwrap();
@@ -24,8 +24,9 @@ fn a_single_host_with_its_fields_parses_intact() {
             name: "db-01".into(),
             address: "10.0.4.11".into(),
             os: Os::Freebsd,
-            channels: vec![Channel::Bmc, Channel::Vnc],
+            channels: vec![Channel::Vnc],
             ssh: None,
+            bmc: None,
         }]
     );
 }
@@ -44,7 +45,7 @@ fn multiple_hosts_parse_in_declaration_order() {
         name = "db-01"
         address = "10.0.4.11"
         os = "freebsd"
-        channels = ["bmc"]
+        channels = ["vnc"]
         "#,
     )
     .unwrap();
@@ -66,7 +67,7 @@ fn host_with(name: &str, address: &str, channels: &str) -> String {
 
 #[test]
 fn two_hosts_with_the_same_name_are_rejected() {
-    let toml = host_with("db-01", "10.0.4.11", r#"["bmc"]"#)
+    let toml = host_with("db-01", "10.0.4.11", r#"["vnc"]"#)
         + &host_with("db-01", "10.0.4.12", r#"["vnc"]"#);
     assert_eq!(
         Inventory::parse(&toml),
@@ -76,13 +77,13 @@ fn two_hosts_with_the_same_name_are_rejected() {
 
 #[test]
 fn a_host_with_an_empty_name_is_rejected() {
-    let toml = host_with("", "10.0.4.11", r#"["bmc"]"#);
+    let toml = host_with("", "10.0.4.11", r#"["vnc"]"#);
     assert_eq!(Inventory::parse(&toml), Err(InventoryError::EmptyHostName));
 }
 
 #[test]
 fn a_host_with_an_empty_address_is_rejected() {
-    let toml = host_with("db-01", "", r#"["bmc"]"#);
+    let toml = host_with("db-01", "", r#"["vnc"]"#);
     assert_eq!(
         Inventory::parse(&toml),
         Err(InventoryError::EmptyAddress {
@@ -104,7 +105,7 @@ fn a_host_with_no_channels_is_rejected() {
 
 #[test]
 fn a_host_listing_the_same_channel_twice_is_rejected() {
-    let toml = host_with("db-01", "10.0.4.11", r#"["bmc", "bmc"]"#);
+    let toml = host_with("db-01", "10.0.4.11", r#"["vnc", "vnc"]"#);
     assert_eq!(
         Inventory::parse(&toml),
         Err(InventoryError::DuplicateChannel {
@@ -129,7 +130,7 @@ fn an_unknown_operating_system_is_rejected() {
         name = "db-01"
         address = "10.0.4.11"
         os = "plan9"
-        channels = ["bmc"]
+        channels = ["vnc"]
     "#;
     assert!(matches!(
         Inventory::parse(toml),
@@ -146,7 +147,7 @@ fn an_unrecognized_field_is_rejected_rather_than_ignored() {
         name = "db-01"
         address = "10.0.4.11"
         os = "linux"
-        channels = ["bmc"]
+        channels = ["vnc"]
         favourite_colour = "red"
     "#;
     assert!(matches!(
@@ -216,7 +217,7 @@ fn ssh_config_on_a_host_without_ssh_channels_is_refused_as_dead_config() {
         name = "db-01"
         address = "10.0.4.11"
         os = "freebsd"
-        channels = ["bmc"]
+        channels = ["vnc"]
 
         [hosts.ssh]
         agent_user = "lychgate"
@@ -317,4 +318,138 @@ fn an_ssh_channel_whose_emergency_posture_equals_the_default_is_refused() {
             host: "db-01".into()
         })
     );
+}
+
+// --- [hosts.bmc] coupling (M6) ---------------------------------------------
+
+const BMC_HOST: &str = r#"
+[[hosts]]
+name = "idrac-01"
+address = "10.0.9.5"
+os = "linux"
+channels = ["bmc"]
+
+[hosts.bmc]
+endpoint = "https://10.0.9.5"
+method = "redfish"
+account_user = "breakglass"
+account_id = "4"
+auth_user = "admin"
+auth_password_file = "/etc/lychgate/bmc.pw"
+tls = { mode = "ca-file", path = "/etc/ssl/idrac-ca.pem" }
+"#;
+
+#[test]
+fn a_full_bmc_config_parses_with_its_fields_intact() {
+    let inv = Inventory::parse(BMC_HOST).unwrap();
+    let bmc = inv.hosts[0].bmc.as_ref().unwrap();
+    assert_eq!(bmc.endpoint, "https://10.0.9.5");
+    assert_eq!(bmc.method, crate::inventory::BmcMethod::Redfish);
+    assert_eq!(bmc.account_user, "breakglass");
+    assert_eq!(bmc.account_id, "4");
+    assert_eq!(
+        bmc.tls,
+        crate::inventory::BmcTls::CaFile {
+            path: "/etc/ssl/idrac-ca.pem".into()
+        }
+    );
+}
+
+#[test]
+fn a_bmc_channel_without_bmc_config_is_refused() {
+    let toml = r#"
+        [[hosts]]
+        name = "idrac-01"
+        address = "10.0.9.5"
+        os = "linux"
+        channels = ["bmc"]
+    "#;
+    assert_eq!(
+        Inventory::parse(toml),
+        Err(InventoryError::BmcConfigMissing {
+            host: "idrac-01".into()
+        })
+    );
+}
+
+#[test]
+fn bmc_config_on_a_host_without_a_bmc_channel_is_refused_as_dead_config() {
+    let toml = r#"
+        [[hosts]]
+        name = "idrac-01"
+        address = "10.0.9.5"
+        os = "linux"
+        channels = ["vnc"]
+
+        [hosts.bmc]
+        endpoint = "https://10.0.9.5"
+        method = "redfish"
+        account_user = "breakglass"
+        account_id = "4"
+        auth_user = "admin"
+        auth_password_file = "/etc/lychgate/bmc.pw"
+        tls = { mode = "insecure" }
+    "#;
+    assert_eq!(
+        Inventory::parse(toml),
+        Err(InventoryError::BmcConfigUnused {
+            host: "idrac-01".into()
+        })
+    );
+}
+
+#[test]
+fn racadm_and_ipmitool_methods_parse_but_are_refused_as_unimplemented() {
+    for method in ["racadm", "ipmitool"] {
+        let toml = format!(
+            r#"
+            [[hosts]]
+            name = "idrac-01"
+            address = "10.0.9.5"
+            os = "linux"
+            channels = ["bmc"]
+
+            [hosts.bmc]
+            endpoint = "https://10.0.9.5"
+            method = "{method}"
+            account_user = "breakglass"
+            account_id = "4"
+            auth_user = "admin"
+            auth_password_file = "/etc/lychgate/bmc.pw"
+            tls = {{ mode = "insecure" }}
+            "#
+        );
+        match Inventory::parse(&toml) {
+            Err(InventoryError::BmcMethodUnimplemented { host, method: m }) => {
+                assert_eq!(host, "idrac-01");
+                assert_eq!(m, method);
+            }
+            other => panic!("wanted BmcMethodUnimplemented for {method}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn insecure_tls_must_be_spelled_out_and_ca_file_needs_its_path() {
+    // A bmc config with no tls key at all is refused: TLS trust is never
+    // defaulted for a break-glass control channel.
+    let toml = r#"
+        [[hosts]]
+        name = "idrac-01"
+        address = "10.0.9.5"
+        os = "linux"
+        channels = ["bmc"]
+
+        [hosts.bmc]
+        endpoint = "https://10.0.9.5"
+        method = "redfish"
+        account_user = "breakglass"
+        account_id = "4"
+        auth_user = "admin"
+        auth_password_file = "/etc/lychgate/bmc.pw"
+    "#;
+    assert!(matches!(
+        Inventory::parse(toml),
+        Err(InventoryError::Toml(_))
+    ));
 }

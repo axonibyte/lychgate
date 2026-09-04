@@ -16,6 +16,7 @@
 //! - Any seed that ever found a defect gets promoted into FIXED_SEEDS
 //!   permanently, with a comment naming what it found.
 
+use lychgate_core::bmc::parse_account;
 use lychgate_core::proto::decode_request;
 use lychgate_core::ssh::{fence_remove, fence_upsert, parse_effective_posture};
 use lychgate_core::{Inventory, Ttl};
@@ -200,6 +201,10 @@ fn check(input: &str) {
     }
     // And sshd -T output likewise arrives over the transport.
     let _ = parse_effective_posture(input);
+    // BMC AccountService responses arrive from the iDRAC over the network.
+    if let Err(e) = parse_account(input, "breakglass") {
+        assert!(!e.to_string().is_empty(), "empty bmc error for {input:?}");
+    }
 }
 
 fn iters() -> u32 {
