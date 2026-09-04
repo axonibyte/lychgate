@@ -5,6 +5,7 @@
 //! for a lapsed grant to read as expired.
 
 pub mod channel;
+pub mod deadman;
 pub mod grant;
 pub mod inventory;
 pub mod proto;

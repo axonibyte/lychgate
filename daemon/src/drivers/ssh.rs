@@ -8,17 +8,12 @@
 //! (retried loudly), never a shrug.
 
 use lychgate_core::ssh::{
-    fence_remove, fence_upsert, parse_effective_posture, render_dropin, Posture, FENCE_BEGIN,
+    fence_remove, fence_upsert, parse_effective_posture, reload_command, render_dropin, Posture,
+    DEFAULT_DROPIN, FENCE_BEGIN,
 };
-use lychgate_core::{Channel, ChannelDriver, ChannelState, DriverError, Host, Os, SshConfig};
+use lychgate_core::{Channel, ChannelDriver, ChannelState, DriverError, Host, SshConfig};
 
 use crate::transport::SshTransport;
-
-/// Sorts first among drop-ins on purpose: sshd honors the FIRST obtained
-/// value for a keyword, so within the include directory an early name wins.
-/// (Whether drop-ins beat the main config at all depends on where its
-/// Include line sits — which is why apply verifies instead of trusting.)
-const DEFAULT_DROPIN: &str = "/etc/ssh/sshd_config.d/00-lychgate.conf";
 
 fn ssh_of(host: &Host) -> Result<&SshConfig, DriverError> {
     host.ssh
@@ -33,17 +28,7 @@ fn dropin_path(ssh: &SshConfig) -> String {
 }
 
 fn reload_argv(host: &Host, ssh: &SshConfig) -> Vec<String> {
-    match &ssh.reload_cmd {
-        Some(cmd) => vec!["sh".into(), "-c".into(), cmd.clone()],
-        None => match host.os {
-            Os::Freebsd => vec!["service".into(), "sshd".into(), "reload".into()],
-            Os::Linux => vec![
-                "sh".into(),
-                "-c".into(),
-                "systemctl reload sshd 2>/dev/null || systemctl reload ssh".into(),
-            ],
-        },
-    }
+    vec!["sh".into(), "-c".into(), reload_command(host, ssh)]
 }
 
 /// Prepends the become prefix (e.g. "doas", "sudo -n") when configured.

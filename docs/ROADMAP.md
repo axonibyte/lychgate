@@ -222,7 +222,39 @@ Ubuntu 26.04). The first live run caught a real race — sshd's SIGHUP
 restart window refusing the post-reload verify — fixed with a bounded
 transport-error retry and a regression test.
 
-## M5 — Dead-man revert and the hostile full stack — PLANNED
+## M5 — Dead-man revert and the hostile full stack — IN PROGRESS
+
+Design decisions, resolved at milestone start:
+
+- **Cron marker line, not at(1)** (a deliberate deviation from the original
+  sketch): at(1) is absent on stock Ubuntu server and FreeBSD's atrun runs
+  on a 5-minute cron cadence anyway. Instead, open installs a self-contained
+  POSIX sh script on the target plus one marked line in root's crontab
+  (`# LYCHGATE-DEADMAN`, whole-line managed like the authorized_keys fence).
+  The script runs every minute, exits instantly before the deadline, and
+  past it reverts the drop-in, strips the fence, reloads sshd, removes its
+  own crontab line and deadline file, and leaves a fired marker for the
+  daemon to find. Renew rewrites only the deadline file.
+- **The dead-man is grant-level, not a channel.** It is installed by the
+  lifecycle after the channels apply and only when ssh-borne channels
+  applied; an install failure fails the open (a grant without its backstop
+  must not exist) and unwinds. Every revert path removes it first,
+  unconditionally and idempotently — so no stored flag and no schema bump.
+- **Renew reschedules the dead-man BEFORE committing the new expiry**: if
+  the reschedule lands but the commit fails, the daemon reverts at the old
+  (earlier) expiry; if the reschedule fails, the renewal is refused and the
+  backstop still fires on time. Both failure orders are fail-closed.
+- **Firing is journaled**: the script leaves a marker; the daemon's revert
+  detects and clears it, and the grant's close event records
+  `deadman_fired`. Both orders of "daemon reverts" vs "dead-man fires"
+  converge to closed.
+- **The reaper [run] battery becomes the Tier-4 harness**: both guests run
+  `e2e/run.sh` host-exec (the Ubuntu guest builds in the pinned container,
+  runs on the host); it chains the unit suites (built where a toolchain
+  exists), the M4 ssh acceptance, the new revert-under-kill battery — with
+  its oracle self-test (sabotage the installed dead-man externally and
+  confirm the harness fails) — and the deferred service-file start/stop
+  proof under rc(8) and systemd.
 
 The property that makes lychgate trustworthy, and the tier that proves it.
 

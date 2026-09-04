@@ -67,6 +67,28 @@ pub fn parse_effective_posture(sshd_t_output: &str) -> Option<Posture> {
     })
 }
 
+/// Sorts first among drop-ins on purpose: sshd honors the FIRST obtained
+/// value for a keyword, so within the include directory an early name wins.
+/// (Whether drop-ins beat the main config at all depends on where its
+/// Include line sits — which is why the driver verifies instead of
+/// trusting.)
+pub const DEFAULT_DROPIN: &str = "/etc/ssh/sshd_config.d/00-lychgate.conf";
+
+/// The shell command that reloads sshd on this host: the per-host override,
+/// or the per-OS default. One truth shared by the driver and the rendered
+/// dead-man script.
+pub fn reload_command(host: &crate::inventory::Host, ssh: &crate::inventory::SshConfig) -> String {
+    match &ssh.reload_cmd {
+        Some(cmd) => cmd.clone(),
+        None => match host.os {
+            crate::inventory::Os::Freebsd => "service sshd reload".to_string(),
+            crate::inventory::Os::Linux => {
+                "systemctl reload sshd 2>/dev/null || systemctl reload ssh".to_string()
+            }
+        },
+    }
+}
+
 pub const FENCE_BEGIN: &str = "# --- LYCHGATE BEGIN break-glass keys; do not edit this block ---";
 pub const FENCE_END: &str = "# --- LYCHGATE END ---";
 
