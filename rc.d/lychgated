@@ -1,0 +1,50 @@
+#!/bin/sh
+
+# shellcheck disable=SC1091,SC1094,SC2034
+#   SC1091/SC1094: /etc/rc.subr exists (and parses) on the FreeBSD hosts this
+#   script runs on, not on the machines that lint it.
+#   SC2034: name, rcvar, pidfile, required_files, command, command_args and
+#   start_precmd are the rc.subr contract — consumed by run_rc_command, not
+#   by this file. Every one of them is load-bearing.
+
+# PROVIDE: lychgated
+# REQUIRE: NETWORKING FILESYSTEMS
+# KEYWORD: shutdown
+#
+# rc.conf knobs (defaults below):
+#   lychgated_enable="YES"
+#   lychgated_inventory="/usr/local/etc/lychgate/inventory.toml"
+#   lychgated_statedir="/var/db/lychgate"
+#   lychgated_flags=""            # extra lychgated flags, e.g. --interval 30
+#
+# The binary is expected at /usr/local/sbin/lychgated (install from the
+# repository's Downloads page or via cargo). lychgated runs in the
+# foreground, so daemon(8) supervises it and owns the pidfile.
+
+. /etc/rc.subr
+
+name="lychgated"
+rcvar="lychgated_enable"
+
+load_rc_config ${name}
+
+: "${lychgated_enable:=NO}"
+: "${lychgated_inventory:=/usr/local/etc/lychgate/inventory.toml}"
+: "${lychgated_statedir:=/var/db/lychgate}"
+: "${lychgated_flags:=}"
+
+pidfile="/var/run/${name}.pid"
+required_files="${lychgated_inventory}"
+lychgated_bin="/usr/local/sbin/lychgated"
+
+command="/usr/sbin/daemon"
+command_args="-p ${pidfile} -t ${name} ${lychgated_bin} \
+    --inventory ${lychgated_inventory} \
+    --state-dir ${lychgated_statedir} ${lychgated_flags}"
+
+start_precmd="lychgated_prestart"
+lychgated_prestart() {
+    install -d -m 700 "${lychgated_statedir}"
+}
+
+run_rc_command "$1"

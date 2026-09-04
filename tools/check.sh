@@ -31,6 +31,8 @@ run "rust tests" cargo test --workspace --locked
 
 run "shell lint" ./tools/lint-shell.sh
 
+run "service installer" ./tools/install-service-test.sh
+
 if [ "${failed}" -ne 0 ]; then
     echo "gate: FAILED"
     exit 1

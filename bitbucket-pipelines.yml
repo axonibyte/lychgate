@@ -35,7 +35,8 @@ definitions:
           - cargo fmt --check
           - cargo clippy --workspace --all-targets --locked -- -D warnings
           - cargo test --workspace --release --locked
-          - shellcheck -x ci/build-target.sh tools/check.sh tools/lint-shell.sh
+          - shellcheck -x ci/build-target.sh tools/*.sh rc.d/lychgated
+          - ./tools/install-service-test.sh
 
     - step: &buildLinuxAmd64
         name: Build x86_64-unknown-linux-gnu

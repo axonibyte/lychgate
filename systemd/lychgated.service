@@ -1,0 +1,24 @@
+# lychgate break-glass control-plane daemon.
+#
+# The binary is expected at /usr/local/sbin/lychgated (install from the
+# repository's Downloads page or via cargo). Hardening here is deliberately
+# light: future drivers must reach sshd_config, authorized_keys files, and
+# BMCs from this process, and pre-narrowing what M4+ needs would only get
+# relaxed silently later — the opposite of what a sandbox is for. Tighten
+# alongside the drivers, not ahead of them.
+
+[Unit]
+Description=lychgate break-glass control-plane daemon
+Documentation=https://bitbucket.org/axonibyte/lychgate
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/lychgated --inventory /etc/lychgate/inventory.toml --state-dir /var/lib/lychgate
+Restart=on-failure
+RestartSec=5
+StateDirectory=lychgate
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

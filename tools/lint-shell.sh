@@ -7,9 +7,9 @@ set -u
 
 cd "$(dirname "$0")/.." || exit 2
 
-# The scripts under lint. ci/build-target.sh is bash by shebang; everything in
-# tools/ is POSIX sh.
-files="tools/check.sh tools/lint-shell.sh"
+# The scripts under lint. ci/build-target.sh is bash by shebang; everything
+# in tools/ and rc.d/ is POSIX sh.
+files="tools/check.sh tools/lint-shell.sh tools/install-service.sh tools/install-service-test.sh rc.d/lychgated"
 [ -f ci/build-target.sh ] && files="${files} ci/build-target.sh"
 
 if command -v shellcheck >/dev/null 2>&1; then
