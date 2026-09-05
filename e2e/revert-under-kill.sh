@@ -197,22 +197,62 @@ crontab -l 2>/dev/null | grep -q 'LYCHGATE-DEADMAN' && fail "the dead-man left i
 
 # --- the daemon returns and reconciles --------------------------------------
 
-note "restarting the daemon for one pass"
+# The dead-man has already reverted the host; what remains is the daemon's
+# bookkeeping — observe the expiry, undo its own record, journal the close.
+# The daemon does this on a loop, and a revert step left stuck by a transient
+# (a dropped ssh connection under load) is retried on the next pass, by
+# design (see lifecycle drive_one_revert: "retried on every pass"). Production
+# supervises the daemon so it reconciles across passes; cron does the same via
+# --once each minute. Model that here: rerun the pass until the close lands,
+# rather than demanding it in exactly one pass, which the daemon never
+# promises. The fired marker persists until a *successful* removal, so the
+# close still records deadman_fired=true whichever pass completes it. A revert
+# that never closes across the whole window fails loudly below — this loosens
+# the pass count, never the claim.
+note "restarting the daemon to reconcile (reverts retried across passes)"
 rm -f "${state}/lychgated.sock"
-"${bin}/lychgated" --inventory "${work}/inventory.toml" --state-dir "${state}" --once \
-    > "${work}/daemon2.log" 2>&1 || { fail "post-kill pass failed"; cat "${work}/daemon2.log"; }
+closed=0
+passes=0
+while [ "${passes}" -lt 15 ]; do
+    passes=$((passes + 1))
+    "${bin}/lychgated" --inventory "${work}/inventory.toml" --state-dir "${state}" --once \
+        > "${work}/daemon2.log" 2>&1 \
+        || { fail "post-kill pass ${passes} exited nonzero"; break; }
+    if grep -q '"event":"close".*"deadman_fired":true' "${state}/journal.jsonl"; then
+        closed=1
+        break
+    fi
+    sleep 1
+done
 
 grep -q '"event":"expire"' "${state}/journal.jsonl" || fail "no expire event journaled"
-grep -q '"event":"close".*"deadman_fired":true' "${state}/journal.jsonl" \
-    || fail "the close event does not record the dead-man firing"
+[ "${closed}" -eq 1 ] \
+    || fail "the close never recorded the dead-man firing across ${passes} passes"
 
-# Idempotence: a second boot over the settled state changes nothing and
+# Idempotence: a further boot over the settled state changes nothing and
 # succeeds.
 "${bin}/lychgated" --inventory "${work}/inventory.toml" --state-dir "${state}" --once \
-    >/dev/null 2>&1 || fail "a second post-kill pass failed"
+    >/dev/null 2>&1 || fail "a settled-state pass failed"
 
 echo
 if [ "${failed}" -ne 0 ]; then
+    # A safety test that fails opaquely cannot be acted on. Dump the evidence
+    # the trap is about to delete: the reconcile's own log and journal say
+    # whether a revert got stuck (grant retained needs-revert, no close event)
+    # or closed recording the wrong thing, and the host state says what was
+    # left behind. Printed only on failure, so a green run stays quiet.
+    echo "---- DIAGNOSTICS (revert-under-kill failed) ----" >&2
+    echo "-- journal.jsonl --" >&2
+    cat "${state}/journal.jsonl" >&2 2>/dev/null || echo "(no journal)" >&2
+    echo "-- reconcile pass (daemon2.log) --" >&2
+    cat "${work}/daemon2.log" >&2 2>/dev/null || echo "(no daemon2.log)" >&2
+    echo "-- open-time daemon.log (tail) --" >&2
+    tail -20 "${work}/daemon.log" >&2 2>/dev/null || echo "(no daemon.log)" >&2
+    echo "-- host state --" >&2
+    ls -la /etc/lychgate.deadman.* >&2 2>/dev/null || echo "(no deadman files)" >&2
+    { crontab -l 2>/dev/null | grep 'LYCHGATE-DEADMAN'; } >&2 || echo "(no deadman cron line)" >&2
+    echo "posture now: $(posture); default: ${current}" >&2
+    echo "------------------------------------------------" >&2
     echo "revert-under-kill: FAILED"
     exit 1
 fi
