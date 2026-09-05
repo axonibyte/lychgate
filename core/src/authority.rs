@@ -60,6 +60,10 @@ pub struct AuthenticatorSpec {
     /// Required for `ed25519`; an OpenSSH public-key line.
     #[serde(default)]
     pub public_key: Option<String>,
+    /// Required for `totp`; a path to a mode-600 file holding the base32 secret
+    /// (never inline — a secret is a file path, unlike the public ed25519 key).
+    #[serde(default)]
+    pub secret_file: Option<String>,
 }
 
 /// The authenticator vocabulary. Only `ed25519` is implemented; the rest parse
@@ -113,10 +117,14 @@ pub struct FactorSpec {
 // Runtime model (built + validated from the spec)
 // ---------------------------------------------------------------------------
 
-/// An authenticator's verifiable material, resolved from its spec.
+/// An authenticator's verifiable material, resolved from its spec. Ed25519
+/// carries its public key (public, inline); TOTP carries the path to its secret
+/// file — the daemon reads and verifies it, since the secret is I/O the pure
+/// core does not touch.
 #[derive(Debug, Clone)]
 pub enum Authenticator {
     Ed25519(PublicKey),
+    Totp { secret_file: String },
 }
 
 /// A weighted-threshold authority: `weight-sum(satisfied) >= threshold` opens.
@@ -335,14 +343,18 @@ impl AuthorityModel {
                         })?;
                     Authenticator::Ed25519(pk)
                 }
-                // Reserve the vocabulary without pretending it works.
                 AuthKind::Totp => {
-                    return Err(AuthorityError::UnimplementedKind {
-                        id: a.id.clone(),
-                        kind: "totp",
-                        milestone: "M8a.3",
-                    })
+                    let secret_file =
+                        a.secret_file
+                            .clone()
+                            .ok_or(AuthorityError::MissingMaterial {
+                                id: a.id.clone(),
+                                kind: "totp",
+                                field: "secret-file",
+                            })?;
+                    Authenticator::Totp { secret_file }
                 }
+                // Reserve the remaining vocabulary without pretending it works.
                 AuthKind::Password => {
                     return Err(AuthorityError::UnimplementedKind {
                         id: a.id.clone(),
@@ -488,6 +500,16 @@ impl AuthorityModel {
 
     pub fn profile_ids(&self) -> impl Iterator<Item = &str> {
         self.profiles.keys().map(|s| s.as_str())
+    }
+
+    /// The configured TOTP authenticators as `(id, secret_file)` — for the
+    /// daemon to load each secret at startup and try a submitted code against
+    /// all of them (a code, unlike an SSHSIG, names no authenticator).
+    pub fn totp_authenticators(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.authenticators.iter().filter_map(|(id, a)| match a {
+            Authenticator::Totp { secret_file } => Some((id.as_str(), secret_file.as_str())),
+            _ => None,
+        })
     }
 
     /// Evaluate an authority against the set of satisfied authenticator ids and

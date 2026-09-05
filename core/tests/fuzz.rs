@@ -242,6 +242,15 @@ fn check(input: &str) {
             "empty approval verify error for {input:?}"
         );
     }
+    // A TOTP secret comes from a config file, and a code is pasted by an
+    // operator — both hostile strings. Neither parse nor verify may panic.
+    if let Err(e) = lychgate_core::TotpSecret::from_base32(input) {
+        assert!(!e.to_string().is_empty(), "empty totp error for {input:?}");
+    }
+    if let Ok(secret) = lychgate_core::TotpSecret::from_base32("GEZDGNBVGY3TQOJQ") {
+        // matches never panics on a hostile code; the result is irrelevant here.
+        let _ = lychgate_core::totp::matches(&secret, input, UNIX_EPOCH, 1);
+    }
 }
 
 /// A minimal authority model with one ed25519 authenticator, built once, so the
@@ -257,6 +266,7 @@ fn fuzz_model() -> &'static AuthorityModel {
                     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIOBaP66AKPs9nRYDzUrJjGJMYxn0rIWv/tNftYWIu25"
                         .into(),
                 ),
+                secret_file: None,
             }],
             group: vec![],
             profile: vec![AuthoritySpec {

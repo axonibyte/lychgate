@@ -26,4 +26,8 @@ toml = "0.8"
 # hand-rolled crypto. Kept lean — only the ed25519 signature type is enabled.
 ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "std"] }
 data-encoding = "2"
+# TOTP (M8a.3, RFC 6238): HMAC-SHA1 from RustCrypto. The RFC 4226 truncation is
+# ours (and KAT'd); the crypto is the crate's. No hand-rolled crypto.
+hmac = "0.12"
+sha1 = "0.10"
 lychgate-core = { path = "core" }

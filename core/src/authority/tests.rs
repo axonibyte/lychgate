@@ -364,7 +364,8 @@ fn a_group_cycle_is_refused() {
 
 #[test]
 fn an_unimplemented_kind_is_refused_naming_its_milestone() {
-    for (kind, milestone) in [("totp", "M8a.3"), ("password", "M8a.4"), ("fido2", "M8a.5")] {
+    // ed25519 (M8a.1) and totp (M8a.3) are built; password/fido2 are not yet.
+    for (kind, milestone) in [("password", "M8a.4"), ("fido2", "M8a.5")] {
         let toml_text = format!(
             r#"
             [[authenticator]]
@@ -388,6 +389,43 @@ fn an_unimplemented_kind_is_refused_naming_its_milestone() {
             other => panic!("wanted UnimplementedKind for {kind}, got {other:?}"),
         }
     }
+}
+
+#[test]
+fn a_totp_authenticator_without_a_secret_file_is_refused() {
+    let toml_text = r#"
+        [[authenticator]]
+        id = "phone"
+        kind = "totp"
+        [[profile]]
+        id = "p"
+        threshold = 1
+        factor = [ { authenticator = "phone", weight = 1 } ]
+    "#;
+    match model(toml_text) {
+        Err(AuthorityError::MissingMaterial { kind, field, .. }) => {
+            assert_eq!(kind, "totp");
+            assert_eq!(field, "secret-file");
+        }
+        other => panic!("wanted MissingMaterial, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_totp_authenticator_parses_with_its_secret_file() {
+    let toml_text = r#"
+        [[authenticator]]
+        id = "phone"
+        kind = "totp"
+        secret-file = "/etc/lychgate/phone.totp"
+        [[profile]]
+        id = "p"
+        threshold = 1
+        factor = [ { authenticator = "phone", weight = 1 } ]
+    "#;
+    let m = model(toml_text).expect("a totp authenticator with a secret file parses");
+    let totp: Vec<_> = m.totp_authenticators().collect();
+    assert_eq!(totp, [("phone", "/etc/lychgate/phone.totp")]);
 }
 
 #[test]

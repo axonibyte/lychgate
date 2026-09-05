@@ -22,3 +22,6 @@ toml = { workspace = true }
 # verification lives in core; the daemon supplies the configured key material.
 ssh-key = { workspace = true }
 data-encoding = { workspace = true }
+# TOTP (M8a.3): HMAC-SHA1 for RFC 6238; the truncation is ours and KAT'd.
+hmac = { workspace = true }
+sha1 = { workspace = true }
