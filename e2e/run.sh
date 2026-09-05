@@ -79,6 +79,8 @@ phase "ssh acceptance" sh e2e/ssh-acceptance.sh
 
 phase "bmc acceptance" sh e2e/bmc-acceptance.sh
 
+phase "vnc acceptance" sh e2e/vnc-acceptance.sh
+
 # The oracle self-test: with the dead-man sabotaged away, revert-under-kill
 # MUST fail. A harness that passes here detects nothing.
 echo ""
