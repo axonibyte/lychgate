@@ -66,6 +66,12 @@ pub struct Daemon {
     pub totp_secrets: std::collections::BTreeMap<String, lychgate_core::TotpSecret>,
     /// The single-use ledger that makes a TOTP code spendable exactly once.
     pub totp_ledger: crate::totp_ledger::TotpLedger,
+    /// Argon2id password hashes, keyed by authenticator id, read from their
+    /// mode-600 files at startup. Empty in `--dry-run` and when no password
+    /// authenticator is configured. A submitted password (a non-SSHSIG,
+    /// non-digit token) is verified against all of these — no ledger, since a
+    /// password is reusable by design.
+    pub password_hashes: std::collections::BTreeMap<String, String>,
 }
 
 /// The profile name a `--dry-run` daemon records on a pending grant. Dry-run
@@ -440,8 +446,20 @@ impl Daemon {
                 "no configured TOTP authenticator matches this code".to_string(),
             )));
         }
-        Ok(Err(ApprovalError::Malformed(
-            "proof is neither an SSHSIG nor a TOTP code".to_string(),
+        // Anything else is a password: try it against every configured password
+        // authenticator (constant-time Argon2 verify). No ledger — a password is
+        // reusable by design, which is why it earns little weight. A malformed
+        // stored hash is daemon-fatal (it was validated at startup, so this only
+        // fires if the file changed underneath us).
+        for (id, phc) in &self.password_hashes {
+            match lychgate_core::password::verify(phc, trimmed) {
+                Ok(true) => return Ok(Ok(id.clone())),
+                Ok(false) => {}
+                Err(e) => return Err(anyhow::anyhow!("verifying password for {id:?}: {e}")),
+            }
+        }
+        Ok(Err(ApprovalError::UnknownApprover(
+            "proof is not a recognized SSHSIG, TOTP code, or configured password".to_string(),
         )))
     }
 

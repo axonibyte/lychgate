@@ -116,6 +116,7 @@ impl Harness {
             approval: None,
             totp_secrets: std::collections::BTreeMap::new(),
             totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+            password_hashes: std::collections::BTreeMap::new(),
         };
         Harness {
             daemon,
@@ -318,6 +319,7 @@ fn a_stuck_revert_is_retried_by_the_pass_until_it_clears() {
         approval: None,
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
     };
 
     // Open is requested, then approved — and the apply fails (ssh apply fails,
@@ -459,6 +461,7 @@ fn boot_recovery_demotes_a_stored_opening_to_needs_revert() {
         approval: None,
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
     };
     daemon.boot_recover(t(10)).unwrap();
     // Demoted: every intended channel is now awaiting revert.
@@ -753,6 +756,7 @@ fn a_bmc_style_secret_reaches_the_open_response_but_never_the_journal() {
         approval: None,
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
     };
     daemon
         .dispatch(
@@ -852,6 +856,7 @@ fn boot_reestablishes_an_open_vnc_grant_that_outlived_a_restart() {
         approval: None,
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
     };
 
     daemon.boot_recover(t(2000)).unwrap();
@@ -903,6 +908,7 @@ fn a_vnc_grant_whose_tunnel_cannot_be_reestablished_is_reverted() {
         approval: None,
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
     };
 
     daemon.boot_recover(t(2000)).unwrap();
@@ -948,6 +954,7 @@ fn simultaneous_opens_of_one_console_produce_one_grant_and_one_apply() {
         approval: None,
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
     });
 
     const N: usize = 16;
@@ -1054,6 +1061,7 @@ fn a_vnc_open_returns_the_one_time_password_labelled_and_the_console_endpoint() 
         approval: None,
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
     };
     daemon
         .dispatch(
@@ -1131,6 +1139,7 @@ fn a_wait_only_profile_opens_on_the_pass_once_the_wait_matures() {
         approval: Some(model),
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
     };
 
     // Open under the wait-only profile: pending, nothing applied.
@@ -1229,6 +1238,7 @@ fn totp_harness(dir: &crate::scratch::Scratch) -> Daemon {
         approval: Some(model),
         totp_secrets,
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
     }
 }
 
@@ -1334,4 +1344,129 @@ fn a_digit_code_against_a_profile_with_no_totp_factor_is_refused_cleanly() {
     open_totp(&d, now);
     assert_eq!(approve_totp(&d, "123456", now), ResponseResult::Refused);
     assert!(!is_open(&d, now));
+}
+
+// --- password proofs: verify path, reusable, dispatch ----------------------
+
+/// A daemon whose only host opens driverlessly under a threshold-1 profile
+/// requiring one password factor "pw". The Argon2id hash is injected directly
+/// (main.rs reads it from a file; the unit test bypasses that).
+fn password_harness(dir: &crate::scratch::Scratch, password: &str) -> Daemon {
+    let inv_text = r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "linux"
+        channels = ["ssh"]
+        [hosts.ssh]
+        agent_user = "root"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+
+        [[approval.authenticator]]
+        id = "pw"
+        kind = "password"
+        hash-file = "/unused-in-unit-test"
+        [[approval.profile]]
+        id = "pw"
+        threshold = 1
+        factor = [ { authenticator = "pw", weight = 1 } ]
+    "#;
+    let inventory = Inventory::parse(inv_text).unwrap();
+    let model = inventory.approval_model().unwrap().unwrap();
+    let mut password_hashes = std::collections::BTreeMap::new();
+    password_hashes.insert(
+        "pw".to_string(),
+        lychgate_core::password::hash(password, &[0x2bu8; 16]).unwrap(),
+    );
+    Daemon {
+        inventory,
+        store: Store::at(dir.join("grants.json")),
+        journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
+        drivers: Mutex::new(DriverSet::new()),
+        deadman: Mutex::new(Box::new(FakeDeadman {
+            log: Arc::new(Mutex::new(Vec::new())),
+            fail_install: false,
+            fail_remove: false,
+            fired: Arc::new(Mutex::new(false)),
+        })),
+        approval_window: Duration::from_secs(300),
+        approval: Some(model),
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes,
+    }
+}
+
+fn open_pw(d: &Daemon, now: SystemTime) {
+    let r = d
+        .dispatch(
+            &Op::Open {
+                host: "db-01".into(),
+                ttl: "1h".into(),
+                profile: Some("pw".into()),
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(r.result, ResponseResult::Ok);
+}
+
+fn approve_pw(d: &Daemon, token: &str, now: SystemTime) -> ResponseResult {
+    d.dispatch(
+        &Op::Approve {
+            host: "db-01".into(),
+            token: token.to_string(),
+        },
+        now,
+    )
+    .unwrap()
+    .result
+}
+
+#[test]
+fn a_correct_password_opens_a_password_profile() {
+    let dir = scratch_dir("pw-open");
+    let d = password_harness(&dir, "hunter2");
+    let now = t(1_000);
+    open_pw(&d, now);
+    assert_eq!(approve_pw(&d, "hunter2", now), ResponseResult::Ok);
+    assert!(is_open(&d, now), "a correct password should open the grant");
+}
+
+#[test]
+fn a_wrong_password_is_refused() {
+    let dir = scratch_dir("pw-wrong");
+    let d = password_harness(&dir, "hunter2");
+    let now = t(1_000);
+    open_pw(&d, now);
+    assert_eq!(approve_pw(&d, "hunter3", now), ResponseResult::Refused);
+    assert!(!is_open(&d, now));
+}
+
+#[test]
+fn a_password_is_reusable_with_no_ledger() {
+    // Deliberate: unlike a TOTP code, a password has no single-use ledger — the
+    // same secret opens a second grant. This asserts the "reusable, weakest
+    // factor" property is intended, not an accident.
+    let dir = scratch_dir("pw-reuse");
+    let d = password_harness(&dir, "hunter2");
+    let now = t(1_000);
+    open_pw(&d, now);
+    assert_eq!(approve_pw(&d, "hunter2", now), ResponseResult::Ok);
+    assert!(is_open(&d, now));
+    d.dispatch(
+        &Op::Close {
+            host: "db-01".into(),
+        },
+        now,
+    )
+    .unwrap();
+    open_pw(&d, now);
+    assert_eq!(
+        approve_pw(&d, "hunter2", now),
+        ResponseResult::Ok,
+        "a password is reusable — the same secret opens again"
+    );
+    assert!(is_open(&d, now));
 }

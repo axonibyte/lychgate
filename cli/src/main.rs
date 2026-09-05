@@ -64,6 +64,10 @@ enum Command {
     },
     /// Report the state of every grant
     Status,
+    /// Hash a password (read from stdin) into an Argon2id PHC string for a
+    /// `[[approval.authenticator]] kind="password"` hash-file. Local — talks to
+    /// no daemon. Redirect the output into a mode-600 file.
+    HashPassword,
 }
 
 fn human(secs: u64) -> String {
@@ -74,8 +78,35 @@ fn human(secs: u64) -> String {
     }
 }
 
+/// Hash a password read from stdin into an Argon2id PHC string. Local: no daemon.
+/// The password is trimmed to match how `approve` and the daemon trim a submitted
+/// token, so the hash verifies the same bytes the operator will later type.
+fn hash_password() -> anyhow::Result<ExitCode> {
+    use std::io::Read;
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    let password = input.trim();
+    if password.is_empty() {
+        anyhow::bail!("no password on stdin");
+    }
+    // Salt from the OS CSPRNG (the daemon reads /dev/urandom the same way for its
+    // challenge nonce); core hashing takes the salt injected.
+    let mut salt = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut salt))
+        .map_err(|e| anyhow::anyhow!("reading /dev/urandom for a salt: {e}"))?;
+    let phc = lychgate_core::password::hash(password, &salt).map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("{phc}");
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run() -> anyhow::Result<ExitCode> {
     let cli = Cli::parse();
+
+    // A local utility — no daemon connection. Handled before an Op is built.
+    if matches!(cli.command, Command::HashPassword) {
+        return hash_password();
+    }
 
     let op = match &cli.command {
         Command::Open { host, ttl, profile } => {
@@ -118,6 +149,8 @@ fn run() -> anyhow::Result<ExitCode> {
         }
         Command::Close { host } => Op::Close { host: host.clone() },
         Command::Status => Op::Status,
+        // Handled before this match (local, no daemon).
+        Command::HashPassword => unreachable!("hash-password is handled locally"),
     };
 
     let response: Response = transport::roundtrip(&cli.socket, &op)?;
@@ -234,6 +267,8 @@ fn run() -> anyhow::Result<ExitCode> {
                 }
             }
         }
+        // Returned early before any daemon round trip.
+        (Command::HashPassword, _) => unreachable!("hash-password is handled locally"),
     }
     Ok(ExitCode::SUCCESS)
 }

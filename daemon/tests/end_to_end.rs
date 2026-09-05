@@ -858,3 +858,56 @@ fn a_missing_totp_secret_file_refuses_startup() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// A password authenticator whose hash file is missing must refuse the daemon's
+/// start (fail-closed), like a bad ed25519 key or a missing TOTP secret.
+#[test]
+fn a_missing_password_hash_file_refuses_startup() {
+    let _serial = serial();
+    let dir = Scratch::new("pw-missing-hash");
+    let state_dir = dir.join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let inv = dir.join("inventory.toml");
+    std::fs::write(
+        &inv,
+        r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "linux"
+        channels = ["ssh"]
+        [hosts.ssh]
+        agent_user = "root"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+
+        [[approval.authenticator]]
+        id = "pw"
+        kind = "password"
+        hash-file = "/nonexistent/lychgate/pw.hash"
+        [[approval.profile]]
+        id = "p"
+        threshold = 1
+        factor = [ { authenticator = "pw", weight = 1 } ]
+    "#,
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_lychgated"))
+        .args(["--inventory"])
+        .arg(&inv)
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("--once")
+        .output()
+        .expect("spawn lychgated");
+    assert!(
+        !out.status.success(),
+        "a missing password hash file should refuse startup"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("password hash"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

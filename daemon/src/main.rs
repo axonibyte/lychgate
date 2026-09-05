@@ -202,6 +202,24 @@ fn main() -> anyhow::Result<()> {
     }
     let totp_ledger = totp_ledger::TotpLedger::at(cli.state_dir.join("totp-ledger.json"));
 
+    // Read each password authenticator's Argon2id hash from its mode-600 file at
+    // startup and validate it — a missing/unreadable/malformed hash refuses the
+    // start (fail-closed), like a bad ed25519 key or TOTP secret.
+    let mut password_hashes = std::collections::BTreeMap::new();
+    if let Some(model) = &approval {
+        for (id, hash_file) in model.password_authenticators() {
+            let phc = fs::read_to_string(hash_file)
+                .with_context(|| {
+                    format!("reading password hash for authenticator {id:?} from {hash_file}")
+                })?
+                .trim()
+                .to_string();
+            lychgate_core::password::validate_hash(&phc)
+                .map_err(|e| anyhow::anyhow!("password hash for authenticator {id:?}: {e}"))?;
+            password_hashes.insert(id.to_string(), phc);
+        }
+    }
+
     let daemon = Arc::new(Daemon {
         inventory,
         store,
@@ -214,6 +232,7 @@ fn main() -> anyhow::Result<()> {
         approval,
         totp_secrets,
         totp_ledger,
+        password_hashes,
     });
 
     // Recover from a crash mid-open before serving anything.
