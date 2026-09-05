@@ -60,6 +60,12 @@ pub struct Daemon {
     /// is driven). A serving daemon always has `Some` — main refuses to start
     /// without one.
     pub approval: Option<AuthorityModel>,
+    /// TOTP secrets, keyed by authenticator id, read from their mode-600 files
+    /// at startup. Empty in `--dry-run` and when no TOTP authenticator is
+    /// configured. A submitted digit code is tried against all of these.
+    pub totp_secrets: std::collections::BTreeMap<String, lychgate_core::TotpSecret>,
+    /// The single-use ledger that makes a TOTP code spendable exactly once.
+    pub totp_ledger: crate::totp_ledger::TotpLedger,
 }
 
 /// The profile name a `--dry-run` daemon records on a pending grant. Dry-run
@@ -338,9 +344,11 @@ impl Daemon {
             return self.open_pending_now(host, &host_cfg, request.requested_at(), now);
         };
 
-        // Verify outside the store lock. A denied proof is journaled — an audit
-        // record exists for exactly this.
-        let authenticator = match model.verify_ed25519(&request, token) {
+        // Verify outside the store lock, routing by proof shape (SSHSIG vs a
+        // TOTP code). A denied proof is journaled — an audit record exists for
+        // exactly this. A ledger I/O failure is daemon-fatal (the outer `?`),
+        // like the grant store's.
+        let authenticator = match self.verify_proof(model, &request, token, now)? {
             Ok(id) => id,
             Err(e) => {
                 self.journal(
@@ -388,6 +396,53 @@ impl Daemon {
             pending: Some(self.pending_challenge(host, &view, &authority, now)),
             ..Response::ok()
         })
+    }
+
+    /// Verify one submitted proof against the pending request, routing by its
+    /// shape: an SSHSIG blob goes to the Ed25519 verify (which matches the
+    /// signer to a configured key); an all-digits code is a TOTP, tried against
+    /// every configured TOTP secret within ±1 step and spent once against the
+    /// single-use ledger (a replay is refused). Returns the id of the
+    /// authenticator it satisfies, an inner `Err` for a refusal (journaled and
+    /// reported), or an outer daemon-fatal `Err` for a ledger I/O failure.
+    fn verify_proof(
+        &self,
+        model: &AuthorityModel,
+        request: &ApprovalRequest,
+        token: &str,
+        now: SystemTime,
+    ) -> anyhow::Result<Result<String, lychgate_core::ApprovalError>> {
+        use lychgate_core::ApprovalError;
+        let trimmed = token.trim();
+        if trimmed.starts_with("-----BEGIN SSH SIGNATURE-----") {
+            return Ok(model.verify_ed25519(request, token));
+        }
+        if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) {
+            // A TOTP code names no authenticator, so try each configured secret;
+            // the ledger makes the first fresh match single-use.
+            for (id, secret) in &self.totp_secrets {
+                if let Some(counter) = lychgate_core::totp::matches(secret, trimmed, now, 1) {
+                    // Fail closed on a ledger I/O error: without a durable record
+                    // we cannot promise single-use, so it is daemon-fatal, not a
+                    // silent accept.
+                    let fresh = self
+                        .totp_ledger
+                        .consume(id, counter, now)
+                        .context("recording a spent TOTP code")?;
+                    return Ok(if fresh {
+                        Ok(id.clone())
+                    } else {
+                        Err(ApprovalError::AlreadyUsed)
+                    });
+                }
+            }
+            return Ok(Err(ApprovalError::UnknownApprover(
+                "no configured TOTP authenticator matches this code".to_string(),
+            )));
+        }
+        Ok(Err(ApprovalError::Malformed(
+            "proof is neither an SSHSIG nor a TOTP code".to_string(),
+        )))
     }
 
     /// A read-only registry operation (no snapshot write).

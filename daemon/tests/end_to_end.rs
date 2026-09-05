@@ -799,3 +799,57 @@ fn without_dry_run_the_daemon_refuses_to_start_with_no_approver() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// A TOTP authenticator whose secret file is missing must refuse the daemon's
+/// start (fail-closed), like a bad ed25519 key — the failure surfaces at boot,
+/// not at 03:00 when the code cannot be verified.
+#[test]
+fn a_missing_totp_secret_file_refuses_startup() {
+    let _serial = serial();
+    let dir = Scratch::new("totp-missing-secret");
+    let state_dir = dir.join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let inv = dir.join("inventory.toml");
+    std::fs::write(
+        &inv,
+        r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "linux"
+        channels = ["ssh"]
+        [hosts.ssh]
+        agent_user = "root"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+
+        [[approval.authenticator]]
+        id = "phone"
+        kind = "totp"
+        secret-file = "/nonexistent/lychgate/phone.totp"
+        [[approval.profile]]
+        id = "p"
+        threshold = 1
+        factor = [ { authenticator = "phone", weight = 1 } ]
+    "#,
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_lychgated"))
+        .args(["--inventory"])
+        .arg(&inv)
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("--once")
+        .output()
+        .expect("spawn lychgated");
+    assert!(
+        !out.status.success(),
+        "a missing TOTP secret file should refuse startup"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("TOTP secret"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

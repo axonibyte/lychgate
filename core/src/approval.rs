@@ -106,6 +106,8 @@ pub enum ApprovalError {
     UnknownApprover(String),
     /// The signature did not verify over this request's challenge.
     BadSignature,
+    /// A one-time proof (a TOTP code) that was already used — replay refused.
+    AlreadyUsed,
 }
 
 impl fmt::Display for ApprovalError {
@@ -121,6 +123,9 @@ impl fmt::Display for ApprovalError {
             }
             ApprovalError::BadSignature => {
                 write!(f, "approval signature did not verify over the challenge")
+            }
+            ApprovalError::AlreadyUsed => {
+                write!(f, "this one-time approval code was already used")
             }
         }
     }

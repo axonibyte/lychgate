@@ -3,6 +3,7 @@ mod journal;
 mod lifecycle;
 mod listener;
 mod store;
+mod totp_ledger;
 mod transport;
 
 #[cfg(test)]
@@ -185,6 +186,22 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Read each TOTP authenticator's base32 secret from its mode-600 file at
+    // startup — fail-closed, like a bad ed25519 key: a missing/unreadable/
+    // malformed secret refuses the daemon rather than surfacing at 03:00.
+    let mut totp_secrets = std::collections::BTreeMap::new();
+    if let Some(model) = &approval {
+        for (id, secret_file) in model.totp_authenticators() {
+            let text = fs::read_to_string(secret_file).with_context(|| {
+                format!("reading TOTP secret for authenticator {id:?} from {secret_file}")
+            })?;
+            let secret = lychgate_core::TotpSecret::from_base32(&text)
+                .map_err(|e| anyhow::anyhow!("TOTP secret for authenticator {id:?}: {e}"))?;
+            totp_secrets.insert(id.to_string(), secret);
+        }
+    }
+    let totp_ledger = totp_ledger::TotpLedger::at(cli.state_dir.join("totp-ledger.json"));
+
     let daemon = Arc::new(Daemon {
         inventory,
         store,
@@ -195,6 +212,8 @@ fn main() -> anyhow::Result<()> {
         ))),
         approval_window: Duration::from_secs(cli.approval_window),
         approval,
+        totp_secrets,
+        totp_ledger,
     });
 
     // Recover from a crash mid-open before serving anything.

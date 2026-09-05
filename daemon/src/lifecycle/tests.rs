@@ -114,6 +114,8 @@ impl Harness {
             })),
             approval_window: std::time::Duration::from_secs(300),
             approval: None,
+            totp_secrets: std::collections::BTreeMap::new(),
+            totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         };
         Harness {
             daemon,
@@ -314,6 +316,8 @@ fn a_stuck_revert_is_retried_by_the_pass_until_it_clears() {
         })),
         approval_window: std::time::Duration::from_secs(300),
         approval: None,
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
     };
 
     // Open is requested, then approved — and the apply fails (ssh apply fails,
@@ -453,6 +457,8 @@ fn boot_recovery_demotes_a_stored_opening_to_needs_revert() {
         })),
         approval_window: std::time::Duration::from_secs(300),
         approval: None,
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
     };
     daemon.boot_recover(t(10)).unwrap();
     // Demoted: every intended channel is now awaiting revert.
@@ -745,6 +751,8 @@ fn a_bmc_style_secret_reaches_the_open_response_but_never_the_journal() {
         })),
         approval_window: std::time::Duration::from_secs(300),
         approval: None,
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
     };
     daemon
         .dispatch(
@@ -842,6 +850,8 @@ fn boot_reestablishes_an_open_vnc_grant_that_outlived_a_restart() {
         deadman: Mutex::new(dummy_deadman()),
         approval_window: std::time::Duration::from_secs(300),
         approval: None,
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
     };
 
     daemon.boot_recover(t(2000)).unwrap();
@@ -891,6 +901,8 @@ fn a_vnc_grant_whose_tunnel_cannot_be_reestablished_is_reverted() {
         deadman: Mutex::new(dummy_deadman()),
         approval_window: std::time::Duration::from_secs(300),
         approval: None,
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
     };
 
     daemon.boot_recover(t(2000)).unwrap();
@@ -934,6 +946,8 @@ fn simultaneous_opens_of_one_console_produce_one_grant_and_one_apply() {
         deadman: Mutex::new(dummy_deadman()),
         approval_window: std::time::Duration::from_secs(300),
         approval: None,
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
     });
 
     const N: usize = 16;
@@ -1038,6 +1052,8 @@ fn a_vnc_open_returns_the_one_time_password_labelled_and_the_console_endpoint() 
         deadman: Mutex::new(dummy_deadman()),
         approval_window: std::time::Duration::from_secs(300),
         approval: None,
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
     };
     daemon
         .dispatch(
@@ -1113,6 +1129,8 @@ fn a_wait_only_profile_opens_on_the_pass_once_the_wait_matures() {
         })),
         approval_window: Duration::from_secs(300),
         approval: Some(model),
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
     };
 
     // Open under the wait-only profile: pending, nothing applied.
@@ -1158,4 +1176,162 @@ fn a_wait_only_profile_opens_on_the_pass_once_the_wait_matures() {
         "no approved event: {raw}"
     );
     assert!(raw.contains("\"event\":\"open\""), "no open event: {raw}");
+}
+
+// --- TOTP proofs: verify path, single-use, dispatch -------------------------
+
+const TOTP_SEED_B32: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+
+/// A daemon whose only host opens driverlessly (empty DriverSet, ssh channel →
+/// nothing applied, no dead-man) under a profile that requires one TOTP factor
+/// "phone". The secret is injected directly (main.rs reads it from a file; the
+/// unit test bypasses that), matching the RFC seed so a code can be computed.
+fn totp_harness(dir: &crate::scratch::Scratch) -> Daemon {
+    let inv_text = r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "linux"
+        channels = ["ssh"]
+        [hosts.ssh]
+        agent_user = "root"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+
+        [[approval.authenticator]]
+        id = "phone"
+        kind = "totp"
+        secret-file = "/unused-in-unit-test"
+        [[approval.profile]]
+        id = "totp"
+        threshold = 1
+        factor = [ { authenticator = "phone", weight = 1 } ]
+    "#;
+    let inventory = Inventory::parse(inv_text).unwrap();
+    let model = inventory.approval_model().unwrap().unwrap();
+    let mut totp_secrets = std::collections::BTreeMap::new();
+    totp_secrets.insert(
+        "phone".to_string(),
+        lychgate_core::TotpSecret::from_base32(TOTP_SEED_B32).unwrap(),
+    );
+    Daemon {
+        inventory,
+        store: Store::at(dir.join("grants.json")),
+        journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
+        drivers: Mutex::new(DriverSet::new()),
+        deadman: Mutex::new(Box::new(FakeDeadman {
+            log: Arc::new(Mutex::new(Vec::new())),
+            fail_install: false,
+            fail_remove: false,
+            fired: Arc::new(Mutex::new(false)),
+        })),
+        approval_window: Duration::from_secs(300),
+        approval: Some(model),
+        totp_secrets,
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+    }
+}
+
+fn totp_code_at(now: SystemTime) -> String {
+    let secret = lychgate_core::TotpSecret::from_base32(TOTP_SEED_B32).unwrap();
+    let counter = now.duration_since(UNIX_EPOCH).unwrap().as_secs() / 30;
+    lychgate_core::totp::code_at(&secret, counter)
+}
+
+fn open_totp(d: &Daemon, now: SystemTime) {
+    let r = d
+        .dispatch(
+            &Op::Open {
+                host: "db-01".into(),
+                ttl: "1h".into(),
+                profile: Some("totp".into()),
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(r.result, ResponseResult::Ok);
+}
+
+fn approve_totp(d: &Daemon, code: &str, now: SystemTime) -> ResponseResult {
+    d.dispatch(
+        &Op::Approve {
+            host: "db-01".into(),
+            token: code.to_string(),
+        },
+        now,
+    )
+    .unwrap()
+    .result
+}
+
+fn is_open(d: &Daemon, now: SystemTime) -> bool {
+    d.status(now)
+        .unwrap()
+        .iter()
+        .any(|l| l.host == "db-01" && l.state == GrantState::Open)
+}
+
+#[test]
+fn a_valid_totp_code_opens_a_single_factor_profile() {
+    let dir = scratch_dir("totp-open");
+    let d = totp_harness(&dir);
+    let now = t(1_000_000_020);
+    open_totp(&d, now);
+    assert_eq!(
+        approve_totp(&d, &totp_code_at(now), now),
+        ResponseResult::Ok
+    );
+    assert!(is_open(&d, now), "a valid TOTP code should open the grant");
+}
+
+#[test]
+fn a_wrong_totp_code_is_refused() {
+    let dir = scratch_dir("totp-wrong");
+    let d = totp_harness(&dir);
+    let now = t(1_000_000_020);
+    open_totp(&d, now);
+    assert_eq!(approve_totp(&d, "000000", now), ResponseResult::Refused);
+    assert!(!is_open(&d, now));
+}
+
+#[test]
+fn a_totp_code_cannot_be_replayed_across_grants() {
+    // Single-use is enforced by the ledger, not the pending state: a code that
+    // opened one grant is refused on a later grant even though the code is still
+    // within its time window.
+    let dir = scratch_dir("totp-replay");
+    let d = totp_harness(&dir);
+    let now = t(1_000_000_020);
+    let code = totp_code_at(now);
+    open_totp(&d, now);
+    assert_eq!(approve_totp(&d, &code, now), ResponseResult::Ok);
+    assert!(is_open(&d, now));
+    // Close and open a fresh grant; the same still-valid code must not reopen it.
+    d.dispatch(
+        &Op::Close {
+            host: "db-01".into(),
+        },
+        now,
+    )
+    .unwrap();
+    open_totp(&d, now);
+    assert_eq!(
+        approve_totp(&d, &code, now),
+        ResponseResult::Refused,
+        "a spent code must be refused even within its window"
+    );
+    assert!(!is_open(&d, now));
+}
+
+#[test]
+fn a_digit_code_against_a_profile_with_no_totp_factor_is_refused_cleanly() {
+    // Dispatch: a numeric token routes to the TOTP path; with no configured
+    // secret matching it, it is refused, not misread as an SSHSIG.
+    let dir = scratch_dir("totp-dispatch");
+    let mut d = totp_harness(&dir);
+    d.totp_secrets.clear(); // no TOTP secrets loaded
+    let now = t(1_000_000_020);
+    open_totp(&d, now);
+    assert_eq!(approve_totp(&d, "123456", now), ResponseResult::Refused);
+    assert!(!is_open(&d, now));
 }
