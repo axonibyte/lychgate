@@ -17,7 +17,10 @@ use std::time::{Duration, SystemTime};
 use anyhow::Context;
 use clap::Parser;
 
-use lychgate_core::{DriverSet, GrantRegistry, Inventory};
+use lychgate_core::{
+    parse_ssh_public_key, AcceptAny, AnyOf, ApprovalVerifier, DriverSet, GrantRegistry, Inventory,
+    SshSigVerifier, MAX_APPROVAL_WINDOW_SECS,
+};
 
 use crate::journal::{Event, Journal};
 use crate::lifecycle::Daemon;
@@ -50,9 +53,15 @@ struct Cli {
     /// Register no channel drivers: grants open and close as pure bookkeeping,
     /// touching no host. For validating an inventory, rehearsing the grant
     /// lifecycle, and the hermetic end-to-end tests — nothing is driven, so a
-    /// grant's applied-channel set is always empty.
+    /// grant's applied-channel set is always empty. Also approves grants
+    /// without a real token (there is nothing to protect).
     #[arg(long)]
     dry_run: bool,
+
+    /// Seconds an unapproved request may sit pending before it lapses,
+    /// fail-closed. Zero is refused; capped at the approval-window ceiling.
+    #[arg(long, default_value_t = 300)]
+    approval_window: u64,
 }
 
 /// Set by the signal handler, read by the loops. SIGKILL-safety is not this
@@ -83,6 +92,15 @@ fn main() -> anyhow::Result<()> {
 
     if cli.interval == 0 {
         anyhow::bail!("--interval 0 is refused: a zero interval is a spin, not a daemon");
+    }
+    if cli.approval_window == 0 {
+        anyhow::bail!("--approval-window 0 is refused: a request could never be approved");
+    }
+    if cli.approval_window > MAX_APPROVAL_WINDOW_SECS {
+        anyhow::bail!(
+            "--approval-window {} exceeds the {MAX_APPROVAL_WINDOW_SECS}s ceiling",
+            cli.approval_window
+        );
     }
 
     let text = fs::read_to_string(&cli.inventory)
@@ -151,6 +169,37 @@ fn main() -> anyhow::Result<()> {
             ))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
     }
+    // The approval verifier. --dry-run approves anything (nothing is driven);
+    // otherwise every configured approver goes in the fail-closed AnyOf, and a
+    // deployment with no approver is refused at boot rather than failing every
+    // open — opening a grant is not possible without one.
+    let verifier: Box<dyn ApprovalVerifier> = if cli.dry_run {
+        Box::new(AcceptAny)
+    } else {
+        let mut approvers: Vec<Box<dyn ApprovalVerifier>> = Vec::new();
+        if let Some(approval) = &inventory.approval {
+            if !approval.ed25519.is_empty() {
+                let keys = approval
+                    .ed25519
+                    .iter()
+                    .map(|e| {
+                        parse_ssh_public_key(&e.public_key)
+                            .map(|pk| (e.key_id.clone(), pk))
+                            .map_err(|err| anyhow::anyhow!("{err}"))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                approvers.push(Box::new(SshSigVerifier::new(keys)));
+            }
+        }
+        if approvers.is_empty() {
+            anyhow::bail!(
+                "no [approval] approvers configured; opening a grant would always be refused. \
+                 Configure an approver, or run with --dry-run"
+            );
+        }
+        Box::new(AnyOf(approvers))
+    };
+
     let daemon = Arc::new(Daemon {
         inventory,
         store,
@@ -159,6 +208,8 @@ fn main() -> anyhow::Result<()> {
         deadman: Mutex::new(drivers::deadman::ExecDeadman::new(Box::new(
             transport::ExecSshTransport,
         ))),
+        approval_window: Duration::from_secs(cli.approval_window),
+        verifier,
     });
 
     // Recover from a crash mid-open before serving anything.
@@ -173,7 +224,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         println!(
             "lychgated: watching {} host(s); ssh, authorized-keys, bmc and vnc \
-             channels are live",
+             channels are live; opening a grant requires operator approval",
             daemon.inventory.hosts.len()
         );
     }

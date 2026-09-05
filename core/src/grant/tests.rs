@@ -251,3 +251,92 @@ fn renewing_anything_but_an_open_grant_is_rejected() {
     g.begin_revert(t(2_000)).unwrap();
     assert_eq!(g.renew(t(2_001), &ttl(600)), Err(GrantError::NotOpen));
 }
+
+// --- pending approval (M8) -------------------------------------------------
+
+const NONCE: [u8; 32] = [7u8; 32];
+
+#[test]
+fn begin_pending_from_closed_awaits_approval_within_the_window() {
+    let mut g = Grant::new();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    match g.status(t(100)) {
+        GrantStatus::AwaitingApproval { remaining } => {
+            assert_eq!(remaining, Duration::from_secs(200))
+        }
+        other => panic!("wanted AwaitingApproval, got {other:?}"),
+    }
+    // It is not open, and applies nothing.
+    assert!(!matches!(g.status(t(100)), GrantStatus::Open { .. }));
+}
+
+#[test]
+fn at_the_approval_deadline_it_is_expired_not_open() {
+    let mut g = Grant::new();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    assert_eq!(g.status(t(300)), GrantStatus::ApprovalExpired);
+    assert_eq!(g.status(t(301)), GrantStatus::ApprovalExpired);
+}
+
+#[test]
+fn a_second_pending_request_is_refused() {
+    let mut g = Grant::new();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    assert_eq!(
+        g.begin_pending(t(1), t(301), ttl(3600), NONCE),
+        Err(GrantError::AlreadyPending)
+    );
+}
+
+#[test]
+fn approve_anchors_expiry_at_approval_time_not_request_time() {
+    let mut g = Grant::new();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    // Approved at t(200): expiry is t(200)+3600, never t(0)+3600.
+    let expires = g.approve_to_opening(t(200), chans()).unwrap();
+    assert_eq!(expires, t(200 + 3600));
+    g.finish_open().unwrap();
+    assert!(matches!(g.status(t(200)), GrantStatus::Open { .. }));
+}
+
+#[test]
+fn approving_after_the_window_is_refused() {
+    let mut g = Grant::new();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    assert_eq!(
+        g.approve_to_opening(t(300), chans()),
+        Err(GrantError::ApprovalWindowElapsed)
+    );
+}
+
+#[test]
+fn cancelling_a_pending_request_closes_it_with_nothing_to_revert() {
+    let mut g = Grant::new();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    g.cancel_pending().unwrap();
+    assert_eq!(g.status(t(100)), GrantStatus::Closed);
+    // Cancel of a non-pending grant is refused.
+    assert_eq!(Grant::new().cancel_pending(), Err(GrantError::NotPending));
+}
+
+#[test]
+fn renewing_a_pending_grant_is_refused() {
+    let mut g = Grant::new();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    assert_eq!(g.renew(t(100), &ttl(3600)), Err(GrantError::NotOpen));
+}
+
+#[test]
+fn the_pending_request_carries_the_challenge_fields() {
+    let mut g = Grant::new();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    let req = g.pending_request("db-01", t(100)).unwrap();
+    assert_eq!(req.host(), "db-01");
+    assert_eq!(req.ttl_secs(), 3600);
+    assert_eq!(req.requested_at(), t(0));
+    // A lapsed window refuses.
+    assert_eq!(
+        g.pending_request("db-01", t(300)),
+        Err(GrantError::ApprovalWindowElapsed)
+    );
+}

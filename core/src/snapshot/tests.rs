@@ -61,6 +61,10 @@ fn record(
         expires_at: expires.map(t),
         since: since.map(t),
         channels: chans(),
+        requested_at: None,
+        approval_deadline: None,
+        ttl_secs: None,
+        nonce: None,
     }
 }
 
@@ -101,6 +105,10 @@ fn a_snapshot_records_every_lifecycle_state_and_omits_closed() {
             expires_at: None,
             since: Some(t(1_200)),
             channels: chans(),
+            requested_at: None,
+            approval_deadline: None,
+            ttl_secs: None,
+            nonce: None,
         }
     );
 
@@ -253,6 +261,10 @@ fn a_needs_revert_record_with_no_channels_round_trips_as_a_closing_transient() {
             expires_at: None,
             since: Some(t(5)),
             channels: Vec::new(),
+            requested_at: None,
+            approval_deadline: None,
+            ttl_secs: None,
+            nonce: None,
         },
     );
     let reg = GrantRegistry::from_parts(&inventory(), &doc).unwrap();
@@ -284,8 +296,143 @@ fn state_times_serialize_as_whole_epoch_seconds() {
     let json = serde_json::to_string(&reg.snapshot()).unwrap();
     assert_eq!(
         json,
-        r#"{"version":2,"grants":{"db-01":{"state":"open","opened_at":1700000000,"expires_at":1700014400,"channels":["ssh"]}}}"#
+        r#"{"version":3,"grants":{"db-01":{"state":"open","opened_at":1700000000,"expires_at":1700014400,"channels":["ssh"]}}}"#
     );
     let doc: StateDoc = serde_json::from_str(&json).unwrap();
     assert_eq!(doc, reg.snapshot());
+}
+
+// --- pending records (M8) --------------------------------------------------
+
+fn pending_record(
+    requested: Option<u64>,
+    deadline: Option<u64>,
+    ttl_secs: Option<u64>,
+    nonce: Option<&str>,
+) -> GrantRecord {
+    GrantRecord {
+        state: "pending".to_string(),
+        opened_at: None,
+        expires_at: None,
+        since: None,
+        channels: Vec::new(),
+        requested_at: requested.map(t),
+        approval_deadline: deadline.map(t),
+        ttl_secs,
+        nonce: nonce.map(|s| s.to_string()),
+    }
+}
+
+#[test]
+fn a_pending_record_round_trips() {
+    let inv = inventory();
+    let mut reg = GrantRegistry::new(&inv);
+    reg.begin_pending("db-01", t(1_000), t(1_300), ttl(3_600), [9u8; 32])
+        .unwrap();
+    let doc = reg.snapshot();
+    assert_eq!(doc.grants["db-01"].state, "pending");
+    let rebuilt = GrantRegistry::from_parts(&inv, &doc).unwrap();
+    assert!(matches!(
+        rebuilt.status("db-01", t(1_100)).unwrap(),
+        GrantStatus::AwaitingApproval { .. }
+    ));
+}
+
+#[test]
+fn a_pending_record_missing_a_required_field_is_refused() {
+    // Every field is required; drop the nonce.
+    let doc = doc_with(
+        "db-01",
+        pending_record(Some(1_000), Some(1_300), Some(3_600), None),
+    );
+    assert!(matches!(
+        GrantRegistry::from_parts(&inventory(), &doc),
+        Err(SnapshotError::Malformed { .. })
+    ));
+}
+
+#[test]
+fn a_pending_deadline_not_after_its_request_is_refused() {
+    let doc = doc_with(
+        "db-01",
+        pending_record(
+            Some(1_000),
+            Some(1_000),
+            Some(3_600),
+            Some(&"aa".repeat(32)),
+        ),
+    );
+    assert!(matches!(
+        GrantRegistry::from_parts(&inventory(), &doc),
+        Err(SnapshotError::ApprovalDeadlineNotAfterRequest { .. })
+    ));
+}
+
+#[test]
+fn a_pending_window_over_the_cap_is_refused() {
+    let doc = doc_with(
+        "db-01",
+        pending_record(
+            Some(0),
+            Some(MAX_APPROVAL_WINDOW_SECS + 1),
+            Some(3_600),
+            Some(&"aa".repeat(32)),
+        ),
+    );
+    assert!(matches!(
+        GrantRegistry::from_parts(&inventory(), &doc),
+        Err(SnapshotError::ApprovalWindowExceedsCap { .. })
+    ));
+}
+
+#[test]
+fn a_pending_record_carrying_channels_is_refused() {
+    let mut rec = pending_record(
+        Some(1_000),
+        Some(1_300),
+        Some(3_600),
+        Some(&"aa".repeat(32)),
+    );
+    rec.channels = vec![Channel::Vnc];
+    let doc = doc_with("db-01", rec);
+    assert!(matches!(
+        GrantRegistry::from_parts(&inventory(), &doc),
+        Err(SnapshotError::Malformed { .. })
+    ));
+}
+
+#[test]
+fn a_bad_nonce_is_refused() {
+    for nonce in ["zz".repeat(32), "aa".repeat(16) /* 16 bytes, not 32 */] {
+        let doc = doc_with(
+            "db-01",
+            pending_record(Some(1_000), Some(1_300), Some(3_600), Some(&nonce)),
+        );
+        assert!(matches!(
+            GrantRegistry::from_parts(&inventory(), &doc),
+            Err(SnapshotError::Malformed { .. })
+        ));
+    }
+}
+
+#[test]
+fn an_open_record_with_a_stray_pending_field_is_refused() {
+    let doc = doc_with(
+        "db-01",
+        GrantRecord {
+            state: "open".to_string(),
+            opened_at: Some(t(1_000)),
+            expires_at: Some(t(1_600)),
+            since: None,
+            channels: chans(),
+            requested_at: None,
+            approval_deadline: None,
+            ttl_secs: None,
+            nonce: Some("aa".repeat(32)), // stray
+        },
+    );
+    assert!(matches!(
+        GrantRegistry::from_parts(&inventory(), &doc),
+        Err(SnapshotError::Malformed { .. })
+    ));
 }

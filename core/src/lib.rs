@@ -18,18 +18,18 @@ pub mod ttl;
 pub mod vnc;
 
 pub use approval::{
-    parse_ssh_public_key, AnyOf, ApprovalError, ApprovalRequest, ApprovalVerifier, SshSigVerifier,
-    APPROVAL_NAMESPACE,
+    parse_ssh_public_key, AcceptAny, AnyOf, ApprovalError, ApprovalRequest, ApprovalVerifier,
+    RefuseAll, SshSigVerifier, APPROVAL_NAMESPACE,
 };
 pub use channel::{
     apply_channels, reestablish_channels, revert_channels, ApplyOutcome, ChannelDriver,
     ChannelState, DriverError, DriverSet, ReestablishOutcome, RevertOutcome,
 };
-pub use grant::{Grant, GrantError, GrantStatus};
+pub use grant::{Grant, GrantError, GrantStatus, MAX_APPROVAL_WINDOW_SECS};
 pub use inventory::{
     ApprovalConfig, BmcConfig, BmcMethod, BmcTls, Channel, Ed25519Approver, Host, Inventory,
     InventoryError, Os, SshConfig, VncConfig,
 };
-pub use registry::{ExpiredGrant, GrantRegistry, RegistryError};
+pub use registry::{ExpiredGrant, ExpiredPending, GrantRegistry, RegistryError};
 pub use snapshot::{GrantRecord, SnapshotError, StateDoc, STATE_VERSION};
 pub use ttl::{Ttl, TtlError, MAX_TTL_SECS, RENEWAL_WINDOW_SECS};

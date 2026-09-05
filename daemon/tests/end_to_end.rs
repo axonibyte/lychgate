@@ -152,9 +152,10 @@ fn a_single_pass_reaps_an_expired_grant_and_journals_it_before_exiting() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // State rewritten: the grant reverted to closed (absent), version intact.
+    // State rewritten: the grant reverted to closed (absent), and the v2 file
+    // was upgraded to the current version on write.
     let doc = grants_doc(&state_dir);
-    assert_eq!(doc["version"], 2);
+    assert_eq!(doc["version"], 3);
     assert_eq!(doc["grants"], serde_json::json!({}));
 
     // Journal: the grant is observed expired (expire), then — with an empty
@@ -404,25 +405,12 @@ struct Daemon {
 }
 
 impl Daemon {
-    /// The default: no drivers, so opens are bookkeeping and touch no host.
+    /// Starts a --dry-run daemon (no drivers, opens are bookkeeping, any token
+    /// approves) — the hermetic tier never touches a host.
     fn start(inv: &Path, state_dir: &Path) -> Daemon {
-        Self::spawn(inv, state_dir, true)
-    }
-
-    /// Drivers registered (as in production). Used by the one test that proves
-    /// a channel is actually driven without --dry-run.
-    fn start_live(inv: &Path, state_dir: &Path) -> Daemon {
-        Self::spawn(inv, state_dir, false)
-    }
-
-    fn spawn(inv: &Path, state_dir: &Path, dry_run: bool) -> Daemon {
         let socket = state_dir.join("lychgated.sock");
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_lychgated"));
-        if dry_run {
-            cmd.arg("--dry-run");
-        }
-        let child = cmd
-            .args(["--inventory"])
+        let child = Command::new(env!("CARGO_BIN_EXE_lychgated"))
+            .args(["--dry-run", "--inventory"])
             .arg(inv)
             .arg("--state-dir")
             .arg(state_dir)
@@ -475,7 +463,7 @@ fn the_operator_flow_works_end_to_end_through_both_binaries() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let daemon = Daemon::start(&inv, &state_dir);
 
-    // Open for 4 hours.
+    // Open requests approval — it does not open the grant.
     let out = cli(&daemon.socket, &["open", "--host", "db-01", "--ttl", "4h"]);
     assert!(
         out.status.success(),
@@ -483,17 +471,40 @@ fn the_operator_flow_works_end_to_end_through_both_binaries() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("grant open on db-01 until epoch"),
-        "{stdout}"
-    );
+    assert!(stdout.contains("approval required for db-01"), "{stdout}");
+    assert!(stdout.contains("challenge:"), "{stdout}");
 
-    // Status shows it open.
+    // Status shows it awaiting approval; web-02 untouched.
     let out = cli(&daemon.socket, &["status"]);
-    assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("db-01\topen"), "{stdout}");
+    assert!(stdout.contains("db-01\tawaiting-approval"), "{stdout}");
     assert!(stdout.contains("web-02\tclosed"), "{stdout}");
+
+    // A second open while pending is refused.
+    let out = cli(&daemon.socket, &["open", "--host", "db-01", "--ttl", "1h"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("awaiting approval"));
+
+    // Approve it (the daemon runs --dry-run, so any token is accepted). The
+    // grant opens here.
+    let out = cli(
+        &daemon.socket,
+        &["approve", "--host", "db-01", "--token", "any"],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("grant open on db-01 until epoch"));
+
+    // Status now shows it open.
+    let out = cli(&daemon.socket, &["status"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("db-01\topen"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 
     // Renewing with ~4h remaining is too early, refused in core's words,
     // verbatim through the wire.
@@ -502,7 +513,7 @@ fn the_operator_flow_works_end_to_end_through_both_binaries() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("renewal refused with"), "{stderr}");
 
-    // A second open is refused, not silently extended.
+    // A second open on the now-open grant is refused, not silently extended.
     let out = cli(&daemon.socket, &["open", "--host", "db-01", "--ttl", "1h"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("already open"));
@@ -529,9 +540,20 @@ fn the_operator_flow_works_end_to_end_through_both_binaries() {
         .iter()
         .map(|l| l["event"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(events, ["daemon-start", "open", "close", "daemon-stop"]);
+    assert_eq!(
+        events,
+        [
+            "daemon-start",
+            "requested",
+            "approved",
+            "open",
+            "close",
+            "daemon-stop"
+        ]
+    );
     let lines = journal_lines(&state_dir);
-    let open = &lines[1];
+    let open = &lines[3];
+    assert_eq!(open["event"], "open");
     assert_eq!(open["host"], "db-01");
     assert_eq!(open["ttl_secs"], 4 * 3600);
     // --dry-run drives nothing, so nothing was applied, but the declared
@@ -539,7 +561,7 @@ fn the_operator_flow_works_end_to_end_through_both_binaries() {
     assert_eq!(open["applied"], serde_json::json!([]));
     assert_eq!(open["declared"], serde_json::json!(["vnc"]));
     assert!(open["expires_at"].is_u64());
-    assert_eq!(lines[2]["host"], "db-01");
+    assert_eq!(lines[4]["event"], "close");
 }
 
 #[test]
@@ -551,8 +573,17 @@ fn a_grant_near_expiry_can_be_renewed_and_the_renewal_is_journaled() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let daemon = Daemon::start(&inv, &state_dir);
 
-    // 90 seconds remaining is inside the 2-hour renewal window.
+    // Request, then approve — 90 seconds remaining is inside the renewal window.
     let out = cli(&daemon.socket, &["open", "--host", "db-01", "--ttl", "90s"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = cli(
+        &daemon.socket,
+        &["approve", "--host", "db-01", "--token", "any"],
+    );
     assert!(
         out.status.success(),
         "{}",
@@ -571,7 +602,17 @@ fn a_grant_near_expiry_can_be_renewed_and_the_renewal_is_journaled() {
         .iter()
         .map(|l| l["event"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(events, ["daemon-start", "open", "renew", "daemon-stop"]);
+    assert_eq!(
+        events,
+        [
+            "daemon-start",
+            "requested",
+            "approved",
+            "open",
+            "renew",
+            "daemon-stop"
+        ]
+    );
 }
 
 #[test]
@@ -593,7 +634,7 @@ fn a_request_from_a_future_protocol_is_refused_over_the_socket() {
     let v: serde_json::Value = serde_json::from_str(reply.trim()).unwrap();
     assert_eq!(v["result"], "refused");
     let err = v["error"].as_str().unwrap();
-    assert!(err.contains("protocol 9") && err.contains('2'), "{err}");
+    assert!(err.contains("protocol 9") && err.contains('3'), "{err}");
 
     daemon.stop();
 }
@@ -726,57 +767,35 @@ fn the_cli_enforces_ttl_policy_before_touching_the_socket() {
 
 /// A local port with nothing listening (bound then released): a connect to it
 /// is refused, so an ssh there fails fast.
-fn dead_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 #[test]
-fn without_dry_run_the_vnc_channel_is_actually_driven() {
-    // The counterpart to every other test here: with the drivers registered,
-    // opening a vnc grant reaches for the (dead) hypervisor and is refused,
-    // rather than succeeding as bookkeeping. This is what proves --dry-run is
-    // load-bearing: the same open under --dry-run succeeds with applied=[].
+fn without_dry_run_the_daemon_refuses_to_start_with_no_approver() {
+    // The counterpart to the dry-run tests: a serving daemon requires an
+    // operator approver, so with none configured it refuses to start rather
+    // than serve an unguarded open. This proves --dry-run (which needs no
+    // approver) is a distinct, deliberate mode. The full real-approval +
+    // real-driver path is the guest acceptance's job (it needs ssh-keygen).
     let _serial = serial();
-    let dir = Scratch::new("livevnc");
-    let inv_path = dir.join("inventory.toml");
-    std::fs::write(
-        &inv_path,
-        format!(
-            r#"
-[[hosts]]
-name = "hv"
-address = "127.0.0.1"
-os = "freebsd"
-channels = ["vnc"]
-
-[hosts.vnc]
-agent_user = "lychgate"
-port = {}
-rfb_port = 5900
-local_port = {}
-target = "vm"
-set_password_cmd = "true {{target}} {{password_file}}"
-clear_password_cmd = "true {{target}}"
-"#,
-            dead_port(),
-            dead_port(),
-        ),
-    )
-    .unwrap();
+    let dir = Scratch::new("noapprover");
+    let inv = write_inventory(&dir); // vnc hosts, no [approval] table
     let state_dir = dir.join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
-    let daemon = Daemon::start_live(&inv_path, &state_dir);
-    let out = cli(&daemon.socket, &["open", "--host", "hv", "--ttl", "1h"]);
-    daemon.stop();
-
+    // No --dry-run: the daemon must refuse to come up.
+    let out = Command::new(env!("CARGO_BIN_EXE_lychgated"))
+        .args(["--inventory"])
+        .arg(&inv)
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("--once")
+        .output()
+        .expect("spawn lychgated");
     assert!(
         !out.status.success(),
-        "the open should be refused: the driver could not reach the hypervisor; stdout={}",
-        String::from_utf8_lossy(&out.stdout)
+        "the daemon should refuse to start without an approver"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("approver"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }

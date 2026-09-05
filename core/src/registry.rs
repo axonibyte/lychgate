@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::SystemTime;
 
+use crate::approval::ApprovalRequest;
 use crate::grant::{Grant, GrantError, GrantStatus};
 use crate::inventory::{Channel, Inventory};
 use crate::ttl::Ttl;
@@ -41,6 +42,15 @@ pub struct ExpiredGrant {
     pub opened_at: SystemTime,
     pub expires_at: SystemTime,
     pub channels: Vec<Channel>,
+}
+
+/// A pending request whose approval window lapsed unapproved, reaped to closed.
+/// No nonce (a challenge) or token is carried into the audit record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpiredPending {
+    pub host: String,
+    pub requested_at: SystemTime,
+    pub approval_deadline: SystemTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +144,45 @@ impl GrantRegistry {
             .map_err(RegistryError::Grant)
     }
 
+    pub fn begin_pending(
+        &mut self,
+        host: &str,
+        now: SystemTime,
+        approval_deadline: SystemTime,
+        ttl: Ttl,
+        nonce: [u8; 32],
+    ) -> Result<(), RegistryError> {
+        self.grant_mut(host)?
+            .begin_pending(now, approval_deadline, ttl, nonce)
+            .map_err(RegistryError::Grant)
+    }
+
+    /// The challenge for a host's pending request, for the verifier.
+    pub fn pending(&self, host: &str, now: SystemTime) -> Result<ApprovalRequest, RegistryError> {
+        self.grants
+            .get(host)
+            .ok_or_else(|| RegistryError::UnknownHost(host.to_string()))?
+            .pending_request(host, now)
+            .map_err(RegistryError::Grant)
+    }
+
+    pub fn approve_to_opening(
+        &mut self,
+        host: &str,
+        now: SystemTime,
+        channels: Vec<Channel>,
+    ) -> Result<SystemTime, RegistryError> {
+        self.grant_mut(host)?
+            .approve_to_opening(now, channels)
+            .map_err(RegistryError::Grant)
+    }
+
+    pub fn cancel_pending(&mut self, host: &str) -> Result<(), RegistryError> {
+        self.grant_mut(host)?
+            .cancel_pending()
+            .map_err(RegistryError::Grant)
+    }
+
     pub fn status(&self, host: &str, now: SystemTime) -> Result<GrantStatus, RegistryError> {
         self.grants
             .get(host)
@@ -175,6 +224,36 @@ impl GrantRegistry {
                 opened_at,
                 expires_at,
                 channels,
+            });
+        }
+        expired
+    }
+
+    /// Cancels every pending request observed past its approval window and
+    /// returns what the journal needs, in name order. Journal-once: the grants
+    /// are Closed afterwards. Nothing is reverted — a pending request applied
+    /// nothing.
+    pub fn reap_expired_pending(&mut self, now: SystemTime) -> Vec<ExpiredPending> {
+        let mut expired = Vec::new();
+        for (name, grant) in self.grants.iter_mut() {
+            if grant.status(now) != GrantStatus::ApprovalExpired {
+                continue;
+            }
+            let (requested_at, approval_deadline) = match grant.parts() {
+                Some(crate::grant::GrantParts::Pending {
+                    requested_at,
+                    approval_deadline,
+                    ..
+                }) => (requested_at, approval_deadline),
+                _ => unreachable!("only pending grants observe as approval-expired"),
+            };
+            grant
+                .cancel_pending()
+                .expect("an approval-expired grant is pending");
+            expired.push(ExpiredPending {
+                host: name.clone(),
+                requested_at,
+                approval_deadline,
             });
         }
         expired

@@ -112,6 +112,8 @@ impl Harness {
                 fail_remove,
                 fired: Arc::clone(&deadman_fired),
             })),
+            approval_window: std::time::Duration::from_secs(300),
+            verifier: Box::new(lychgate_core::AcceptAny),
         };
         Harness {
             daemon,
@@ -161,12 +163,30 @@ fn t(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
 }
 
+/// Open then approve, so the grant actually opens (the Harness's verifier is
+/// AcceptAny, so any token approves). Returns the final result — Ok once open,
+/// or the refusal if the open itself was refused (e.g. AlreadyOpen/Already
+/// Pending). The two steps run at the same `now`, well inside the approval
+/// window.
 fn open(h: &Harness, now: SystemTime, ttl: &str) -> ResponseResult {
-    h.daemon
+    let requested = h
+        .daemon
         .dispatch(
             &Op::Open {
                 host: "db-01".into(),
                 ttl: ttl.into(),
+            },
+            now,
+        )
+        .unwrap();
+    if requested.result != ResponseResult::Ok {
+        return requested.result;
+    }
+    h.daemon
+        .dispatch(
+            &Op::Approve {
+                host: "db-01".into(),
+                token: "any-token".into(),
             },
             now,
         )
@@ -290,14 +310,26 @@ fn a_stuck_revert_is_retried_by_the_pass_until_it_clears() {
             fail_remove: false,
             fired: Arc::new(Mutex::new(false)),
         })),
+        approval_window: std::time::Duration::from_secs(300),
+        verifier: Box::new(lychgate_core::AcceptAny),
     };
 
-    // Open fails (ssh apply fails, revert fails): needs-revert, stuck on ssh.
+    // Open is requested, then approved — and the apply fails (ssh apply fails,
+    // revert fails): needs-revert, stuck on ssh.
     daemon
         .dispatch(
             &Op::Open {
                 host: "db-01".into(),
                 ttl: "4h".into(),
+            },
+            t(0),
+        )
+        .unwrap();
+    daemon
+        .dispatch(
+            &Op::Approve {
+                host: "db-01".into(),
+                token: "any".into(),
             },
             t(0),
         )
@@ -416,6 +448,8 @@ fn boot_recovery_demotes_a_stored_opening_to_needs_revert() {
             fail_remove: false,
             fired: Arc::new(Mutex::new(false)),
         })),
+        approval_window: std::time::Duration::from_secs(300),
+        verifier: Box::new(lychgate_core::AcceptAny),
     };
     daemon.boot_recover(t(10)).unwrap();
     // Demoted: every intended channel is now awaiting revert.
@@ -496,12 +530,22 @@ fn opening_installs_the_deadman_after_the_channels_apply() {
 #[test]
 fn a_deadman_install_failure_fails_the_open_and_unwinds_the_channels() {
     let h = Harness::with_deadman(&[(Channel::Ssh, Script::Succeed)], true, false);
-    let resp = h
-        .daemon
+    h.daemon
         .dispatch(
             &Op::Open {
                 host: "db-01".into(),
                 ttl: "4h".into(),
+            },
+            t(0),
+        )
+        .unwrap();
+    // The drivers run — and the dead-man install fails — on approve.
+    let resp = h
+        .daemon
+        .dispatch(
+            &Op::Approve {
+                host: "db-01".into(),
+                token: "any".into(),
             },
             t(0),
         )
@@ -695,8 +739,10 @@ fn a_bmc_style_secret_reaches_the_open_response_but_never_the_journal() {
             fail_remove: false,
             fired: Arc::new(Mutex::new(false)),
         })),
+        approval_window: std::time::Duration::from_secs(300),
+        verifier: Box::new(lychgate_core::AcceptAny),
     };
-    let resp = daemon
+    daemon
         .dispatch(
             &Op::Open {
                 host: "db-01".into(),
@@ -705,7 +751,18 @@ fn a_bmc_style_secret_reaches_the_open_response_but_never_the_journal() {
             t(0),
         )
         .unwrap();
-    // Oracle 1: the operator got the password in the response.
+    // The secret is produced on approve (where the grant actually opens), not
+    // on the pending open.
+    let resp = daemon
+        .dispatch(
+            &Op::Approve {
+                host: "db-01".into(),
+                token: "any".into(),
+            },
+            t(0),
+        )
+        .unwrap();
+    // Oracle 1: the operator got the password in the (approve) response.
     assert_eq!(resp.secret.as_deref(), Some("top-secret-bmc-pw"));
 
     // Oracle 2: the journal file, read raw, contains no trace of it — not in
@@ -778,6 +835,8 @@ fn boot_reestablishes_an_open_vnc_grant_that_outlived_a_restart() {
         journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
         drivers: Mutex::new(drivers),
         deadman: Mutex::new(dummy_deadman()),
+        approval_window: std::time::Duration::from_secs(300),
+        verifier: Box::new(lychgate_core::AcceptAny),
     };
 
     daemon.boot_recover(t(2000)).unwrap();
@@ -825,6 +884,8 @@ fn a_vnc_grant_whose_tunnel_cannot_be_reestablished_is_reverted() {
         journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
         drivers: Mutex::new(drivers),
         deadman: Mutex::new(dummy_deadman()),
+        approval_window: std::time::Duration::from_secs(300),
+        verifier: Box::new(lychgate_core::AcceptAny),
     };
 
     daemon.boot_recover(t(2000)).unwrap();
@@ -837,11 +898,12 @@ fn a_vnc_grant_whose_tunnel_cannot_be_reestablished_is_reverted() {
 #[test]
 fn simultaneous_opens_of_one_console_produce_one_grant_and_one_apply() {
     // Tier 6, the milestone's headline: N threads race to open the same host.
-    // The store's file lock plus begin_open (which refuses any non-Closed
-    // grant) serialize them, so exactly one apply runs — one tunnel, one
-    // password — and the losers are refused without ever reaching a driver.
-    // The oracles are resource state (one apply) and committed state (one open
-    // grant); response counts are only corroboration.
+    // The store's file lock plus begin_pending (which refuses any non-Closed
+    // grant) serialize them, so exactly one request goes pending and the losers
+    // are refused — no driver runs yet. A single approve then opens it, and
+    // exactly one apply runs: one tunnel, one password. The oracles are the
+    // committed state (one pending, then one open) and the resource state (one
+    // apply); response counts are only corroboration.
     let dir = scratch_dir("vnc-race");
     let log: CallLog = Arc::new(Mutex::new(Vec::new()));
     let mut drivers = DriverSet::new();
@@ -865,6 +927,8 @@ fn simultaneous_opens_of_one_console_produce_one_grant_and_one_apply() {
         journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
         drivers: Mutex::new(drivers),
         deadman: Mutex::new(dummy_deadman()),
+        approval_window: std::time::Duration::from_secs(300),
+        verifier: Box::new(lychgate_core::AcceptAny),
     });
 
     const N: usize = 16;
@@ -888,23 +952,26 @@ fn simultaneous_opens_of_one_console_produce_one_grant_and_one_apply() {
         .collect();
     let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
-    // Oracle 1 — resource state: exactly one apply ran (one tunnel, one
-    // password), no matter how many opens raced.
-    let applies = log
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|(c, op)| *c == Channel::Vnc && *op == "apply")
-        .count();
-    assert_eq!(applies, 1, "exactly one apply may run");
+    // No driver ran during the race: opening only records a pending request.
+    assert_eq!(
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, op)| *op == "apply")
+            .count(),
+        0,
+        "opening must not drive a channel before approval"
+    );
 
-    // Oracle 2 — committed state: one grant, open, holding the vnc channel.
+    // Oracle 1 — committed state: exactly one grant, awaiting approval.
     let doc = daemon.store.read().unwrap();
     assert_eq!(doc.grants.len(), 1);
-    assert_eq!(daemon.status(t(1000)).unwrap()[0].state, GrantState::Open);
-
-    // Corroboration only: one open succeeded; the rest were refused as already
-    // open / mid-open, never as a driver failure.
+    assert_eq!(
+        daemon.status(t(1000)).unwrap()[0].state,
+        GrantState::AwaitingApproval
+    );
+    // Corroboration: exactly one open won the pending slot; the rest were
+    // refused as already-pending, never as a driver failure.
     let oks = results
         .iter()
         .filter(|r| r.result == ResponseResult::Ok)
@@ -916,10 +983,33 @@ fn simultaneous_opens_of_one_console_produce_one_grant_and_one_apply() {
     {
         let e = r.error.as_deref().unwrap_or("");
         assert!(
-            e.contains("already open") || e.contains("mid-open"),
+            e.contains("awaiting approval") || e.contains("mid-open"),
             "loser refused for the wrong reason: {e}"
         );
     }
+
+    // A single approval opens it, and exactly one apply runs — one tunnel, one
+    // password.
+    let approved = daemon
+        .dispatch(
+            &Op::Approve {
+                host: "hv".into(),
+                token: "any".into(),
+            },
+            t(1000),
+        )
+        .unwrap();
+    assert_eq!(approved.result, ResponseResult::Ok);
+    assert_eq!(
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|(c, op)| *c == Channel::Vnc && *op == "apply")
+            .count(),
+        1,
+        "exactly one apply may run"
+    );
+    assert_eq!(daemon.status(t(1000)).unwrap()[0].state, GrantState::Open);
 }
 
 #[test]
@@ -940,12 +1030,24 @@ fn a_vnc_open_returns_the_one_time_password_labelled_and_the_console_endpoint() 
         journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
         drivers: Mutex::new(drivers),
         deadman: Mutex::new(dummy_deadman()),
+        approval_window: std::time::Duration::from_secs(300),
+        verifier: Box::new(lychgate_core::AcceptAny),
     };
-    let r = daemon
+    daemon
         .dispatch(
             &Op::Open {
                 host: "hv".into(),
                 ttl: "1h".into(),
+            },
+            t(1000),
+        )
+        .unwrap();
+    // The grant opens — and the secret is produced — on approve.
+    let r = daemon
+        .dispatch(
+            &Op::Approve {
+                host: "hv".into(),
+                token: "any".into(),
             },
             t(1000),
         )

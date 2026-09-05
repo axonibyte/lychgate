@@ -91,6 +91,34 @@ pub enum Event {
         host: String,
         channels: Vec<Channel>,
     },
+    /// A grant was requested and awaits operator approval. No access yet.
+    Requested {
+        host: String,
+        declared: Vec<Channel>,
+        ttl_secs: u64,
+        requested_at: u64,
+        approval_deadline: u64,
+    },
+    /// A pending request was approved by an operator (the Open event follows).
+    Approved {
+        host: String,
+        requested_at: u64,
+    },
+    /// A pending request's approval window lapsed unapproved; it was reaped.
+    RequestExpired {
+        host: String,
+        requested_at: u64,
+        approval_deadline: u64,
+    },
+    /// An operator cancelled a pending request before it was approved.
+    RequestCancelled {
+        host: String,
+    },
+    /// An approval token was rejected. The reason never contains the token.
+    ApprovalDenied {
+        host: String,
+        reason: String,
+    },
 }
 
 #[derive(Serialize)]

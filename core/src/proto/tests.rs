@@ -51,26 +51,26 @@ fn every_wire_op_decodes_to_its_variant() {
     // encode_request: the duplication is the check.
     let cases = [
         (
-            r#"{"proto":2,"op":"open","host":"db-01","ttl":"4h"}"#,
+            r#"{"proto":3,"op":"open","host":"db-01","ttl":"4h"}"#,
             Op::Open {
                 host: "db-01".into(),
                 ttl: "4h".into(),
             },
         ),
         (
-            r#"{"proto":2,"op":"close","host":"db-01"}"#,
+            r#"{"proto":3,"op":"close","host":"db-01"}"#,
             Op::Close {
                 host: "db-01".into(),
             },
         ),
         (
-            r#"{"proto":2,"op":"renew","host":"db-01","ttl":"1h"}"#,
+            r#"{"proto":3,"op":"renew","host":"db-01","ttl":"1h"}"#,
             Op::Renew {
                 host: "db-01".into(),
                 ttl: "1h".into(),
             },
         ),
-        (r#"{"proto":2,"op":"status"}"#, Op::Status),
+        (r#"{"proto":3,"op":"status"}"#, Op::Status),
     ];
     for (line, want) in cases {
         assert_eq!(decode_request(line).unwrap(), want, "{line}");
@@ -101,13 +101,13 @@ fn encoded_requests_decode_back_to_the_same_op() {
 fn a_request_from_any_other_protocol_version_is_refused_naming_both() {
     // v1 requests are refused too: the v2 vocabulary (new grant states)
     // means a v1 speaker would misread responses.
-    for theirs in [1u32, 3, 9] {
+    for theirs in [1u32, 2, 9] {
         let line = format!(r#"{{"proto":{theirs},"op":"status"}}"#);
         let err = decode_request(&line).unwrap_err();
         assert_eq!(err, ProtoError::VersionMismatch { theirs });
         let msg = err.to_string();
         assert!(
-            msg.contains(&theirs.to_string()) && msg.contains('2'),
+            msg.contains(&theirs.to_string()) && msg.contains('3'),
             "{msg}"
         );
     }
@@ -131,17 +131,17 @@ fn the_version_refusal_wins_over_unknown_field_refusals() {
 
 #[test]
 fn an_unknown_field_on_the_current_protocol_is_refused_rather_than_ignored() {
-    let err = decode_request(r#"{"proto":2,"op":"status","nonce":"abc"}"#).unwrap_err();
+    let err = decode_request(r#"{"proto":3,"op":"status","nonce":"abc"}"#).unwrap_err();
     assert!(matches!(err, ProtoError::Malformed(_)), "{err}");
 }
 
 #[test]
 fn an_op_missing_its_required_fields_is_refused_naming_the_field() {
     let cases = [
-        (r#"{"proto":2,"op":"open","ttl":"4h"}"#, "host"),
-        (r#"{"proto":2,"op":"open","host":"h"}"#, "ttl"),
-        (r#"{"proto":2,"op":"close"}"#, "host"),
-        (r#"{"proto":2,"op":"renew","host":"h"}"#, "ttl"),
+        (r#"{"proto":3,"op":"open","ttl":"4h"}"#, "host"),
+        (r#"{"proto":3,"op":"open","host":"h"}"#, "ttl"),
+        (r#"{"proto":3,"op":"close"}"#, "host"),
+        (r#"{"proto":3,"op":"renew","host":"h"}"#, "ttl"),
     ];
     for (line, field) in cases {
         let err = decode_request(line).unwrap_err();
@@ -151,7 +151,7 @@ fn an_op_missing_its_required_fields_is_refused_naming_the_field() {
 
 #[test]
 fn an_unknown_op_is_refused_by_name() {
-    let err = decode_request(r#"{"proto":2,"op":"detonate"}"#).unwrap_err();
+    let err = decode_request(r#"{"proto":3,"op":"detonate"}"#).unwrap_err();
     assert_eq!(err, ProtoError::UnknownOp("detonate".into()));
     assert!(err.to_string().contains("detonate"));
 }
@@ -159,7 +159,7 @@ fn an_unknown_op_is_refused_by_name() {
 #[test]
 fn a_request_over_the_line_cap_is_refused_unread() {
     let line = format!(
-        r#"{{"proto":2,"op":"open","host":"{}","ttl":"1h"}}"#,
+        r#"{{"proto":3,"op":"open","host":"{}","ttl":"1h"}}"#,
         "x".repeat(MAX_LINE_BYTES)
     );
     let err = decode_request(&line).unwrap_err();
@@ -264,7 +264,7 @@ fn responses_carry_the_current_protocol_version() {
         ..Response::refused("x")
     };
     let v: serde_json::Value = serde_json::from_str(&ok.encode()).unwrap();
-    assert_eq!(v["proto"], 2);
+    assert_eq!(v["proto"], 3);
 }
 
 #[test]
@@ -285,4 +285,57 @@ fn a_response_secret_label_round_trips_and_is_omitted_when_absent() {
     // Absent by default: the field must not appear, so a daemon that never
     // sets it prints exactly as before (the bmc acceptance greps that line).
     assert!(!Response::ok().encode().contains("secret_label"));
+}
+
+// --- approve op + approval status states (M8) ------------------------------
+
+#[test]
+fn the_protocol_version_is_three() {
+    assert_eq!(PROTO_VERSION, 3);
+}
+
+#[test]
+fn approve_decodes_with_host_and_token_and_round_trips() {
+    let line = r#"{"proto":3,"op":"approve","host":"db-01","token":"lg1.sig"}"#;
+    assert_eq!(
+        decode_request(line).unwrap(),
+        Op::Approve {
+            host: "db-01".into(),
+            token: "lg1.sig".into()
+        }
+    );
+    let op = Op::Approve {
+        host: "db-01".into(),
+        token: "tok".into(),
+    };
+    assert_eq!(decode_request(&encode_request(&op)).unwrap(), op);
+}
+
+#[test]
+fn approve_missing_host_or_token_is_refused_naming_the_field() {
+    let no_token = decode_request(r#"{"proto":3,"op":"approve","host":"h"}"#).unwrap_err();
+    assert!(no_token.to_string().contains("token"), "{no_token}");
+    let no_host = decode_request(r#"{"proto":3,"op":"approve","token":"t"}"#).unwrap_err();
+    assert!(no_host.to_string().contains("host"), "{no_host}");
+}
+
+#[test]
+fn the_new_status_states_use_kebab_case_names_and_round_trip() {
+    for (state, name) in [
+        (GrantState::AwaitingApproval, "awaiting-approval"),
+        (GrantState::ApprovalExpired, "approval-expired"),
+    ] {
+        let line = GrantLine {
+            host: "h".into(),
+            state: state.clone(),
+            remaining_secs: None,
+            stuck_channels: None,
+        };
+        let json = serde_json::to_string(&line).unwrap();
+        assert!(json.contains(name), "{json}");
+        assert_eq!(
+            serde_json::from_str::<GrantLine>(&json).unwrap().state,
+            state
+        );
+    }
 }

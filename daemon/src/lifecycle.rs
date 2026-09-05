@@ -15,14 +15,15 @@
 //! grants; revert retries touch only NeedsRevert, which a fresh open is not).
 
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 
-use lychgate_core::proto::{status_lines, Op, Response};
+use lychgate_core::proto::{status_lines, Op, PendingChallenge, Response};
 use lychgate_core::{
-    apply_channels, reestablish_channels, revert_channels, ApplyOutcome, Channel, DriverSet,
-    GrantRegistry, Host, Inventory, ReestablishOutcome, RegistryError, RevertOutcome, Ttl,
+    apply_channels, reestablish_channels, revert_channels, ApplyOutcome, ApprovalRequest,
+    ApprovalVerifier, Channel, DriverSet, GrantRegistry, GrantStatus, Host, Inventory,
+    ReestablishOutcome, RegistryError, RevertOutcome, Ttl,
 };
 
 use crate::drivers::deadman::DeadmanControl;
@@ -35,12 +36,27 @@ pub(crate) fn epoch_secs(t: SystemTime) -> u64 {
         .unwrap_or(0)
 }
 
+/// A fresh challenge nonce from the OS CSPRNG. Core stays free of randomness;
+/// the daemon chooses the nonce and hands it to the pure request type.
+fn generate_nonce() -> [u8; 32] {
+    use std::io::Read;
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .expect("/dev/urandom is readable on every supported platform");
+    bytes
+}
+
 pub struct Daemon {
     pub inventory: Inventory,
     pub store: Store,
     pub journal: Mutex<Journal>,
     pub drivers: Mutex<DriverSet>,
     pub deadman: Mutex<Box<dyn DeadmanControl>>,
+    /// How long an unapproved request may sit pending before it lapses.
+    pub approval_window: Duration,
+    /// Verifies operator approval tokens. `&self` — no lock needed here.
+    pub verifier: Box<dyn ApprovalVerifier>,
 }
 
 /// The backstop rides the SSH transport, so only ssh-configured hosts get
@@ -101,6 +117,7 @@ impl Daemon {
     pub fn dispatch(&self, op: &Op, now: SystemTime) -> anyhow::Result<Response> {
         match op {
             Op::Open { host, ttl } => self.open(host, ttl, now),
+            Op::Approve { host, token } => self.approve(host, token, now),
             Op::Renew { host, ttl } => self.renew(host, ttl, now),
             Op::Close { host } => self.close(host, now),
             Op::Status => Ok(Response {
@@ -117,48 +134,145 @@ impl Daemon {
         Ok(status_lines(&registry, now))
     }
 
+    /// Open no longer opens: it records a request awaiting operator approval
+    /// and returns the challenge to sign. No driver runs, no access is granted.
     fn open(&self, host: &str, ttl_str: &str, now: SystemTime) -> anyhow::Result<Response> {
         let ttl = match Ttl::parse(ttl_str) {
             Ok(t) => t,
             Err(e) => return Ok(Response::refused(e)),
         };
+        let approval_deadline = match now.checked_add(self.approval_window) {
+            Some(d) => d,
+            None => return Ok(Response::refused("the approval window overflows the clock")),
+        };
+        let nonce = generate_nonce();
+        let declared = self.declared(host);
+        // Persist the pending intent, or refuse without writing.
+        match self
+            .with_registry(|reg| reg.begin_pending(host, now, approval_deadline, ttl, nonce))?
+        {
+            Ok(()) => {}
+            Err(refusal) => return Ok(Response::refused(refusal)),
+        }
+        self.journal(
+            now,
+            &Event::Requested {
+                host: host.to_string(),
+                declared,
+                ttl_secs: ttl.duration().as_secs(),
+                requested_at: epoch_secs(now),
+                approval_deadline: epoch_secs(approval_deadline),
+            },
+        )?;
+        let challenge =
+            ApprovalRequest::new(nonce, host.to_string(), ttl.duration().as_secs(), now)
+                .challenge_string();
+        Ok(Response {
+            pending: Some(PendingChallenge {
+                host: host.to_string(),
+                challenge,
+                ttl_secs: ttl.duration().as_secs(),
+                requested_at: epoch_secs(now),
+                approval_deadline: epoch_secs(approval_deadline),
+            }),
+            ..Response::ok()
+        })
+    }
+
+    /// Verify an operator's approval token against the pending request and, if
+    /// it checks out, open the grant.
+    fn approve(&self, host: &str, token: &str, now: SystemTime) -> anyhow::Result<Response> {
+        // The pending request the token must match, read before verifying.
+        let request = {
+            let doc = self.store.read()?;
+            let registry = GrantRegistry::from_parts(&self.inventory, &doc)
+                .with_context(|| format!("validating {}", self.store.path().display()))?;
+            match registry.pending(host, now) {
+                Ok(r) => r,
+                Err(refusal) => return Ok(Response::refused(refusal)),
+            }
+        };
+        // Verify outside the store lock. A denied approval is journaled — an
+        // audit record exists for exactly this.
+        if let Err(e) = self.verifier.verify(&request, token) {
+            self.journal(
+                now,
+                &Event::ApprovalDenied {
+                    host: host.to_string(),
+                    reason: e.to_string(),
+                },
+            )?;
+            return Ok(Response::refused(format!("approval refused: {e}")));
+        }
         let declared = self.declared(host);
         let to_apply = self
             .drivers
             .lock()
             .expect("drivers poisoned")
             .drivable(&declared);
-
-        // Step 1: persist the intent, or refuse without writing.
+        // Pending -> Opening under the lock: re-checks the state, closing the
+        // gap with the read above (a concurrent close or a window lapse refuses).
         let expires =
-            match self.with_registry(|reg| reg.begin_open(host, now, &ttl, to_apply.clone()))? {
-                Ok(expires) => expires,
+            match self.with_registry(|reg| reg.approve_to_opening(host, now, to_apply.clone()))? {
+                Ok(e) => e,
                 Err(refusal) => return Ok(Response::refused(refusal)),
             };
+        self.journal(
+            now,
+            &Event::Approved {
+                host: host.to_string(),
+                requested_at: epoch_secs(request.requested_at()),
+            },
+        )?;
+        let host_cfg = self
+            .host(host)
+            .expect("approve_to_opening accepted a known host");
+        self.drive_open(
+            host,
+            &host_cfg,
+            to_apply,
+            declared,
+            request.ttl_secs(),
+            expires,
+            now,
+        )
+    }
 
-        // Step 2: drivers, with the store lock released.
-        let host_cfg = self.host(host).expect("begin_open accepted a known host");
+    /// Runs the drivers for a grant already committed to Opening: installs the
+    /// dead-man, commits Open or NeedsRevert, journals it, and hands back any
+    /// one-time secret. Reached only after an approval.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_open(
+        &self,
+        host: &str,
+        host_cfg: &Host,
+        to_apply: Vec<Channel>,
+        declared: Vec<Channel>,
+        ttl_secs: u64,
+        expires: SystemTime,
+        now: SystemTime,
+    ) -> anyhow::Result<Response> {
         let outcome = {
             let mut drivers = self.drivers.lock().expect("drivers poisoned");
-            apply_channels(&mut drivers, &host_cfg, &to_apply)
+            apply_channels(&mut drivers, host_cfg, &to_apply)
         };
 
-        // Step 3: commit the terminal state and journal it.
+        // Commit the terminal state and journal it.
         match outcome {
             ApplyOutcome::Applied { applied } => {
                 // The backstop goes in before the grant may exist: a grant
                 // without its dead-man must not open. An install failure
                 // unwinds the freshly applied channels.
-                if wants_deadman(&host_cfg, &applied) {
+                if wants_deadman(host_cfg, &applied) {
                     let installed = self
                         .deadman
                         .lock()
                         .expect("deadman poisoned")
-                        .install(&host_cfg, expires);
+                        .install(host_cfg, expires);
                     if let Err(error) = installed {
                         let outcome = {
                             let mut drivers = self.drivers.lock().expect("drivers poisoned");
-                            revert_channels(&mut drivers, &host_cfg, &applied)
+                            revert_channels(&mut drivers, host_cfg, &applied)
                         };
                         let stuck: Vec<Channel> = match outcome {
                             RevertOutcome::Reverted => Vec::new(),
@@ -196,7 +310,7 @@ impl Daemon {
                         host: host.to_string(),
                         applied: applied.clone(),
                         declared,
-                        ttl_secs: ttl.duration().as_secs(),
+                        ttl_secs,
                         expires_at: epoch_secs(expires),
                     },
                 )?;
@@ -320,6 +434,31 @@ impl Daemon {
     }
 
     fn close(&self, host: &str, now: SystemTime) -> anyhow::Result<Response> {
+        // A pending request is cancelled, not reverted — it applied nothing.
+        let status = {
+            let doc = self.store.read()?;
+            let registry = GrantRegistry::from_parts(&self.inventory, &doc)
+                .with_context(|| format!("validating {}", self.store.path().display()))?;
+            registry.status(host, now)
+        };
+        if matches!(
+            status,
+            Ok(GrantStatus::AwaitingApproval { .. } | GrantStatus::ApprovalExpired)
+        ) {
+            self.with_registry(|reg| reg.cancel_pending(host))?
+                .expect("a pending grant can always cancel");
+            self.journal(
+                now,
+                &Event::RequestCancelled {
+                    host: host.to_string(),
+                },
+            )?;
+            return Ok(Response {
+                outcome: Some("cancelled".to_string()),
+                ..Response::ok()
+            });
+        }
+
         // Close is idempotent: begin_revert refuses an already-closed grant
         // with NotOpen, which we report as a benign "already-closed" outcome
         // rather than an error. Mid-open (MidOpen) and unknown hosts remain
@@ -420,12 +559,15 @@ impl Daemon {
     /// each Expire), then make one revert attempt for every grant needing
     /// one — expiries just reaped and any left stuck by earlier passes.
     pub fn pass(&self, now: SystemTime) -> anyhow::Result<()> {
-        let expired = self.store.mutate(|doc| {
+        let (expired, expired_pending) = self.store.mutate(|doc| {
             let mut registry = GrantRegistry::from_parts(&self.inventory, doc)
                 .with_context(|| format!("validating {}", self.store.path().display()))?;
             let expired = registry.reap_to_revert(now);
+            // A request whose approval window lapsed unapproved is closed here,
+            // fail-closed; it applied nothing, so there is nothing to revert.
+            let expired_pending = registry.reap_expired_pending(now);
             *doc = registry.snapshot();
-            Ok(expired)
+            Ok((expired, expired_pending))
         })?;
         for e in &expired {
             self.journal(
@@ -435,6 +577,16 @@ impl Daemon {
                     channels: e.channels.clone(),
                     opened_at: epoch_secs(e.opened_at),
                     expires_at: epoch_secs(e.expires_at),
+                },
+            )?;
+        }
+        for e in &expired_pending {
+            self.journal(
+                now,
+                &Event::RequestExpired {
+                    host: e.host.clone(),
+                    requested_at: epoch_secs(e.requested_at),
+                    approval_deadline: epoch_secs(e.approval_deadline),
                 },
             )?;
         }
@@ -556,6 +708,11 @@ impl Daemon {
             use lychgate_core::proto::GrantState::*;
             match line.state {
                 Closed => {}
+                AwaitingApproval => println!(
+                    "lychgated: {host} awaiting approval, {}s to approve",
+                    line.remaining_secs.unwrap_or(0)
+                ),
+                ApprovalExpired => println!("lychgated: {host} approval expired"),
                 Opening => println!("lychgated: {host} opening"),
                 Open => println!(
                     "lychgated: {host} open, {}s remaining",

@@ -125,11 +125,15 @@ impl Store {
             message: e.to_string(),
         })?;
 
-        if doc.version != STATE_VERSION {
+        // Read the versions this build understands; refuse the rest naming
+        // both. A v2 file (pre-approval) still loads — its records are the
+        // subset v3 validates unchanged — and the next write upgrades it to v3.
+        const READABLE: &[u32] = &[2, STATE_VERSION];
+        if !READABLE.contains(&doc.version) {
             return Err(StoreError::Corrupt {
                 path: self.path.clone(),
                 message: format!(
-                    "written by a different version of lychgate (file says {}, this is {STATE_VERSION})",
+                    "written by a different version of lychgate (file says {}, this reads {READABLE:?})",
                     doc.version
                 ),
             });

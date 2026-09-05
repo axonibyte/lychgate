@@ -18,7 +18,7 @@ use crate::grant::GrantStatus;
 use crate::inventory::Channel;
 use crate::registry::GrantRegistry;
 
-pub const PROTO_VERSION: u32 = 2;
+pub const PROTO_VERSION: u32 = 3;
 
 /// A request larger than this is refused unread. Nothing legitimate on this
 /// protocol approaches it; without a cap, one connection could balloon the
@@ -27,9 +27,22 @@ pub const MAX_LINE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
-    Open { host: String, ttl: String },
-    Close { host: String },
-    Renew { host: String, ttl: String },
+    Open {
+        host: String,
+        ttl: String,
+    },
+    /// Approve a pending request with an operator token (opens the grant).
+    Approve {
+        host: String,
+        token: String,
+    },
+    Close {
+        host: String,
+    },
+    Renew {
+        host: String,
+        ttl: String,
+    },
     Status,
 }
 
@@ -89,6 +102,7 @@ struct RequestWire {
     op: String,
     host: Option<String>,
     ttl: Option<String>,
+    token: Option<String>,
 }
 
 pub fn decode_request(line: &str) -> Result<Op, ProtoError> {
@@ -116,10 +130,19 @@ pub fn decode_request(line: &str) -> Result<Op, ProtoError> {
             .clone()
             .ok_or(ProtoError::MissingField { op, field: "ttl" })
     };
+    let token = |op: &'static str| {
+        wire.token
+            .clone()
+            .ok_or(ProtoError::MissingField { op, field: "token" })
+    };
     match wire.op.as_str() {
         "open" => Ok(Op::Open {
             host: host("open")?,
             ttl: ttl("open")?,
+        }),
+        "approve" => Ok(Op::Approve {
+            host: host("approve")?,
+            token: token("approve")?,
         }),
         "close" => Ok(Op::Close {
             host: host("close")?,
@@ -134,11 +157,12 @@ pub fn decode_request(line: &str) -> Result<Op, ProtoError> {
 }
 
 pub fn encode_request(op: &Op) -> String {
-    let (op_name, host, ttl) = match op {
-        Op::Open { host, ttl } => ("open", Some(host), Some(ttl)),
-        Op::Close { host } => ("close", Some(host), None),
-        Op::Renew { host, ttl } => ("renew", Some(host), Some(ttl)),
-        Op::Status => ("status", None, None),
+    let (op_name, host, ttl, token) = match op {
+        Op::Open { host, ttl } => ("open", Some(host), Some(ttl), None),
+        Op::Approve { host, token } => ("approve", Some(host), None, Some(token)),
+        Op::Close { host } => ("close", Some(host), None, None),
+        Op::Renew { host, ttl } => ("renew", Some(host), Some(ttl), None),
+        Op::Status => ("status", None, None, None),
     };
     let mut v = serde_json::json!({ "proto": PROTO_VERSION, "op": op_name });
     if let Some(host) = host {
@@ -147,6 +171,9 @@ pub fn encode_request(op: &Op) -> String {
     if let Some(ttl) = ttl {
         v["ttl"] = serde_json::json!(ttl);
     }
+    if let Some(token) = token {
+        v["token"] = serde_json::json!(token);
+    }
     v.to_string()
 }
 
@@ -154,6 +181,8 @@ pub fn encode_request(op: &Op) -> String {
 #[serde(rename_all = "kebab-case")]
 pub enum GrantState {
     Closed,
+    AwaitingApproval,
+    ApprovalExpired,
     Opening,
     Open,
     Expired,
@@ -186,6 +215,18 @@ pub fn status_lines(registry: &GrantRegistry, now: SystemTime) -> Vec<GrantLine>
                     remaining_secs: None,
                     stuck_channels: None,
                 },
+                GrantStatus::AwaitingApproval { remaining } => GrantLine {
+                    host,
+                    state: GrantState::AwaitingApproval,
+                    remaining_secs: Some(remaining.as_secs()),
+                    stuck_channels: None,
+                },
+                GrantStatus::ApprovalExpired => GrantLine {
+                    host,
+                    state: GrantState::ApprovalExpired,
+                    remaining_secs: None,
+                    stuck_channels: None,
+                },
                 GrantStatus::Opening => GrantLine {
                     host,
                     state: GrantState::Opening,
@@ -215,6 +256,18 @@ pub fn status_lines(registry: &GrantRegistry, now: SystemTime) -> Vec<GrantLine>
         .collect()
 }
 
+/// The challenge an `open` returns: what the operator signs to approve. All
+/// fields are public (the nonce is a challenge, not a secret).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingChallenge {
+    pub host: String,
+    /// The `lg1.req.<base64url>` string the operator signs.
+    pub challenge: String,
+    pub ttl_secs: u64,
+    pub requested_at: u64,
+    pub approval_deadline: u64,
+}
+
 /// Flat on the wire: {"proto":1,"result":"ok",...} or
 /// {"proto":1,"result":"refused","error":"..."}.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,6 +292,10 @@ pub struct Response {
     /// so an older daemon's responses print exactly as before.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub secret_label: Option<String>,
+    /// The approval challenge an `open` returns: the grant is not open until an
+    /// operator approves it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pending: Option<PendingChallenge>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,6 +316,7 @@ impl Response {
             grants: None,
             secret: None,
             secret_label: None,
+            pending: None,
         }
     }
 

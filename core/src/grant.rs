@@ -19,12 +19,27 @@
 
 use std::time::{Duration, SystemTime};
 
+use crate::approval::ApprovalRequest;
 use crate::inventory::Channel;
 use crate::ttl::{Ttl, RENEWAL_WINDOW_SECS};
+
+/// The longest an unapproved request may sit pending before it lapses. A hand-
+/// edited state file claiming a longer window is refused by the snapshot layer.
+pub const MAX_APPROVAL_WINDOW_SECS: u64 = 60 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GrantState {
     Closed,
+    /// An operator approval has been requested but not yet granted. Holds no
+    /// access and applied nothing; it lapses at `approval_deadline` and is
+    /// reaped, fail-closed. `approve` carries it to Opening (anchoring the
+    /// grant's expiry at the approval instant, never at request time).
+    Pending {
+        requested_at: SystemTime,
+        approval_deadline: SystemTime,
+        ttl: Ttl,
+        nonce: [u8; 32],
+    },
     /// Persisted intent: drivers are (or were) running. A daemon that boots
     /// into this state crashed mid-open and must demote it to NeedsRevert.
     Opening {
@@ -48,6 +63,13 @@ enum GrantState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GrantStatus {
     Closed,
+    /// A request awaiting operator approval, within its window.
+    AwaitingApproval {
+        remaining: Duration,
+    },
+    /// A pending request observed at/after its approval deadline. Fail-closed:
+    /// it approves nothing now and is reaped.
+    ApprovalExpired,
     /// Mid-open: drivers in flight, or a crash left the intent behind.
     Opening,
     Open {
@@ -69,6 +91,12 @@ pub enum GrantError {
     NotOpen,
     /// The grant is mid-open; resolve that before anything else.
     MidOpen,
+    /// A request is already awaiting approval for this host.
+    AlreadyPending,
+    /// The grant is not awaiting approval (nothing to approve/cancel).
+    NotPending,
+    /// The approval window elapsed before the token arrived; reopen explicitly.
+    ApprovalWindowElapsed,
     /// Renewal requested with more than the renewal window remaining. Time
     /// cannot be stockpiled ahead of need.
     TooEarly {
@@ -85,6 +113,14 @@ impl std::fmt::Display for GrantError {
             GrantError::AlreadyOpen => write!(f, "grant is already open"),
             GrantError::NotOpen => write!(f, "grant is not open"),
             GrantError::MidOpen => write!(f, "grant is mid-open; retry shortly"),
+            GrantError::AlreadyPending => {
+                write!(f, "a request is already awaiting approval for this host")
+            }
+            GrantError::NotPending => write!(f, "grant is not awaiting approval"),
+            GrantError::ApprovalWindowElapsed => write!(
+                f,
+                "the approval window elapsed before the token arrived; reopen to try again"
+            ),
             GrantError::TooEarly { remaining } => write!(
                 f,
                 "renewal refused with {}s remaining; renewal opens {}s before expiry",
@@ -113,6 +149,16 @@ impl Grant {
     pub fn status(&self, now: SystemTime) -> GrantStatus {
         match &self.state {
             GrantState::Closed => GrantStatus::Closed,
+            GrantState::Pending {
+                approval_deadline, ..
+            } => match approval_deadline.duration_since(now) {
+                // Observed at the exact deadline instant: expired, not "zero
+                // seconds left" — the same rule as an open grant's expiry.
+                Ok(remaining) if !remaining.is_zero() => {
+                    GrantStatus::AwaitingApproval { remaining }
+                }
+                _ => GrantStatus::ApprovalExpired,
+            },
             GrantState::Opening { .. } => GrantStatus::Opening,
             GrantState::NeedsRevert { channels, .. } => GrantStatus::NeedsRevert {
                 channels: channels.clone(),
@@ -215,6 +261,9 @@ impl Grant {
             }
             GrantState::NeedsRevert { channels, .. } => Ok(channels.clone()),
             GrantState::Opening { .. } => Err(GrantError::MidOpen),
+            // A pending grant is cancelled, not reverted (it applied nothing);
+            // close routes there instead of here.
+            GrantState::Pending { .. } => Err(GrantError::NotPending),
             GrantState::Closed => Err(GrantError::NotOpen),
         }
     }
@@ -272,6 +321,100 @@ impl Grant {
         }
         Ok(expires_at)
     }
+
+    /// Records a pending approval request, before any driver runs and before
+    /// the grant may open. Only a Closed grant may begin: a pending or open
+    /// grant already holds a request or access.
+    pub fn begin_pending(
+        &mut self,
+        now: SystemTime,
+        approval_deadline: SystemTime,
+        ttl: Ttl,
+        nonce: [u8; 32],
+    ) -> Result<(), GrantError> {
+        match self.status(now) {
+            GrantStatus::Closed => {}
+            GrantStatus::Opening => return Err(GrantError::MidOpen),
+            GrantStatus::AwaitingApproval { .. } | GrantStatus::ApprovalExpired => {
+                return Err(GrantError::AlreadyPending)
+            }
+            _ => return Err(GrantError::AlreadyOpen),
+        }
+        self.state = GrantState::Pending {
+            requested_at: now,
+            approval_deadline,
+            ttl,
+            nonce,
+        };
+        Ok(())
+    }
+
+    /// The challenge for a request awaiting approval, for the verifier. A
+    /// lapsed window is refused (the reaper will clean it up).
+    pub(crate) fn pending_request(
+        &self,
+        host: &str,
+        now: SystemTime,
+    ) -> Result<ApprovalRequest, GrantError> {
+        match self.status(now) {
+            GrantStatus::AwaitingApproval { .. } => {}
+            GrantStatus::ApprovalExpired => return Err(GrantError::ApprovalWindowElapsed),
+            _ => return Err(GrantError::NotPending),
+        }
+        match &self.state {
+            GrantState::Pending {
+                requested_at,
+                ttl,
+                nonce,
+                ..
+            } => Ok(ApprovalRequest::new(
+                *nonce,
+                host.to_string(),
+                ttl.duration().as_secs(),
+                *requested_at,
+            )),
+            _ => Err(GrantError::NotPending),
+        }
+    }
+
+    /// A verified approval carries a pending request to Opening, anchoring the
+    /// grant's expiry at `now` (never at request time — time is not
+    /// stockpiled while awaiting approval). A lapsed window is refused.
+    pub fn approve_to_opening(
+        &mut self,
+        now: SystemTime,
+        channels: Vec<Channel>,
+    ) -> Result<SystemTime, GrantError> {
+        let ttl = match self.status(now) {
+            GrantStatus::AwaitingApproval { .. } => match &self.state {
+                GrantState::Pending { ttl, .. } => *ttl,
+                _ => return Err(GrantError::NotPending),
+            },
+            GrantStatus::ApprovalExpired => return Err(GrantError::ApprovalWindowElapsed),
+            _ => return Err(GrantError::NotPending),
+        };
+        let expires_at = now
+            .checked_add(ttl.duration())
+            .ok_or(GrantError::ClockOverflow)?;
+        self.state = GrantState::Opening {
+            opened_at: now,
+            expires_at,
+            channels,
+        };
+        Ok(expires_at)
+    }
+
+    /// Cancels a pending request (an operator close, or the reaper aging out a
+    /// lapsed window). Nothing was applied, so there is nothing to revert.
+    pub fn cancel_pending(&mut self) -> Result<(), GrantError> {
+        match &self.state {
+            GrantState::Pending { .. } => {
+                self.state = GrantState::Closed;
+                Ok(())
+            }
+            _ => Err(GrantError::NotPending),
+        }
+    }
 }
 
 impl Default for Grant {
@@ -284,6 +427,12 @@ impl Default for Grant {
 /// snapshot layer's job before restore is called.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GrantParts {
+    Pending {
+        requested_at: SystemTime,
+        approval_deadline: SystemTime,
+        ttl: Ttl,
+        nonce: [u8; 32],
+    },
     Opening {
         opened_at: SystemTime,
         expires_at: SystemTime,
@@ -306,6 +455,17 @@ impl Grant {
     pub(crate) fn parts(&self) -> Option<GrantParts> {
         match &self.state {
             GrantState::Closed => None,
+            GrantState::Pending {
+                requested_at,
+                approval_deadline,
+                ttl,
+                nonce,
+            } => Some(GrantParts::Pending {
+                requested_at: *requested_at,
+                approval_deadline: *approval_deadline,
+                ttl: *ttl,
+                nonce: *nonce,
+            }),
             GrantState::Opening {
                 opened_at,
                 expires_at,
@@ -333,6 +493,17 @@ impl Grant {
 
     pub(crate) fn restore(parts: GrantParts) -> Grant {
         let state = match parts {
+            GrantParts::Pending {
+                requested_at,
+                approval_deadline,
+                ttl,
+                nonce,
+            } => GrantState::Pending {
+                requested_at,
+                approval_deadline,
+                ttl,
+                nonce,
+            },
             GrantParts::Opening {
                 opened_at,
                 expires_at,

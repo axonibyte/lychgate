@@ -17,6 +17,10 @@ fn doc_with(host: &str) -> StateDoc {
                 expires_at: Some(UNIX_EPOCH + Duration::from_secs(1_600)),
                 since: None,
                 channels: vec![Channel::Ssh],
+                requested_at: None,
+                approval_deadline: None,
+                ttl_secs: None,
+                nonce: None,
             },
         )]),
     }
@@ -234,4 +238,21 @@ fn a_mutation_that_fails_leaves_the_store_unchanged_and_the_lock_released() {
     // ...and the lock is released, so the next mutation proceeds at once.
     store.mutate(|_| Ok(())).unwrap();
     assert!(!dir.join("grants.lock").exists());
+}
+
+#[test]
+fn a_v2_pre_approval_file_still_loads() {
+    // A pre-approval (v2) state file must still load rather than be refused as
+    // a foreign version. (Upgrade-on-write happens through the daemon's
+    // snapshot(), proven end to end in the reap battery.)
+    let dir = scratch_dir("v2read");
+    let path = dir.join("grants.json");
+    std::fs::write(
+        &path,
+        r#"{"version":2,"grants":{"db-01":{"state":"open","opened_at":1000,"expires_at":1600,"channels":["ssh"]}}}"#,
+    )
+    .unwrap();
+    let doc = Store::at(path).read().unwrap();
+    assert_eq!(doc.version, 2);
+    assert!(doc.grants.contains_key("db-01"));
 }

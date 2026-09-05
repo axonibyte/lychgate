@@ -25,13 +25,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Open a grant against a host for a limited time
+    /// Request a grant against a host (returns a challenge to approve)
     Open {
         #[arg(long)]
         host: String,
         /// Time to live, e.g. 90s, 15m, 2h; capped at 24h
         #[arg(long)]
         ttl: String,
+    },
+    /// Approve a pending request with a signed token, opening the grant
+    Approve {
+        #[arg(long)]
+        host: String,
+        /// The approval token. Omit to read it from stdin (until EOF), which
+        /// keeps a secret-bearing token off the command line.
+        #[arg(long)]
+        token: Option<String>,
+        /// Read the token from a file instead of stdin.
+        #[arg(long)]
+        token_file: Option<PathBuf>,
     },
     /// Renew a host's open grant (accepted only near expiry)
     Renew {
@@ -72,6 +84,26 @@ fn run() -> anyhow::Result<ExitCode> {
                 ttl: ttl.clone(),
             }
         }
+        Command::Approve {
+            host,
+            token,
+            token_file,
+        } => {
+            use std::io::Read;
+            let tok = if let Some(t) = token {
+                t.clone()
+            } else if let Some(f) = token_file {
+                std::fs::read_to_string(f)?.trim().to_string()
+            } else {
+                let mut s = String::new();
+                std::io::stdin().read_to_string(&mut s)?;
+                s.trim().to_string()
+            };
+            Op::Approve {
+                host: host.clone(),
+                token: tok,
+            }
+        }
         Command::Renew { host, ttl } => {
             Ttl::parse(ttl)?;
             Op::Renew {
@@ -94,25 +126,46 @@ fn run() -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::FAILURE);
     }
 
-    match (&cli.command, &response) {
-        (Command::Open { host, .. }, r) => {
-            let expires = r.expires_at.unwrap_or(0);
-            println!("grant open on {host} until epoch {expires}");
-            // A non-secret endpoint the operator connects to (the vnc console).
-            if let Some(outcome) = &r.outcome {
-                println!("{outcome}");
-            }
-            if let Some(secret) = &r.secret {
-                // Shown exactly once — the daemon does not store or journal
-                // it. Copy it now. The label defaults to the BMC wording so a
-                // daemon that sends none prints exactly as before.
-                let label = r
-                    .secret_label
-                    .as_deref()
-                    .unwrap_or("break-glass BMC password");
-                println!("{label} (shown once): {secret}");
-            }
+    // The now-open grant plus its one-time secret and endpoint — shared by the
+    // approve command, which is where a grant actually opens.
+    let print_opened = |host: &str, r: &Response| {
+        let expires = r.expires_at.unwrap_or(0);
+        println!("grant open on {host} until epoch {expires}");
+        if let Some(outcome) = &r.outcome {
+            println!("{outcome}");
         }
+        if let Some(secret) = &r.secret {
+            // Shown exactly once — the daemon does not store or journal it.
+            // The label defaults to the BMC wording so an older daemon prints
+            // exactly as before.
+            let label = r
+                .secret_label
+                .as_deref()
+                .unwrap_or("break-glass BMC password");
+            println!("{label} (shown once): {secret}");
+        }
+    };
+
+    match (&cli.command, &response) {
+        (Command::Open { host, .. }, r) => match &r.pending {
+            Some(p) => {
+                println!(
+                    "approval required for {host} (ttl {}, approve within {}s)",
+                    human(p.ttl_secs),
+                    p.approval_deadline.saturating_sub(p.requested_at)
+                );
+                println!("challenge: {}", p.challenge);
+                println!(
+                    "sign it on your device, e.g.:\n  \
+                     printf %s '{}' | ssh-keygen -Y sign -n lychgate-approval -f ~/.ssh/id_ed25519",
+                    p.challenge
+                );
+                println!("then: lychgate approve --host {host}   (paste the signature, then EOF)");
+            }
+            // A daemon in --dry-run or an older one may open directly.
+            None => print_opened(host, r),
+        },
+        (Command::Approve { host, .. }, r) => print_opened(host, r),
         (Command::Renew { host, .. }, r) => {
             let expires = r.expires_at.unwrap_or(0);
             println!("grant on {host} renewed until epoch {expires}");
@@ -129,6 +182,15 @@ fn run() -> anyhow::Result<ExitCode> {
                         println!("{}\topen\t{} remaining", g.host, human(secs))
                     }
                     (GrantState::Open, None) => println!("{}\topen", g.host),
+                    (GrantState::AwaitingApproval, Some(secs)) => {
+                        println!("{}\tawaiting-approval\t{} to approve", g.host, human(secs))
+                    }
+                    (GrantState::AwaitingApproval, None) => {
+                        println!("{}\tawaiting-approval", g.host)
+                    }
+                    (GrantState::ApprovalExpired, _) => {
+                        println!("{}\tapproval-expired", g.host)
+                    }
                     (GrantState::Opening, _) => println!("{}\topening", g.host),
                     (GrantState::Closed, _) => println!("{}\tclosed", g.host),
                     (GrantState::Expired, _) => {

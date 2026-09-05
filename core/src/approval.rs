@@ -50,6 +50,18 @@ impl ApprovalRequest {
         }
     }
 
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn ttl_secs(&self) -> u64 {
+        self.ttl_secs
+    }
+
+    pub fn requested_at(&self) -> SystemTime {
+        self.requested_at
+    }
+
     /// The exact bytes a signature covers. Domain-separated and length-prefixed
     /// (not TOML/JSON): every field is bounded by an explicit big-endian length
     /// rather than a delimiter, so no host name or nonce can be framed to
@@ -159,6 +171,25 @@ impl ApprovalVerifier for AnyOf {
             }
         }
         Err(ApprovalError::AllRejected(errs))
+    }
+}
+
+/// Approves any token. Wired only under `--dry-run`, where no driver runs and
+/// no access is granted, and in tests; never in a serving daemon.
+pub struct AcceptAny;
+
+impl ApprovalVerifier for AcceptAny {
+    fn verify(&self, _request: &ApprovalRequest, _token: &str) -> Result<(), ApprovalError> {
+        Ok(())
+    }
+}
+
+/// Rejects every token — for exercising the deny path in tests.
+pub struct RefuseAll;
+
+impl ApprovalVerifier for RefuseAll {
+    fn verify(&self, _request: &ApprovalRequest, _token: &str) -> Result<(), ApprovalError> {
+        Err(ApprovalError::BadSignature)
     }
 }
 

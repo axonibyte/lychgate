@@ -21,12 +21,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::grant::{Grant, GrantParts};
+use crate::grant::{Grant, GrantParts, MAX_APPROVAL_WINDOW_SECS};
 use crate::inventory::{Channel, Inventory};
 use crate::registry::GrantRegistry;
-use crate::ttl::MAX_TTL_SECS;
+use crate::ttl::{Ttl, MAX_TTL_SECS};
 
-pub const STATE_VERSION: u32 = 2;
+/// Version 3 (M8) adds the `pending` state — a request awaiting operator
+/// approval. Version 2 files (no pending records) still load: the store reads
+/// a small set of known versions and rewrites at the current one.
+pub const STATE_VERSION: u32 = 3;
 
 /// Unlike reaper's state document, this one refuses unknown fields: the file
 /// is machine-written but hand-editable, and a stray edit to break-glass
@@ -62,6 +65,16 @@ pub struct GrantRecord {
     #[serde(skip_serializing_if = "Option::is_none", default, with = "epoch_opt")]
     pub since: Option<SystemTime>,
     pub channels: Vec<Channel>,
+    // Pending-only (v3): a request awaiting approval carries when it was made,
+    // when its window lapses, the requested TTL, and the challenge nonce (hex).
+    #[serde(skip_serializing_if = "Option::is_none", default, with = "epoch_opt")]
+    pub requested_at: Option<SystemTime>,
+    #[serde(skip_serializing_if = "Option::is_none", default, with = "epoch_opt")]
+    pub approval_deadline: Option<SystemTime>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ttl_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub nonce: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +87,10 @@ pub enum SnapshotError {
     ExpiryNotAfterOpening { host: String },
     /// A span over the TTL cap is a cap bypass, however it got there.
     ExceedsCap { host: String, secs: u64 },
+    /// A pending record whose approval deadline is at or before its request.
+    ApprovalDeadlineNotAfterRequest { host: String },
+    /// A pending window over the cap — a fail-open bypass via a hand edit.
+    ApprovalWindowExceedsCap { host: String, secs: u64 },
     /// Wrong state name or a field combination the daemon never writes.
     Malformed { host: String, message: String },
 }
@@ -92,6 +109,14 @@ impl fmt::Display for SnapshotError {
             SnapshotError::ExceedsCap { host, secs } => write!(
                 f,
                 "state for host {host:?} spans {secs}s, over the {MAX_TTL_SECS}s cap"
+            ),
+            SnapshotError::ApprovalDeadlineNotAfterRequest { host } => write!(
+                f,
+                "pending state for host {host:?} has an approval deadline at or before its request"
+            ),
+            SnapshotError::ApprovalWindowExceedsCap { host, secs } => write!(
+                f,
+                "pending state for host {host:?} has a {secs}s approval window, over the {MAX_APPROVAL_WINDOW_SECS}s cap"
             ),
             SnapshotError::Malformed { host, message } => {
                 write!(f, "state for host {host:?} is malformed: {message}")
@@ -137,7 +162,33 @@ fn from_secs_checked(secs: u64) -> Option<SystemTime> {
 }
 
 fn record_of(parts: GrantParts) -> GrantRecord {
+    // Every record leaves the fields it does not use None; each arm fills only
+    // its own.
+    let base = GrantRecord {
+        state: String::new(),
+        opened_at: None,
+        expires_at: None,
+        since: None,
+        channels: Vec::new(),
+        requested_at: None,
+        approval_deadline: None,
+        ttl_secs: None,
+        nonce: None,
+    };
     match parts {
+        GrantParts::Pending {
+            requested_at,
+            approval_deadline,
+            ttl,
+            nonce,
+        } => GrantRecord {
+            state: "pending".to_string(),
+            requested_at: Some(requested_at),
+            approval_deadline: Some(approval_deadline),
+            ttl_secs: Some(ttl.duration().as_secs()),
+            nonce: Some(data_encoding::HEXLOWER.encode(&nonce)),
+            ..base
+        },
         GrantParts::Opening {
             opened_at,
             expires_at,
@@ -146,8 +197,8 @@ fn record_of(parts: GrantParts) -> GrantRecord {
             state: "opening".to_string(),
             opened_at: Some(opened_at),
             expires_at: Some(expires_at),
-            since: None,
             channels,
+            ..base
         },
         GrantParts::Open {
             opened_at,
@@ -157,15 +208,14 @@ fn record_of(parts: GrantParts) -> GrantRecord {
             state: "open".to_string(),
             opened_at: Some(opened_at),
             expires_at: Some(expires_at),
-            since: None,
             channels,
+            ..base
         },
         GrantParts::NeedsRevert { channels, since } => GrantRecord {
             state: "needs-revert".to_string(),
-            opened_at: None,
-            expires_at: None,
             since: Some(since),
             channels,
+            ..base
         },
     }
 }
@@ -175,7 +225,21 @@ fn parts_of(host: &str, record: &GrantRecord) -> Result<GrantParts, SnapshotErro
         host: host.to_string(),
         message: message.to_string(),
     };
+    // The pending-only fields must not appear on any other state.
+    let no_pending_fields = || -> Result<(), SnapshotError> {
+        if record.requested_at.is_some()
+            || record.approval_deadline.is_some()
+            || record.ttl_secs.is_some()
+            || record.nonce.is_some()
+        {
+            return Err(malformed(
+                "requested_at/approval_deadline/ttl_secs/nonce belong to pending only",
+            ));
+        }
+        Ok(())
+    };
     let interval = || -> Result<(SystemTime, SystemTime), SnapshotError> {
+        no_pending_fields()?;
         let opened_at = record
             .opened_at
             .ok_or_else(|| malformed("missing opened_at"))?;
@@ -203,6 +267,67 @@ fn parts_of(host: &str, record: &GrantRecord) -> Result<GrantParts, SnapshotErro
     };
 
     match record.state.as_str() {
+        "pending" => {
+            // A pending request applied nothing and holds no interval.
+            if record.opened_at.is_some() || record.expires_at.is_some() || record.since.is_some() {
+                return Err(malformed(
+                    "pending carries requested_at/approval_deadline/ttl_secs/nonce, not opened/expires/since",
+                ));
+            }
+            if !record.channels.is_empty() {
+                return Err(malformed("a pending request has no applied channels"));
+            }
+            let requested_at = record
+                .requested_at
+                .ok_or_else(|| malformed("missing requested_at"))?;
+            let approval_deadline = record
+                .approval_deadline
+                .ok_or_else(|| malformed("missing approval_deadline"))?;
+            let ttl_secs = record
+                .ttl_secs
+                .ok_or_else(|| malformed("missing ttl_secs"))?;
+            let ttl = Ttl::from_secs(ttl_secs).map_err(|_| {
+                // Zero or over-cap ttl.
+                if ttl_secs > MAX_TTL_SECS {
+                    SnapshotError::ExceedsCap {
+                        host: host.to_string(),
+                        secs: ttl_secs,
+                    }
+                } else {
+                    malformed("ttl_secs is zero")
+                }
+            })?;
+            let window = match approval_deadline.duration_since(requested_at) {
+                Ok(w) if !w.is_zero() => w,
+                _ => {
+                    return Err(SnapshotError::ApprovalDeadlineNotAfterRequest {
+                        host: host.to_string(),
+                    })
+                }
+            };
+            if window.as_secs() > MAX_APPROVAL_WINDOW_SECS {
+                return Err(SnapshotError::ApprovalWindowExceedsCap {
+                    host: host.to_string(),
+                    secs: window.as_secs(),
+                });
+            }
+            let hex = record
+                .nonce
+                .as_ref()
+                .ok_or_else(|| malformed("missing nonce"))?;
+            let bytes = data_encoding::HEXLOWER
+                .decode(hex.as_bytes())
+                .map_err(|_| malformed("nonce is not valid hex"))?;
+            let nonce: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| malformed("nonce is not 32 bytes"))?;
+            Ok(GrantParts::Pending {
+                requested_at,
+                approval_deadline,
+                ttl,
+                nonce,
+            })
+        }
         "opening" => {
             let (opened_at, expires_at) = interval()?;
             Ok(GrantParts::Opening {
@@ -220,6 +345,7 @@ fn parts_of(host: &str, record: &GrantRecord) -> Result<GrantParts, SnapshotErro
             })
         }
         "needs-revert" => {
+            no_pending_fields()?;
             if record.opened_at.is_some() || record.expires_at.is_some() {
                 return Err(malformed(
                     "needs-revert carries only \"since\" and channels",
