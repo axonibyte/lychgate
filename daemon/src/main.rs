@@ -17,10 +17,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::Context;
 use clap::Parser;
 
-use lychgate_core::{
-    parse_ssh_public_key, AcceptAny, AnyOf, ApprovalVerifier, DriverSet, GrantRegistry, Inventory,
-    SshSigVerifier, MAX_APPROVAL_WINDOW_SECS,
-};
+use lychgate_core::{DriverSet, GrantRegistry, Inventory, MAX_APPROVAL_WINDOW_SECS};
 
 use crate::journal::{Event, Journal};
 use crate::lifecycle::Daemon;
@@ -169,35 +166,23 @@ fn main() -> anyhow::Result<()> {
             ))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
     }
-    // The approval verifier. --dry-run approves anything (nothing is driven);
-    // otherwise every configured approver goes in the fail-closed AnyOf, and a
-    // deployment with no approver is refused at boot rather than failing every
-    // open — opening a grant is not possible without one.
-    let verifier: Box<dyn ApprovalVerifier> = if cli.dry_run {
-        Box::new(AcceptAny)
+    // The approval policy. --dry-run evaluates none (nothing is driven, so the
+    // first proof opens); otherwise the weighted-threshold model is built from
+    // [approval], and a deployment with no policy is refused at boot rather than
+    // failing every open — opening a grant is not possible without one.
+    let approval = if cli.dry_run {
+        None
     } else {
-        let mut approvers: Vec<Box<dyn ApprovalVerifier>> = Vec::new();
-        if let Some(approval) = &inventory.approval {
-            if !approval.ed25519.is_empty() {
-                let keys = approval
-                    .ed25519
-                    .iter()
-                    .map(|e| {
-                        parse_ssh_public_key(&e.public_key)
-                            .map(|pk| (e.key_id.clone(), pk))
-                            .map_err(|err| anyhow::anyhow!("{err}"))
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?;
-                approvers.push(Box::new(SshSigVerifier::new(keys)));
-            }
+        match inventory
+            .approval_model()
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+        {
+            Some(model) => Some(model),
+            None => anyhow::bail!(
+                "no [approval] policy configured; opening a grant would always be refused. \
+                 Configure [approval] with at least one profile, or run with --dry-run"
+            ),
         }
-        if approvers.is_empty() {
-            anyhow::bail!(
-                "no [approval] approvers configured; opening a grant would always be refused. \
-                 Configure an approver, or run with --dry-run"
-            );
-        }
-        Box::new(AnyOf(approvers))
     };
 
     let daemon = Arc::new(Daemon {
@@ -209,7 +194,7 @@ fn main() -> anyhow::Result<()> {
             transport::ExecSshTransport,
         ))),
         approval_window: Duration::from_secs(cli.approval_window),
-        verifier,
+        approval,
     });
 
     // Recover from a crash mid-open before serving anything.

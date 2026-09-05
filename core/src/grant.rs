@@ -17,28 +17,40 @@
 //! Open ──begin_revert──▶ NeedsRevert ──finish_revert──▶ Closed
 //! ```
 
+use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 
 use crate::approval::ApprovalRequest;
 use crate::inventory::Channel;
 use crate::ttl::{Ttl, RENEWAL_WINDOW_SECS};
 
-/// The longest an unapproved request may sit pending before it lapses. A hand-
-/// edited state file claiming a longer window is refused by the snapshot layer.
-pub const MAX_APPROVAL_WINDOW_SECS: u64 = 60 * 60;
+/// The longest an unapproved request may sit pending before it lapses. Raised
+/// to the TTL cap (24h) so hour-scale `wait` factors are usable: a pending grant
+/// must be able to live long enough to collect the weight a wait contributes. A
+/// hand-edited state file claiming a longer window is refused by the snapshot
+/// layer.
+pub const MAX_APPROVAL_WINDOW_SECS: u64 = crate::ttl::MAX_TTL_SECS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GrantState {
     Closed,
     /// An operator approval has been requested but not yet granted. Holds no
     /// access and applied nothing; it lapses at `approval_deadline` and is
-    /// reaped, fail-closed. `approve` carries it to Opening (anchoring the
-    /// grant's expiry at the approval instant, never at request time).
+    /// reaped, fail-closed. Authenticator proofs accumulate in `satisfied` as
+    /// they arrive; the daemon evaluates the resolved `profile`'s authority and,
+    /// once the weighted threshold is met, carries the grant to Opening
+    /// (anchoring the grant's expiry at that instant, never at request time).
     Pending {
         requested_at: SystemTime,
         approval_deadline: SystemTime,
         ttl: Ttl,
         nonce: [u8; 32],
+        /// The approval profile requested at open time.
+        profile: String,
+        /// Authenticator ids whose proofs have verified against this request's
+        /// challenge so far. Never a secret or a token — just which factors are
+        /// satisfied.
+        satisfied: BTreeSet<String>,
     },
     /// Persisted intent: drivers are (or were) running. A daemon that boots
     /// into this state crashed mid-open and must demote it to NeedsRevert.
@@ -83,6 +95,17 @@ pub enum GrantStatus {
     NeedsRevert {
         channels: Vec<Channel>,
     },
+}
+
+/// What the daemon reads from a pending grant to evaluate its authority: the
+/// requested profile, the accumulated satisfied authenticator ids, and the time
+/// elapsed since the request (for `wait` factors).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingView {
+    pub profile: String,
+    pub satisfied: BTreeSet<String>,
+    pub requested_at: SystemTime,
+    pub elapsed: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,6 +354,7 @@ impl Grant {
         approval_deadline: SystemTime,
         ttl: Ttl,
         nonce: [u8; 32],
+        profile: String,
     ) -> Result<(), GrantError> {
         match self.status(now) {
             GrantStatus::Closed => {}
@@ -345,8 +369,51 @@ impl Grant {
             approval_deadline,
             ttl,
             nonce,
+            profile,
+            satisfied: BTreeSet::new(),
         };
         Ok(())
+    }
+
+    /// Record that authenticator `id`'s proof has verified against this
+    /// request's challenge. Only a request still within its window accepts
+    /// proofs; a lapsed one is refused (the reaper will clean it up). Returns
+    /// whether the id was newly added (worth journaling) versus a re-submission.
+    pub fn add_satisfied(&mut self, now: SystemTime, id: String) -> Result<bool, GrantError> {
+        match self.status(now) {
+            GrantStatus::AwaitingApproval { .. } => {}
+            GrantStatus::ApprovalExpired => return Err(GrantError::ApprovalWindowElapsed),
+            _ => return Err(GrantError::NotPending),
+        }
+        match &mut self.state {
+            GrantState::Pending { satisfied, .. } => Ok(satisfied.insert(id)),
+            _ => Err(GrantError::NotPending),
+        }
+    }
+
+    /// The pending request's profile, its accumulated satisfied authenticator
+    /// ids, and the time elapsed since it was requested — what the daemon needs
+    /// to evaluate the resolved authority. A lapsed window is refused.
+    pub fn pending_view(&self, now: SystemTime) -> Result<PendingView, GrantError> {
+        match self.status(now) {
+            GrantStatus::AwaitingApproval { .. } => {}
+            GrantStatus::ApprovalExpired => return Err(GrantError::ApprovalWindowElapsed),
+            _ => return Err(GrantError::NotPending),
+        }
+        match &self.state {
+            GrantState::Pending {
+                requested_at,
+                profile,
+                satisfied,
+                ..
+            } => Ok(PendingView {
+                profile: profile.clone(),
+                satisfied: satisfied.clone(),
+                requested_at: *requested_at,
+                elapsed: now.duration_since(*requested_at).unwrap_or_default(),
+            }),
+            _ => Err(GrantError::NotPending),
+        }
     }
 
     /// The challenge for a request awaiting approval, for the verifier. A
@@ -432,6 +499,8 @@ pub(crate) enum GrantParts {
         approval_deadline: SystemTime,
         ttl: Ttl,
         nonce: [u8; 32],
+        profile: String,
+        satisfied: BTreeSet<String>,
     },
     Opening {
         opened_at: SystemTime,
@@ -460,11 +529,15 @@ impl Grant {
                 approval_deadline,
                 ttl,
                 nonce,
+                profile,
+                satisfied,
             } => Some(GrantParts::Pending {
                 requested_at: *requested_at,
                 approval_deadline: *approval_deadline,
                 ttl: *ttl,
                 nonce: *nonce,
+                profile: profile.clone(),
+                satisfied: satisfied.clone(),
             }),
             GrantState::Opening {
                 opened_at,
@@ -498,11 +571,15 @@ impl Grant {
                 approval_deadline,
                 ttl,
                 nonce,
+                profile,
+                satisfied,
             } => GrantState::Pending {
                 requested_at,
                 approval_deadline,
                 ttl,
                 nonce,
+                profile,
+                satisfied,
             },
             GrantParts::Opening {
                 opened_at,

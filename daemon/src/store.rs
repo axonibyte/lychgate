@@ -126,9 +126,10 @@ impl Store {
         })?;
 
         // Read the versions this build understands; refuse the rest naming
-        // both. A v2 file (pre-approval) still loads — its records are the
-        // subset v3 validates unchanged — and the next write upgrades it to v3.
-        const READABLE: &[u32] = &[2, STATE_VERSION];
+        // both. Older files still load — a v2 (pre-approval) or v3 (pre-profile)
+        // record is a subset v4 validates unchanged — and the next write
+        // upgrades the file to the current version.
+        const READABLE: &[u32] = &[2, 3, STATE_VERSION];
         if !READABLE.contains(&doc.version) {
             return Err(StoreError::Corrupt {
                 path: self.path.clone(),

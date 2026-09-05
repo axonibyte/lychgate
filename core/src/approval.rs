@@ -17,7 +17,7 @@
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ssh_key::{PublicKey, SshSig};
+use ssh_key::PublicKey;
 
 /// The SSHSIG namespace the operator must sign under (`ssh-keygen -Y sign -n`).
 /// Binds an approval to lychgate, so a signature made for another purpose
@@ -106,10 +106,6 @@ pub enum ApprovalError {
     UnknownApprover(String),
     /// The signature did not verify over this request's challenge.
     BadSignature,
-    /// No approver is configured — fail-closed: nothing can ever be approved.
-    NoApproverConfigured,
-    /// Every configured approver rejected the token.
-    AllRejected(Vec<ApprovalError>),
 }
 
 impl fmt::Display for ApprovalError {
@@ -126,72 +122,11 @@ impl fmt::Display for ApprovalError {
             ApprovalError::BadSignature => {
                 write!(f, "approval signature did not verify over the challenge")
             }
-            ApprovalError::NoApproverConfigured => write!(
-                f,
-                "no approver is configured; opening a grant is refused (fail-closed)"
-            ),
-            ApprovalError::AllRejected(errs) => {
-                write!(f, "every configured approver rejected the token: ")?;
-                for (i, e) in errs.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, "; ")?;
-                    }
-                    write!(f, "{e}")?;
-                }
-                Ok(())
-            }
         }
     }
 }
 
 impl std::error::Error for ApprovalError {}
-
-/// A backend that decides whether a token approves a request. Pure for the
-/// SSHSIG backend; a stateful backend (TOTP's single-use ledger) uses interior
-/// mutability so the seam stays `&self`. `verify` does NOT check the approval
-/// window — that is the lifecycle's job via the grant's observed status.
-pub trait ApprovalVerifier: Send + Sync {
-    fn verify(&self, request: &ApprovalRequest, token: &str) -> Result<(), ApprovalError>;
-}
-
-/// Accepts a token if any configured approver accepts it. Fail-closed: an empty
-/// set approves nothing.
-pub struct AnyOf(pub Vec<Box<dyn ApprovalVerifier>>);
-
-impl ApprovalVerifier for AnyOf {
-    fn verify(&self, request: &ApprovalRequest, token: &str) -> Result<(), ApprovalError> {
-        if self.0.is_empty() {
-            return Err(ApprovalError::NoApproverConfigured);
-        }
-        let mut errs = Vec::new();
-        for verifier in &self.0 {
-            match verifier.verify(request, token) {
-                Ok(()) => return Ok(()),
-                Err(e) => errs.push(e),
-            }
-        }
-        Err(ApprovalError::AllRejected(errs))
-    }
-}
-
-/// Approves any token. Wired only under `--dry-run`, where no driver runs and
-/// no access is granted, and in tests; never in a serving daemon.
-pub struct AcceptAny;
-
-impl ApprovalVerifier for AcceptAny {
-    fn verify(&self, _request: &ApprovalRequest, _token: &str) -> Result<(), ApprovalError> {
-        Ok(())
-    }
-}
-
-/// Rejects every token — for exercising the deny path in tests.
-pub struct RefuseAll;
-
-impl ApprovalVerifier for RefuseAll {
-    fn verify(&self, _request: &ApprovalRequest, _token: &str) -> Result<(), ApprovalError> {
-        Err(ApprovalError::BadSignature)
-    }
-}
 
 /// Parses an OpenSSH public key line (`ssh-ed25519 AAAA… comment`). The one
 /// place a configured key is turned into a verifiable key, shared by the
@@ -199,45 +134,6 @@ impl ApprovalVerifier for RefuseAll {
 pub fn parse_ssh_public_key(line: &str) -> Result<PublicKey, ApprovalError> {
     PublicKey::from_openssh(line.trim())
         .map_err(|e| ApprovalError::Malformed(format!("not an openssh public key: {e}")))
-}
-
-/// The SSHSIG Ed25519 backend: verify a `ssh-keygen -Y sign` token over the
-/// request's challenge, against an allowed-signers set.
-pub struct SshSigVerifier {
-    allowed: Vec<(String, PublicKey)>,
-}
-
-impl SshSigVerifier {
-    pub fn new(allowed: Vec<(String, PublicKey)>) -> SshSigVerifier {
-        SshSigVerifier { allowed }
-    }
-}
-
-impl ApprovalVerifier for SshSigVerifier {
-    fn verify(&self, request: &ApprovalRequest, token: &str) -> Result<(), ApprovalError> {
-        let sig: SshSig = token
-            .trim()
-            .parse()
-            .map_err(|e| ApprovalError::Malformed(format!("not a valid SSHSIG: {e}")))?;
-        if sig.namespace() != APPROVAL_NAMESPACE {
-            return Err(ApprovalError::WrongNamespace(sig.namespace().to_string()));
-        }
-        // The signer must be in the allowed set — matched by key material, so a
-        // valid signature from an unlisted key is refused, not verified.
-        let matched = self
-            .allowed
-            .iter()
-            .find(|(_, pk)| pk.key_data() == sig.public_key());
-        let (_id, pk) = matched.ok_or_else(|| {
-            ApprovalError::UnknownApprover("signer is not in the allowed-signers set".to_string())
-        })?;
-        pk.verify(
-            APPROVAL_NAMESPACE,
-            request.challenge_string().as_bytes(),
-            &sig,
-        )
-        .map_err(|_| ApprovalError::BadSignature)
-    }
 }
 
 #[cfg(test)]

@@ -16,10 +16,12 @@
 //! - Any seed that ever found a defect gets promoted into FIXED_SEEDS
 //!   permanently, with a comment naming what it found.
 
+use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
-use lychgate_core::approval::{
-    parse_ssh_public_key, ApprovalRequest, ApprovalVerifier, SshSigVerifier,
+use lychgate_core::approval::{parse_ssh_public_key, ApprovalRequest};
+use lychgate_core::authority::{
+    ApprovalSpec, AuthKind, AuthenticatorSpec, AuthorityModel, AuthoritySpec, FactorSpec,
 };
 use lychgate_core::bmc::parse_account;
 use lychgate_core::proto::decode_request;
@@ -148,10 +150,10 @@ fn token_soup(rng: &mut Rng) -> String {
 
 fn mutated_valid(rng: &mut Rng) -> String {
     let valid = [
-        r#"{"proto":3,"op":"open","host":"db-01","ttl":"4h"}"#,
-        r#"{"proto":3,"op":"close","host":"db-01"}"#,
-        r#"{"proto":3,"op":"renew","host":"db-01","ttl":"90s"}"#,
-        r#"{"proto":3,"op":"status"}"#,
+        r#"{"proto":4,"op":"open","host":"db-01","ttl":"4h"}"#,
+        r#"{"proto":4,"op":"close","host":"db-01"}"#,
+        r#"{"proto":4,"op":"renew","host":"db-01","ttl":"90s"}"#,
+        r#"{"proto":4,"op":"status"}"#,
         "[[hosts]]\nname = \"a\"\naddress = \"b\"\nos = \"linux\"\nchannels = [\"ssh\"]\n",
         "15m",
     ];
@@ -233,20 +235,43 @@ fn check(input: &str) {
             "empty approval key error for {input:?}"
         );
     }
-    let verifier = SshSigVerifier::new(vec![(
-        "fuzz".to_string(),
-        parse_ssh_public_key(
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIOBaP66AKPs9nRYDzUrJjGJMYxn0rIWv/tNftYWIu25",
-        )
-        .expect("a valid fixed key"),
-    )]);
     let req = ApprovalRequest::new([0u8; 32], "h".to_string(), 3600, UNIX_EPOCH);
-    if let Err(e) = verifier.verify(&req, input) {
+    if let Err(e) = fuzz_model().verify_ed25519(&req, input) {
         assert!(
             !e.to_string().is_empty(),
             "empty approval verify error for {input:?}"
         );
     }
+}
+
+/// A minimal authority model with one ed25519 authenticator, built once, so the
+/// SSHSIG token verifier can be fuzzed with hostile pasted tokens.
+fn fuzz_model() -> &'static AuthorityModel {
+    static MODEL: OnceLock<AuthorityModel> = OnceLock::new();
+    MODEL.get_or_init(|| {
+        let spec = ApprovalSpec {
+            authenticator: vec![AuthenticatorSpec {
+                id: "fuzz".into(),
+                kind: AuthKind::Ed25519,
+                public_key: Some(
+                    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIOBaP66AKPs9nRYDzUrJjGJMYxn0rIWv/tNftYWIu25"
+                        .into(),
+                ),
+            }],
+            group: vec![],
+            profile: vec![AuthoritySpec {
+                id: "p".into(),
+                threshold: 1,
+                factor: vec![FactorSpec {
+                    weight: 1,
+                    authenticator: Some("fuzz".into()),
+                    group: None,
+                    wait: None,
+                }],
+            }],
+        };
+        AuthorityModel::from_spec(&spec).expect("a valid fuzz model")
+    })
 }
 
 fn iters() -> u32 {

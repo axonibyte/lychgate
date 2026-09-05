@@ -99,7 +99,16 @@ pub enum Event {
         requested_at: u64,
         approval_deadline: u64,
     },
-    /// A pending request was approved by an operator (the Open event follows).
+    /// One operator proof verified against a pending request's challenge and
+    /// was recorded toward its threshold. Names the authenticator, never a token
+    /// or secret. The grant opens (an Approved event follows) only once the
+    /// profile's weighted threshold is met.
+    ProofAccepted {
+        host: String,
+        authenticator: String,
+    },
+    /// A pending request met its authority's threshold and is being opened (the
+    /// Open event follows).
     Approved {
         host: String,
         requested_at: u64,

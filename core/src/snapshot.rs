@@ -26,10 +26,13 @@ use crate::inventory::{Channel, Inventory};
 use crate::registry::GrantRegistry;
 use crate::ttl::{Ttl, MAX_TTL_SECS};
 
-/// Version 3 (M8) adds the `pending` state — a request awaiting operator
-/// approval. Version 2 files (no pending records) still load: the store reads
-/// a small set of known versions and rewrites at the current one.
-pub const STATE_VERSION: u32 = 3;
+/// Version 4 (M8a.2) adds the approval profile and the accumulated satisfied-
+/// authenticator set to a `pending` record (the weighted-threshold model).
+/// Version 3 files (a pending record with no profile/satisfied) still load: the
+/// store reads a small set of known versions and rewrites at the current one; a
+/// v3 pending record restores with an empty satisfied set and — since v3 had no
+/// profiles — is treated as the lone/default profile by the daemon.
+pub const STATE_VERSION: u32 = 4;
 
 /// Unlike reaper's state document, this one refuses unknown fields: the file
 /// is machine-written but hand-editable, and a stray edit to break-glass
@@ -75,6 +78,14 @@ pub struct GrantRecord {
     pub ttl_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub nonce: Option<String>,
+    // Pending-only (v4): the requested approval profile and the authenticator
+    // ids whose proofs have verified so far. A v3 pending record omits both; it
+    // restores with an empty satisfied set and an empty profile, so it can never
+    // open and simply lapses at its deadline (fail-closed).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub satisfied: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +185,8 @@ fn record_of(parts: GrantParts) -> GrantRecord {
         approval_deadline: None,
         ttl_secs: None,
         nonce: None,
+        profile: None,
+        satisfied: None,
     };
     match parts {
         GrantParts::Pending {
@@ -181,12 +194,17 @@ fn record_of(parts: GrantParts) -> GrantRecord {
             approval_deadline,
             ttl,
             nonce,
+            profile,
+            satisfied,
         } => GrantRecord {
             state: "pending".to_string(),
             requested_at: Some(requested_at),
             approval_deadline: Some(approval_deadline),
             ttl_secs: Some(ttl.duration().as_secs()),
             nonce: Some(data_encoding::HEXLOWER.encode(&nonce)),
+            profile: Some(profile),
+            // Sorted vec on disk (BTreeSet order); stable for a human reader.
+            satisfied: Some(satisfied.into_iter().collect()),
             ..base
         },
         GrantParts::Opening {
@@ -231,9 +249,11 @@ fn parts_of(host: &str, record: &GrantRecord) -> Result<GrantParts, SnapshotErro
             || record.approval_deadline.is_some()
             || record.ttl_secs.is_some()
             || record.nonce.is_some()
+            || record.profile.is_some()
+            || record.satisfied.is_some()
         {
             return Err(malformed(
-                "requested_at/approval_deadline/ttl_secs/nonce belong to pending only",
+                "requested_at/approval_deadline/ttl_secs/nonce/profile/satisfied belong to pending only",
             ));
         }
         Ok(())
@@ -321,11 +341,22 @@ fn parts_of(host: &str, record: &GrantRecord) -> Result<GrantParts, SnapshotErro
             let nonce: [u8; 32] = bytes
                 .try_into()
                 .map_err(|_| malformed("nonce is not 32 bytes"))?;
+            // profile/satisfied are absent in a v3 record: default to an empty
+            // profile (unopenable → lapses, fail-closed) and no satisfied ids.
+            let profile = record.profile.clone().unwrap_or_default();
+            let satisfied = record
+                .satisfied
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
             Ok(GrantParts::Pending {
                 requested_at,
                 approval_deadline,
                 ttl,
                 nonce,
+                profile,
+                satisfied,
             })
         }
         "opening" => {

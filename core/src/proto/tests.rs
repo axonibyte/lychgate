@@ -51,26 +51,27 @@ fn every_wire_op_decodes_to_its_variant() {
     // encode_request: the duplication is the check.
     let cases = [
         (
-            r#"{"proto":3,"op":"open","host":"db-01","ttl":"4h"}"#,
+            r#"{"proto":4,"op":"open","host":"db-01","ttl":"4h"}"#,
             Op::Open {
                 host: "db-01".into(),
                 ttl: "4h".into(),
+                profile: None,
             },
         ),
         (
-            r#"{"proto":3,"op":"close","host":"db-01"}"#,
+            r#"{"proto":4,"op":"close","host":"db-01"}"#,
             Op::Close {
                 host: "db-01".into(),
             },
         ),
         (
-            r#"{"proto":3,"op":"renew","host":"db-01","ttl":"1h"}"#,
+            r#"{"proto":4,"op":"renew","host":"db-01","ttl":"1h"}"#,
             Op::Renew {
                 host: "db-01".into(),
                 ttl: "1h".into(),
             },
         ),
-        (r#"{"proto":3,"op":"status"}"#, Op::Status),
+        (r#"{"proto":4,"op":"status"}"#, Op::Status),
     ];
     for (line, want) in cases {
         assert_eq!(decode_request(line).unwrap(), want, "{line}");
@@ -83,6 +84,7 @@ fn encoded_requests_decode_back_to_the_same_op() {
         Op::Open {
             host: "db-01".into(),
             ttl: "4h".into(),
+            profile: None,
         },
         Op::Close {
             host: "db-01".into(),
@@ -107,7 +109,7 @@ fn a_request_from_any_other_protocol_version_is_refused_naming_both() {
         assert_eq!(err, ProtoError::VersionMismatch { theirs });
         let msg = err.to_string();
         assert!(
-            msg.contains(&theirs.to_string()) && msg.contains('3'),
+            msg.contains(&theirs.to_string()) && msg.contains('4'),
             "{msg}"
         );
     }
@@ -131,17 +133,17 @@ fn the_version_refusal_wins_over_unknown_field_refusals() {
 
 #[test]
 fn an_unknown_field_on_the_current_protocol_is_refused_rather_than_ignored() {
-    let err = decode_request(r#"{"proto":3,"op":"status","nonce":"abc"}"#).unwrap_err();
+    let err = decode_request(r#"{"proto":4,"op":"status","nonce":"abc"}"#).unwrap_err();
     assert!(matches!(err, ProtoError::Malformed(_)), "{err}");
 }
 
 #[test]
 fn an_op_missing_its_required_fields_is_refused_naming_the_field() {
     let cases = [
-        (r#"{"proto":3,"op":"open","ttl":"4h"}"#, "host"),
-        (r#"{"proto":3,"op":"open","host":"h"}"#, "ttl"),
-        (r#"{"proto":3,"op":"close"}"#, "host"),
-        (r#"{"proto":3,"op":"renew","host":"h"}"#, "ttl"),
+        (r#"{"proto":4,"op":"open","ttl":"4h"}"#, "host"),
+        (r#"{"proto":4,"op":"open","host":"h"}"#, "ttl"),
+        (r#"{"proto":4,"op":"close"}"#, "host"),
+        (r#"{"proto":4,"op":"renew","host":"h"}"#, "ttl"),
     ];
     for (line, field) in cases {
         let err = decode_request(line).unwrap_err();
@@ -151,7 +153,7 @@ fn an_op_missing_its_required_fields_is_refused_naming_the_field() {
 
 #[test]
 fn an_unknown_op_is_refused_by_name() {
-    let err = decode_request(r#"{"proto":3,"op":"detonate"}"#).unwrap_err();
+    let err = decode_request(r#"{"proto":4,"op":"detonate"}"#).unwrap_err();
     assert_eq!(err, ProtoError::UnknownOp("detonate".into()));
     assert!(err.to_string().contains("detonate"));
 }
@@ -159,7 +161,7 @@ fn an_unknown_op_is_refused_by_name() {
 #[test]
 fn a_request_over_the_line_cap_is_refused_unread() {
     let line = format!(
-        r#"{{"proto":3,"op":"open","host":"{}","ttl":"1h"}}"#,
+        r#"{{"proto":4,"op":"open","host":"{}","ttl":"1h"}}"#,
         "x".repeat(MAX_LINE_BYTES)
     );
     let err = decode_request(&line).unwrap_err();
@@ -264,7 +266,7 @@ fn responses_carry_the_current_protocol_version() {
         ..Response::refused("x")
     };
     let v: serde_json::Value = serde_json::from_str(&ok.encode()).unwrap();
-    assert_eq!(v["proto"], 3);
+    assert_eq!(v["proto"], 4);
 }
 
 #[test]
@@ -290,13 +292,13 @@ fn a_response_secret_label_round_trips_and_is_omitted_when_absent() {
 // --- approve op + approval status states (M8) ------------------------------
 
 #[test]
-fn the_protocol_version_is_three() {
-    assert_eq!(PROTO_VERSION, 3);
+fn the_protocol_version_is_four() {
+    assert_eq!(PROTO_VERSION, 4);
 }
 
 #[test]
 fn approve_decodes_with_host_and_token_and_round_trips() {
-    let line = r#"{"proto":3,"op":"approve","host":"db-01","token":"lg1.sig"}"#;
+    let line = r#"{"proto":4,"op":"approve","host":"db-01","token":"lg1.sig"}"#;
     assert_eq!(
         decode_request(line).unwrap(),
         Op::Approve {
@@ -313,9 +315,9 @@ fn approve_decodes_with_host_and_token_and_round_trips() {
 
 #[test]
 fn approve_missing_host_or_token_is_refused_naming_the_field() {
-    let no_token = decode_request(r#"{"proto":3,"op":"approve","host":"h"}"#).unwrap_err();
+    let no_token = decode_request(r#"{"proto":4,"op":"approve","host":"h"}"#).unwrap_err();
     assert!(no_token.to_string().contains("token"), "{no_token}");
-    let no_host = decode_request(r#"{"proto":3,"op":"approve","token":"t"}"#).unwrap_err();
+    let no_host = decode_request(r#"{"proto":4,"op":"approve","token":"t"}"#).unwrap_err();
     assert!(no_host.to_string().contains("host"), "{no_host}");
 }
 

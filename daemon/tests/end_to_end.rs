@@ -155,7 +155,7 @@ fn a_single_pass_reaps_an_expired_grant_and_journals_it_before_exiting() {
     // State rewritten: the grant reverted to closed (absent), and the v2 file
     // was upgraded to the current version on write.
     let doc = grants_doc(&state_dir);
-    assert_eq!(doc["version"], 3);
+    assert_eq!(doc["version"], 4);
     assert_eq!(doc["grants"], serde_json::json!({}));
 
     // Journal: the grant is observed expired (expire), then — with an empty
@@ -634,7 +634,7 @@ fn a_request_from_a_future_protocol_is_refused_over_the_socket() {
     let v: serde_json::Value = serde_json::from_str(reply.trim()).unwrap();
     assert_eq!(v["result"], "refused");
     let err = v["error"].as_str().unwrap();
-    assert!(err.contains("protocol 9") && err.contains('3'), "{err}");
+    assert!(err.contains("protocol 9") && err.contains('4'), "{err}");
 
     daemon.stop();
 }
@@ -794,7 +794,7 @@ fn without_dry_run_the_daemon_refuses_to_start_with_no_approver() {
         "the daemon should refuse to start without an approver"
     );
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("approver"),
+        String::from_utf8_lossy(&out.stderr).contains("[approval]"),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );

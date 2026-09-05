@@ -65,6 +65,8 @@ fn record(
         approval_deadline: None,
         ttl_secs: None,
         nonce: None,
+        profile: None,
+        satisfied: None,
     }
 }
 
@@ -109,6 +111,8 @@ fn a_snapshot_records_every_lifecycle_state_and_omits_closed() {
             approval_deadline: None,
             ttl_secs: None,
             nonce: None,
+            profile: None,
+            satisfied: None,
         }
     );
 
@@ -265,6 +269,8 @@ fn a_needs_revert_record_with_no_channels_round_trips_as_a_closing_transient() {
             approval_deadline: None,
             ttl_secs: None,
             nonce: None,
+            profile: None,
+            satisfied: None,
         },
     );
     let reg = GrantRegistry::from_parts(&inventory(), &doc).unwrap();
@@ -296,7 +302,7 @@ fn state_times_serialize_as_whole_epoch_seconds() {
     let json = serde_json::to_string(&reg.snapshot()).unwrap();
     assert_eq!(
         json,
-        r#"{"version":3,"grants":{"db-01":{"state":"open","opened_at":1700000000,"expires_at":1700014400,"channels":["ssh"]}}}"#
+        r#"{"version":4,"grants":{"db-01":{"state":"open","opened_at":1700000000,"expires_at":1700014400,"channels":["ssh"]}}}"#
     );
     let doc: StateDoc = serde_json::from_str(&json).unwrap();
     assert_eq!(doc, reg.snapshot());
@@ -320,6 +326,8 @@ fn pending_record(
         approval_deadline: deadline.map(t),
         ttl_secs,
         nonce: nonce.map(|s| s.to_string()),
+        profile: None,
+        satisfied: None,
     }
 }
 
@@ -327,8 +335,15 @@ fn pending_record(
 fn a_pending_record_round_trips() {
     let inv = inventory();
     let mut reg = GrantRegistry::new(&inv);
-    reg.begin_pending("db-01", t(1_000), t(1_300), ttl(3_600), [9u8; 32])
-        .unwrap();
+    reg.begin_pending(
+        "db-01",
+        t(1_000),
+        t(1_300),
+        ttl(3_600),
+        [9u8; 32],
+        "claude".to_string(),
+    )
+    .unwrap();
     let doc = reg.snapshot();
     assert_eq!(doc.grants["db-01"].state, "pending");
     let rebuilt = GrantRegistry::from_parts(&inv, &doc).unwrap();
@@ -429,6 +444,8 @@ fn an_open_record_with_a_stray_pending_field_is_refused() {
             approval_deadline: None,
             ttl_secs: None,
             nonce: Some("aa".repeat(32)), // stray
+            profile: None,
+            satisfied: None,
         },
     );
     assert!(matches!(

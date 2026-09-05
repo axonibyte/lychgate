@@ -3,42 +3,39 @@
 //! shrug — because a typo in a break-glass config must fail at load, not at
 //! 03:00 when the grant it silently disabled is needed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+
+use crate::authority::{ApprovalSpec, AuthorityBody, AuthorityError, AuthorityModel};
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Inventory {
     #[serde(default)]
     pub hosts: Vec<Host>,
-    /// Deployment-wide operator-approval policy. When present, opening any
-    /// grant requires a token from one of the configured approvers. Absent, a
-    /// daemon must decide its own default (lychgated refuses to serve without
-    /// an approver unless --dry-run) — see the daemon, not the schema.
+    /// Deployment-wide operator-approval policy: the weighted-threshold
+    /// authorities (authenticators, groups, profiles) that gate opening a grant.
+    /// When present, an open must satisfy the resolved profile's authority.
+    /// Absent, the daemon decides its own default (lychgated refuses to serve
+    /// without an approval policy unless --dry-run). See `crate::authority`.
     #[serde(default)]
-    pub approval: Option<ApprovalConfig>,
+    pub approval: Option<ApprovalSpec>,
 }
 
-/// The approvers a deployment accepts. Any one of them may approve (the
-/// fail-closed `AnyOf` composite); an empty table is refused at load. TOTP and
-/// FIDO2 approver lists land in later sub-milestones.
+/// Which approval profiles a host permits, and any per-profile authority
+/// overrides for it. A host with no `[hosts.access]` permits every global
+/// profile at its default authority.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct ApprovalConfig {
-    #[serde(default)]
-    pub ed25519: Vec<Ed25519Approver>,
-}
-
-/// One SSHSIG Ed25519 approver: an identity and the OpenSSH public key whose
-/// `ssh-keygen -Y sign -n lychgate-approval` signatures are accepted. The key
-/// is public, so it is inline (unlike a secret, which is always a file path).
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
-pub struct Ed25519Approver {
-    pub key_id: String,
-    pub public_key: String,
+pub struct HostAccess {
+    /// The global profiles that may be opened on this host (non-empty).
+    pub profiles: Vec<String>,
+    /// Per-profile authority overrides, keyed by profile id: this host requires
+    /// the override's authority for that profile instead of the global one.
+    #[serde(default, rename = "override")]
+    pub overrides: BTreeMap<String, AuthorityBody>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -58,6 +55,11 @@ pub struct Host {
     /// Required exactly when the host declares a `vnc` channel.
     #[serde(default)]
     pub vnc: Option<VncConfig>,
+    /// Which approval profiles may be opened on this host, and any per-profile
+    /// overrides. Absent: the host permits every global profile at its default
+    /// authority. Meaningful only when [approval] is configured.
+    #[serde(default)]
+    pub access: Option<HostAccess>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -298,15 +300,26 @@ pub enum InventoryError {
         other: String,
         port: u16,
     },
-    /// An [approval] table with no approvers — fail-closed: nothing could ever
-    /// approve a grant.
-    ApprovalNoApprovers,
-    ApprovalEmptyKeyId,
-    ApprovalDuplicateKeyId(String),
-    /// A configured approver public key does not parse.
-    ApprovalBadPublicKey {
-        id: String,
-        message: String,
+    /// The [approval] policy is malformed (dangling reference, cycle,
+    /// unsatisfiable threshold, unimplemented authenticator kind, …).
+    Approval(AuthorityError),
+    /// A host declares [hosts.access] but the inventory has no [approval] policy.
+    AccessWithoutApproval {
+        host: String,
+    },
+    /// A host's [hosts.access] permits no profiles — it could never be opened.
+    AccessNoProfiles {
+        host: String,
+    },
+    /// A host permits, or overrides, a profile that is not defined.
+    UnknownProfile {
+        host: String,
+        profile: String,
+    },
+    /// A host overrides a profile it does not permit — dead config.
+    OverrideForUnpermittedProfile {
+        host: String,
+        profile: String,
     },
 }
 
@@ -394,19 +407,22 @@ impl fmt::Display for InventoryError {
                 f,
                 "host {host:?}: local_port {port} is also forwarded by host {other:?}; two hosts cannot share one daemon-local forward port"
             ),
-            InventoryError::ApprovalNoApprovers => write!(
+            InventoryError::Approval(e) => write!(f, "[approval] policy is invalid: {e}"),
+            InventoryError::AccessWithoutApproval { host } => write!(
                 f,
-                "[approval] is present but lists no approvers; opening a grant could never be approved (fail-closed)"
+                "host {host:?} declares [hosts.access] but the inventory has no [approval] policy; access profiles are meaningless without one"
             ),
-            InventoryError::ApprovalEmptyKeyId => {
-                write!(f, "an [[approval.ed25519]] entry has an empty key-id")
-            }
-            InventoryError::ApprovalDuplicateKeyId(id) => {
-                write!(f, "approver key-id {id:?} appears more than once")
-            }
-            InventoryError::ApprovalBadPublicKey { id, message } => write!(
+            InventoryError::AccessNoProfiles { host } => write!(
                 f,
-                "approver {id:?}: public-key does not parse: {message}"
+                "host {host:?} declares [hosts.access] permitting no profiles; it could never be opened (fail-closed)"
+            ),
+            InventoryError::UnknownProfile { host, profile } => write!(
+                f,
+                "host {host:?} references approval profile {profile:?}, which is not defined in [approval]"
+            ),
+            InventoryError::OverrideForUnpermittedProfile { host, profile } => write!(
+                f,
+                "host {host:?} overrides profile {profile:?} but does not permit it; dead config is a typo"
             ),
         }
     }
@@ -570,29 +586,58 @@ impl Inventory {
             }
         }
 
-        // Deployment-wide approval policy (not per-host).
-        if let Some(approval) = &self.approval {
-            if approval.ed25519.is_empty() {
-                return Err(InventoryError::ApprovalNoApprovers);
+        // Deployment-wide approval policy (not per-host): build and fully
+        // validate the authority model, then check each host's access against it.
+        let model = self.approval_model()?;
+        for host in &self.hosts {
+            let Some(access) = &host.access else {
+                continue;
+            };
+            let Some(model) = &model else {
+                return Err(InventoryError::AccessWithoutApproval {
+                    host: host.name.clone(),
+                });
+            };
+            if access.profiles.is_empty() {
+                return Err(InventoryError::AccessNoProfiles {
+                    host: host.name.clone(),
+                });
             }
-            let mut ids = BTreeSet::new();
-            for e in &approval.ed25519 {
-                if e.key_id.is_empty() {
-                    return Err(InventoryError::ApprovalEmptyKeyId);
-                }
-                if !ids.insert(&e.key_id) {
-                    return Err(InventoryError::ApprovalDuplicateKeyId(e.key_id.clone()));
-                }
-                // A bad approver key must fail at load, not at 03:00.
-                if let Err(err) = crate::approval::parse_ssh_public_key(&e.public_key) {
-                    return Err(InventoryError::ApprovalBadPublicKey {
-                        id: e.key_id.clone(),
-                        message: err.to_string(),
+            let permitted: BTreeSet<&str> = access.profiles.iter().map(|s| s.as_str()).collect();
+            for profile in &access.profiles {
+                if model.profile(profile).is_none() {
+                    return Err(InventoryError::UnknownProfile {
+                        host: host.name.clone(),
+                        profile: profile.clone(),
                     });
                 }
             }
+            for (profile, body) in &access.overrides {
+                if !permitted.contains(profile.as_str()) {
+                    return Err(InventoryError::OverrideForUnpermittedProfile {
+                        host: host.name.clone(),
+                        profile: profile.clone(),
+                    });
+                }
+                model
+                    .resolve_override(profile, body)
+                    .map_err(InventoryError::Approval)?;
+            }
         }
         Ok(())
+    }
+
+    /// Build the deployment's approval model, or `None` if no `[approval]` policy
+    /// is configured. All structural validation (references, cycles,
+    /// satisfiability, unimplemented kinds) happens here, so this is both what
+    /// `validate` checks and what the daemon builds to serve.
+    pub fn approval_model(&self) -> Result<Option<AuthorityModel>, InventoryError> {
+        match &self.approval {
+            Some(spec) => AuthorityModel::from_spec(spec)
+                .map(Some)
+                .map_err(InventoryError::Approval),
+            None => Ok(None),
+        }
     }
 }
 

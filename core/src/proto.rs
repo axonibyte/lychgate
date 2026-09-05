@@ -18,7 +18,7 @@ use crate::grant::GrantStatus;
 use crate::inventory::Channel;
 use crate::registry::GrantRegistry;
 
-pub const PROTO_VERSION: u32 = 3;
+pub const PROTO_VERSION: u32 = 4;
 
 /// A request larger than this is refused unread. Nothing legitimate on this
 /// protocol approaches it; without a cap, one connection could balloon the
@@ -30,8 +30,13 @@ pub enum Op {
     Open {
         host: String,
         ttl: String,
+        /// Which approval profile to open under. Optional: omitted when the
+        /// host permits exactly one profile (the daemon picks it).
+        profile: Option<String>,
     },
-    /// Approve a pending request with an operator token (opens the grant).
+    /// Submit one operator proof toward a pending request. Proofs accumulate
+    /// across calls; the grant opens when the profile's weighted threshold is
+    /// met (an elapsed `wait` can also tip it over with no further proof).
     Approve {
         host: String,
         token: String,
@@ -103,6 +108,7 @@ struct RequestWire {
     host: Option<String>,
     ttl: Option<String>,
     token: Option<String>,
+    profile: Option<String>,
 }
 
 pub fn decode_request(line: &str) -> Result<Op, ProtoError> {
@@ -139,6 +145,7 @@ pub fn decode_request(line: &str) -> Result<Op, ProtoError> {
         "open" => Ok(Op::Open {
             host: host("open")?,
             ttl: ttl("open")?,
+            profile: wire.profile.clone(),
         }),
         "approve" => Ok(Op::Approve {
             host: host("approve")?,
@@ -157,12 +164,12 @@ pub fn decode_request(line: &str) -> Result<Op, ProtoError> {
 }
 
 pub fn encode_request(op: &Op) -> String {
-    let (op_name, host, ttl, token) = match op {
-        Op::Open { host, ttl } => ("open", Some(host), Some(ttl), None),
-        Op::Approve { host, token } => ("approve", Some(host), None, Some(token)),
-        Op::Close { host } => ("close", Some(host), None, None),
-        Op::Renew { host, ttl } => ("renew", Some(host), Some(ttl), None),
-        Op::Status => ("status", None, None, None),
+    let (op_name, host, ttl, token, profile) = match op {
+        Op::Open { host, ttl, profile } => ("open", Some(host), Some(ttl), None, profile.as_ref()),
+        Op::Approve { host, token } => ("approve", Some(host), None, Some(token), None),
+        Op::Close { host } => ("close", Some(host), None, None, None),
+        Op::Renew { host, ttl } => ("renew", Some(host), Some(ttl), None, None),
+        Op::Status => ("status", None, None, None, None),
     };
     let mut v = serde_json::json!({ "proto": PROTO_VERSION, "op": op_name });
     if let Some(host) = host {
@@ -173,6 +180,9 @@ pub fn encode_request(op: &Op) -> String {
     }
     if let Some(token) = token {
         v["token"] = serde_json::json!(token);
+    }
+    if let Some(profile) = profile {
+        v["profile"] = serde_json::json!(profile);
     }
     v.to_string()
 }
@@ -266,6 +276,13 @@ pub struct PendingChallenge {
     pub ttl_secs: u64,
     pub requested_at: u64,
     pub approval_deadline: u64,
+    /// The profile this request is being opened under.
+    pub profile: String,
+    /// Approval progress: satisfied weight so far, the threshold to reach, and
+    /// human labels for what is still outstanding (never a secret).
+    pub weight: u64,
+    pub threshold: u32,
+    pub missing: Vec<String>,
 }
 
 /// Flat on the wire: {"proto":1,"result":"ok",...} or

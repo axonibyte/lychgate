@@ -259,7 +259,8 @@ const NONCE: [u8; 32] = [7u8; 32];
 #[test]
 fn begin_pending_from_closed_awaits_approval_within_the_window() {
     let mut g = Grant::new();
-    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE, "p".to_string())
+        .unwrap();
     match g.status(t(100)) {
         GrantStatus::AwaitingApproval { remaining } => {
             assert_eq!(remaining, Duration::from_secs(200))
@@ -273,7 +274,8 @@ fn begin_pending_from_closed_awaits_approval_within_the_window() {
 #[test]
 fn at_the_approval_deadline_it_is_expired_not_open() {
     let mut g = Grant::new();
-    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE, "p".to_string())
+        .unwrap();
     assert_eq!(g.status(t(300)), GrantStatus::ApprovalExpired);
     assert_eq!(g.status(t(301)), GrantStatus::ApprovalExpired);
 }
@@ -281,9 +283,10 @@ fn at_the_approval_deadline_it_is_expired_not_open() {
 #[test]
 fn a_second_pending_request_is_refused() {
     let mut g = Grant::new();
-    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE, "p".to_string())
+        .unwrap();
     assert_eq!(
-        g.begin_pending(t(1), t(301), ttl(3600), NONCE),
+        g.begin_pending(t(1), t(301), ttl(3600), NONCE, "p".to_string()),
         Err(GrantError::AlreadyPending)
     );
 }
@@ -291,7 +294,8 @@ fn a_second_pending_request_is_refused() {
 #[test]
 fn approve_anchors_expiry_at_approval_time_not_request_time() {
     let mut g = Grant::new();
-    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE, "p".to_string())
+        .unwrap();
     // Approved at t(200): expiry is t(200)+3600, never t(0)+3600.
     let expires = g.approve_to_opening(t(200), chans()).unwrap();
     assert_eq!(expires, t(200 + 3600));
@@ -302,7 +306,8 @@ fn approve_anchors_expiry_at_approval_time_not_request_time() {
 #[test]
 fn approving_after_the_window_is_refused() {
     let mut g = Grant::new();
-    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE, "p".to_string())
+        .unwrap();
     assert_eq!(
         g.approve_to_opening(t(300), chans()),
         Err(GrantError::ApprovalWindowElapsed)
@@ -312,7 +317,8 @@ fn approving_after_the_window_is_refused() {
 #[test]
 fn cancelling_a_pending_request_closes_it_with_nothing_to_revert() {
     let mut g = Grant::new();
-    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE, "p".to_string())
+        .unwrap();
     g.cancel_pending().unwrap();
     assert_eq!(g.status(t(100)), GrantStatus::Closed);
     // Cancel of a non-pending grant is refused.
@@ -322,14 +328,16 @@ fn cancelling_a_pending_request_closes_it_with_nothing_to_revert() {
 #[test]
 fn renewing_a_pending_grant_is_refused() {
     let mut g = Grant::new();
-    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE, "p".to_string())
+        .unwrap();
     assert_eq!(g.renew(t(100), &ttl(3600)), Err(GrantError::NotOpen));
 }
 
 #[test]
 fn the_pending_request_carries_the_challenge_fields() {
     let mut g = Grant::new();
-    g.begin_pending(t(0), t(300), ttl(3600), NONCE).unwrap();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE, "p".to_string())
+        .unwrap();
     let req = g.pending_request("db-01", t(100)).unwrap();
     assert_eq!(req.host(), "db-01");
     assert_eq!(req.ttl_secs(), 3600);
@@ -337,6 +345,44 @@ fn the_pending_request_carries_the_challenge_fields() {
     // A lapsed window refuses.
     assert_eq!(
         g.pending_request("db-01", t(300)),
+        Err(GrantError::ApprovalWindowElapsed)
+    );
+}
+
+#[test]
+fn proofs_accumulate_on_a_pending_request_and_surface_in_the_view() {
+    let mut g = Grant::new();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE, "claude".to_string())
+        .unwrap();
+    assert!(
+        g.add_satisfied(t(1), "alice".to_string()).unwrap(),
+        "newly added"
+    );
+    assert!(
+        !g.add_satisfied(t(2), "alice".to_string()).unwrap(),
+        "a re-submission is not newly added"
+    );
+    assert!(g.add_satisfied(t(3), "bob".to_string()).unwrap());
+    let view = g.pending_view(t(4)).unwrap();
+    assert_eq!(view.profile, "claude");
+    assert_eq!(view.satisfied.len(), 2);
+    assert!(view.satisfied.contains("alice") && view.satisfied.contains("bob"));
+    assert_eq!(view.requested_at, t(0));
+    assert_eq!(view.elapsed, std::time::Duration::from_secs(4));
+}
+
+#[test]
+fn a_lapsed_pending_refuses_further_proofs_and_the_view() {
+    let mut g = Grant::new();
+    g.begin_pending(t(0), t(300), ttl(3600), NONCE, "p".to_string())
+        .unwrap();
+    // At/after the deadline the request is expired: fail-closed on both paths.
+    assert_eq!(
+        g.add_satisfied(t(300), "alice".to_string()),
+        Err(GrantError::ApprovalWindowElapsed)
+    );
+    assert_eq!(
+        g.pending_view(t(300)),
         Err(GrantError::ApprovalWindowElapsed)
     );
 }

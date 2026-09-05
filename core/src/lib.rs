@@ -18,22 +18,20 @@ pub mod ssh;
 pub mod ttl;
 pub mod vnc;
 
-pub use approval::{
-    parse_ssh_public_key, AcceptAny, AnyOf, ApprovalError, ApprovalRequest, ApprovalVerifier,
-    RefuseAll, SshSigVerifier, APPROVAL_NAMESPACE,
-};
+pub use approval::{parse_ssh_public_key, ApprovalError, ApprovalRequest, APPROVAL_NAMESPACE};
 pub use authority::{
-    ApprovalSpec, AuthKind, Authenticator, AuthenticatorSpec, Authority, AuthorityError,
-    AuthorityModel, AuthoritySpec, Factor, FactorSpec, Missing, Outcome, WeightedFactor,
+    ApprovalSpec, AuthKind, Authenticator, AuthenticatorSpec, Authority, AuthorityBody,
+    AuthorityError, AuthorityModel, AuthoritySpec, Factor, FactorSpec, Missing, Outcome,
+    WeightedFactor,
 };
 pub use channel::{
     apply_channels, reestablish_channels, revert_channels, ApplyOutcome, ChannelDriver,
     ChannelState, DriverError, DriverSet, ReestablishOutcome, RevertOutcome,
 };
-pub use grant::{Grant, GrantError, GrantStatus, MAX_APPROVAL_WINDOW_SECS};
+pub use grant::{Grant, GrantError, GrantStatus, PendingView, MAX_APPROVAL_WINDOW_SECS};
 pub use inventory::{
-    ApprovalConfig, BmcConfig, BmcMethod, BmcTls, Channel, Ed25519Approver, Host, Inventory,
-    InventoryError, Os, SshConfig, VncConfig,
+    BmcConfig, BmcMethod, BmcTls, Channel, Host, HostAccess, Inventory, InventoryError, Os,
+    SshConfig, VncConfig,
 };
 pub use registry::{ExpiredGrant, ExpiredPending, GrantRegistry, RegistryError};
 pub use snapshot::{GrantRecord, SnapshotError, StateDoc, STATE_VERSION};

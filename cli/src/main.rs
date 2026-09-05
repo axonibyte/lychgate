@@ -32,6 +32,10 @@ enum Command {
         /// Time to live, e.g. 90s, 15m, 2h; capped at 24h
         #[arg(long)]
         ttl: String,
+        /// Which approval profile to open under. Omit when the host permits
+        /// exactly one.
+        #[arg(long = "as")]
+        profile: Option<String>,
     },
     /// Approve a pending request with a signed token, opening the grant
     Approve {
@@ -74,7 +78,7 @@ fn run() -> anyhow::Result<ExitCode> {
     let cli = Cli::parse();
 
     let op = match &cli.command {
-        Command::Open { host, ttl } => {
+        Command::Open { host, ttl, profile } => {
             // Policy is enforced client-side first so a bad TTL fails with
             // core's error before a connection is attempted; the daemon
             // enforces it again regardless.
@@ -82,6 +86,7 @@ fn run() -> anyhow::Result<ExitCode> {
             Op::Open {
                 host: host.clone(),
                 ttl: ttl.clone(),
+                profile: profile.clone(),
             }
         }
         Command::Approve {
@@ -150,9 +155,20 @@ fn run() -> anyhow::Result<ExitCode> {
         (Command::Open { host, .. }, r) => match &r.pending {
             Some(p) => {
                 println!(
-                    "approval required for {host} (ttl {}, approve within {}s)",
+                    "approval required for {host} under profile {:?} (ttl {}, approve within {}s)",
+                    p.profile,
                     human(p.ttl_secs),
                     p.approval_deadline.saturating_sub(p.requested_at)
+                );
+                println!(
+                    "weight {}/{} so far; outstanding: {}",
+                    p.weight,
+                    p.threshold,
+                    if p.missing.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        p.missing.join(" | ")
+                    }
                 );
                 println!("challenge: {}", p.challenge);
                 println!(
@@ -165,7 +181,21 @@ fn run() -> anyhow::Result<ExitCode> {
             // A daemon in --dry-run or an older one may open directly.
             None => print_opened(host, r),
         },
-        (Command::Approve { host, .. }, r) => print_opened(host, r),
+        (Command::Approve { host, .. }, r) => match &r.pending {
+            // The proof was accepted but the threshold is not yet met: show
+            // progress. More proofs (or an elapsed wait) will open the grant.
+            Some(p) => {
+                println!(
+                    "proof accepted for {host}: weight {}/{}",
+                    p.weight, p.threshold
+                );
+                if !p.missing.is_empty() {
+                    println!("still outstanding: {}", p.missing.join(" | "));
+                }
+                println!("submit more proofs, or wait, to reach the threshold");
+            }
+            None => print_opened(host, r),
+        },
         (Command::Renew { host, .. }, r) => {
             let expires = r.expires_at.unwrap_or(0);
             println!("grant on {host} renewed until epoch {expires}");

@@ -113,7 +113,7 @@ impl Harness {
                 fired: Arc::clone(&deadman_fired),
             })),
             approval_window: std::time::Duration::from_secs(300),
-            verifier: Box::new(lychgate_core::AcceptAny),
+            approval: None,
         };
         Harness {
             daemon,
@@ -163,8 +163,9 @@ fn t(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
 }
 
-/// Open then approve, so the grant actually opens (the Harness's verifier is
-/// AcceptAny, so any token approves). Returns the final result — Ok once open,
+/// Open then approve, so the grant actually opens (the Harness runs with
+/// `approval: None` — dry-run-style — so the first proof opens). Returns the
+/// final result — Ok once open,
 /// or the refusal if the open itself was refused (e.g. AlreadyOpen/Already
 /// Pending). The two steps run at the same `now`, well inside the approval
 /// window.
@@ -175,6 +176,7 @@ fn open(h: &Harness, now: SystemTime, ttl: &str) -> ResponseResult {
             &Op::Open {
                 host: "db-01".into(),
                 ttl: ttl.into(),
+                profile: None,
             },
             now,
         )
@@ -311,7 +313,7 @@ fn a_stuck_revert_is_retried_by_the_pass_until_it_clears() {
             fired: Arc::new(Mutex::new(false)),
         })),
         approval_window: std::time::Duration::from_secs(300),
-        verifier: Box::new(lychgate_core::AcceptAny),
+        approval: None,
     };
 
     // Open is requested, then approved — and the apply fails (ssh apply fails,
@@ -321,6 +323,7 @@ fn a_stuck_revert_is_retried_by_the_pass_until_it_clears() {
             &Op::Open {
                 host: "db-01".into(),
                 ttl: "4h".into(),
+                profile: None,
             },
             t(0),
         )
@@ -449,7 +452,7 @@ fn boot_recovery_demotes_a_stored_opening_to_needs_revert() {
             fired: Arc::new(Mutex::new(false)),
         })),
         approval_window: std::time::Duration::from_secs(300),
-        verifier: Box::new(lychgate_core::AcceptAny),
+        approval: None,
     };
     daemon.boot_recover(t(10)).unwrap();
     // Demoted: every intended channel is now awaiting revert.
@@ -535,6 +538,7 @@ fn a_deadman_install_failure_fails_the_open_and_unwinds_the_channels() {
             &Op::Open {
                 host: "db-01".into(),
                 ttl: "4h".into(),
+                profile: None,
             },
             t(0),
         )
@@ -740,13 +744,14 @@ fn a_bmc_style_secret_reaches_the_open_response_but_never_the_journal() {
             fired: Arc::new(Mutex::new(false)),
         })),
         approval_window: std::time::Duration::from_secs(300),
-        verifier: Box::new(lychgate_core::AcceptAny),
+        approval: None,
     };
     daemon
         .dispatch(
             &Op::Open {
                 host: "db-01".into(),
                 ttl: "4h".into(),
+                profile: None,
             },
             t(0),
         )
@@ -836,7 +841,7 @@ fn boot_reestablishes_an_open_vnc_grant_that_outlived_a_restart() {
         drivers: Mutex::new(drivers),
         deadman: Mutex::new(dummy_deadman()),
         approval_window: std::time::Duration::from_secs(300),
-        verifier: Box::new(lychgate_core::AcceptAny),
+        approval: None,
     };
 
     daemon.boot_recover(t(2000)).unwrap();
@@ -885,7 +890,7 @@ fn a_vnc_grant_whose_tunnel_cannot_be_reestablished_is_reverted() {
         drivers: Mutex::new(drivers),
         deadman: Mutex::new(dummy_deadman()),
         approval_window: std::time::Duration::from_secs(300),
-        verifier: Box::new(lychgate_core::AcceptAny),
+        approval: None,
     };
 
     daemon.boot_recover(t(2000)).unwrap();
@@ -928,7 +933,7 @@ fn simultaneous_opens_of_one_console_produce_one_grant_and_one_apply() {
         drivers: Mutex::new(drivers),
         deadman: Mutex::new(dummy_deadman()),
         approval_window: std::time::Duration::from_secs(300),
-        verifier: Box::new(lychgate_core::AcceptAny),
+        approval: None,
     });
 
     const N: usize = 16;
@@ -943,6 +948,7 @@ fn simultaneous_opens_of_one_console_produce_one_grant_and_one_apply() {
                     &Op::Open {
                         host: "hv".into(),
                         ttl: "1h".into(),
+                        profile: None,
                     },
                     t(1000),
                 )
@@ -1031,13 +1037,14 @@ fn a_vnc_open_returns_the_one_time_password_labelled_and_the_console_endpoint() 
         drivers: Mutex::new(drivers),
         deadman: Mutex::new(dummy_deadman()),
         approval_window: std::time::Duration::from_secs(300),
-        verifier: Box::new(lychgate_core::AcceptAny),
+        approval: None,
     };
     daemon
         .dispatch(
             &Op::Open {
                 host: "hv".into(),
                 ttl: "1h".into(),
+                profile: None,
             },
             t(1000),
         )
@@ -1060,4 +1067,95 @@ fn a_vnc_open_returns_the_one_time_password_labelled_and_the_console_endpoint() 
     // And the password never reaches the journal.
     let raw = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
     assert!(!raw.contains("vnc-one-time-pw"), "the secret leaked: {raw}");
+}
+
+// --- open-on-wait: a `wait` factor opens a grant with no proof --------------
+
+const WAIT_ONLY_INVENTORY: &str = r#"
+[[hosts]]
+name = "db-01"
+address = "10.0.4.11"
+os = "linux"
+channels = ["ssh"]
+
+[hosts.ssh]
+agent_user = "root"
+root_posture_default = "no"
+root_posture_emergency = "yes"
+
+[[approval.profile]]
+id = "timed"
+threshold = 1
+factor = [ { wait = "5s", weight = 1 } ]
+"#;
+
+/// A daemon with a real authority model, no drivers registered (so an approved
+/// open applies nothing but still commits Open), and a fake dead-man. Proves the
+/// pass-loop opens a pending grant once its `wait` matures — no proof involved.
+#[test]
+fn a_wait_only_profile_opens_on_the_pass_once_the_wait_matures() {
+    let dir = scratch_dir("wait-open");
+    let inventory = Inventory::parse(WAIT_ONLY_INVENTORY).unwrap();
+    let model = inventory
+        .approval_model()
+        .unwrap()
+        .expect("a policy is configured");
+    let daemon = Daemon {
+        inventory,
+        store: Store::at(dir.join("grants.json")),
+        journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
+        drivers: Mutex::new(DriverSet::new()),
+        deadman: Mutex::new(Box::new(FakeDeadman {
+            log: Arc::new(Mutex::new(Vec::new())),
+            fail_install: false,
+            fail_remove: false,
+            fired: Arc::new(Mutex::new(false)),
+        })),
+        approval_window: Duration::from_secs(300),
+        approval: Some(model),
+    };
+
+    // Open under the wait-only profile: pending, nothing applied.
+    let r = daemon
+        .dispatch(
+            &Op::Open {
+                host: "db-01".into(),
+                ttl: "1h".into(),
+                profile: Some("timed".into()),
+            },
+            t(1_000),
+        )
+        .unwrap();
+    assert_eq!(r.result, ResponseResult::Ok);
+    assert!(
+        r.pending.is_some(),
+        "open should return a pending challenge"
+    );
+
+    // A pass before the wait elapses leaves it pending — the oracle self-test:
+    // if the grant opened here, the wait boundary would mean nothing.
+    daemon.pass(t(1_002)).unwrap();
+    let before = daemon.status(t(1_002)).unwrap();
+    let db01 = before.iter().find(|l| l.host == "db-01").unwrap();
+    assert_eq!(db01.state, GrantState::AwaitingApproval);
+
+    // A pass at/after the 5s wait opens it, with no proof ever submitted.
+    daemon.pass(t(1_006)).unwrap();
+    let after = daemon.status(t(1_006)).unwrap();
+    let db01 = after.iter().find(|l| l.host == "db-01").unwrap();
+    assert_eq!(
+        db01.state,
+        GrantState::Open,
+        "the matured wait should open it"
+    );
+
+    // The committed store agrees, and the open was journaled.
+    let doc = daemon.store.read().unwrap();
+    assert_eq!(doc.grants["db-01"].state, "open");
+    let raw = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+    assert!(
+        raw.contains("\"event\":\"approved\""),
+        "no approved event: {raw}"
+    );
+    assert!(raw.contains("\"event\":\"open\""), "no open event: {raw}");
 }

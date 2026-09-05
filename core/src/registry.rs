@@ -151,10 +151,50 @@ impl GrantRegistry {
         approval_deadline: SystemTime,
         ttl: Ttl,
         nonce: [u8; 32],
+        profile: String,
     ) -> Result<(), RegistryError> {
         self.grant_mut(host)?
-            .begin_pending(now, approval_deadline, ttl, nonce)
+            .begin_pending(now, approval_deadline, ttl, nonce, profile)
             .map_err(RegistryError::Grant)
+    }
+
+    /// Record that authenticator `id`'s proof verified against `host`'s pending
+    /// request. Returns whether it was newly added.
+    pub fn add_satisfied(
+        &mut self,
+        host: &str,
+        now: SystemTime,
+        id: String,
+    ) -> Result<bool, RegistryError> {
+        self.grant_mut(host)?
+            .add_satisfied(now, id)
+            .map_err(RegistryError::Grant)
+    }
+
+    /// The pending request's profile, accumulated satisfied ids, and elapsed
+    /// time — what the daemon evaluates the resolved authority against.
+    pub fn pending_view(
+        &self,
+        host: &str,
+        now: SystemTime,
+    ) -> Result<crate::grant::PendingView, RegistryError> {
+        self.grants
+            .get(host)
+            .ok_or_else(|| RegistryError::UnknownHost(host.to_string()))?
+            .pending_view(now)
+            .map_err(RegistryError::Grant)
+    }
+
+    /// Hosts observed awaiting approval right now, in name order — the reap
+    /// loop's list to re-evaluate as `wait` factors accrue.
+    pub fn awaiting_approval(&self, now: SystemTime) -> Vec<String> {
+        self.grants
+            .iter()
+            .filter_map(|(name, g)| match g.status(now) {
+                GrantStatus::AwaitingApproval { .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The challenge for a host's pending request, for the verifier.

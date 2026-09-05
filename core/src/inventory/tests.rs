@@ -51,6 +51,7 @@ fn a_single_host_with_its_fields_parses_intact() {
                 password_len: 8,
                 password_file: None,
             }),
+            access: None,
         }]
     );
 }
@@ -812,86 +813,129 @@ fn an_unrecognized_vnc_field_is_rejected_rather_than_ignored() {
 const APPROVER_KEY: &str =
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIOBaP66AKPs9nRYDzUrJjGJMYxn0rIWv/tNftYWIu25 alice";
 
-#[test]
-fn a_full_approval_config_parses_with_its_approver() {
-    let toml = format!(
+// The deployment-wide [approval] policy: one ed25519 authenticator and a
+// threshold-1 profile that trusts it. Engine-level validation (cycles, dangling
+// refs, unsatisfiable thresholds, unimplemented kinds) is proven in
+// authority/tests.rs; here we prove the inventory wires it up and validates each
+// host's access against it.
+fn approval_toml() -> String {
+    format!(
         r#"
-        [approval]
-        [[approval.ed25519]]
-        key-id = "alice"
+        [[approval.authenticator]]
+        id = "alice"
+        kind = "ed25519"
         public-key = "{APPROVER_KEY}"
+        [[approval.profile]]
+        id = "claude"
+        threshold = 1
+        factor = [ {{ authenticator = "alice", weight = 1 }} ]
         "#
-    );
-    let inv = Inventory::parse(&toml).unwrap();
-    let approval = inv.approval.as_ref().unwrap();
-    assert_eq!(approval.ed25519.len(), 1);
-    assert_eq!(approval.ed25519[0].key_id, "alice");
+    )
+}
+
+/// An ssh host with the given `[hosts.access]` block spliced in.
+fn ssh_host(access: &str) -> String {
+    format!(
+        r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "linux"
+        channels = ["ssh"]
+        [hosts.ssh]
+        agent_user = "lychgate"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+        {access}
+        "#
+    )
+}
+
+fn with_approval(access: &str) -> String {
+    format!("{}\n{}", ssh_host(access), approval_toml())
 }
 
 #[test]
-fn an_approval_table_with_no_approvers_is_refused() {
+fn a_full_approval_policy_parses_and_builds_a_model() {
+    let inv = Inventory::parse(&approval_toml()).unwrap();
+    let model = inv
+        .approval_model()
+        .unwrap()
+        .expect("a policy is configured");
+    assert!(model.profile("claude").is_some());
+}
+
+#[test]
+fn an_invalid_approval_policy_surfaces_as_an_inventory_error() {
+    // A profile referencing a group that does not exist — the engine refuses it,
+    // and the inventory surfaces that as InventoryError::Approval.
     let toml = r#"
-        [approval]
+        [[approval.profile]]
+        id = "claude"
+        threshold = 1
+        factor = [ { group = "nope", weight = 1 } ]
     "#;
-    assert_eq!(
+    assert!(matches!(
         Inventory::parse(toml),
-        Err(InventoryError::ApprovalNoApprovers)
-    );
+        Err(InventoryError::Approval(_))
+    ));
 }
 
 #[test]
-fn an_empty_approver_key_id_is_refused() {
-    let toml = format!(
-        r#"
-        [[approval.ed25519]]
-        key-id = ""
-        public-key = "{APPROVER_KEY}"
-        "#
-    );
-    assert_eq!(
+fn host_access_without_an_approval_policy_is_refused() {
+    let toml = ssh_host("[hosts.access]\n        profiles = [\"claude\"]");
+    assert!(matches!(
         Inventory::parse(&toml),
-        Err(InventoryError::ApprovalEmptyKeyId)
-    );
+        Err(InventoryError::AccessWithoutApproval { .. })
+    ));
 }
 
 #[test]
-fn a_duplicate_approver_key_id_is_refused() {
-    let toml = format!(
-        r#"
-        [[approval.ed25519]]
-        key-id = "alice"
-        public-key = "{APPROVER_KEY}"
-
-        [[approval.ed25519]]
-        key-id = "alice"
-        public-key = "{APPROVER_KEY}"
-        "#
-    );
-    assert_eq!(
+fn host_access_permitting_no_profiles_is_refused() {
+    let toml = with_approval("[hosts.access]\n        profiles = []");
+    assert!(matches!(
         Inventory::parse(&toml),
-        Err(InventoryError::ApprovalDuplicateKeyId("alice".into()))
-    );
+        Err(InventoryError::AccessNoProfiles { .. })
+    ));
 }
 
 #[test]
-fn a_bad_approver_public_key_is_refused_at_load() {
-    let toml = r#"
-        [[approval.ed25519]]
-        key-id = "alice"
-        public-key = "ssh-ed25519 this-is-not-base64"
-    "#;
-    match Inventory::parse(toml) {
-        Err(InventoryError::ApprovalBadPublicKey { id, .. }) => assert_eq!(id, "alice"),
-        other => panic!("wanted ApprovalBadPublicKey, got {other:?}"),
+fn a_host_permitting_an_unknown_profile_is_refused() {
+    let toml = with_approval("[hosts.access]\n        profiles = [\"ghost\"]");
+    match Inventory::parse(&toml) {
+        Err(InventoryError::UnknownProfile { profile, .. }) => assert_eq!(profile, "ghost"),
+        other => panic!("wanted UnknownProfile, got {other:?}"),
     }
 }
 
 #[test]
-fn an_unrecognized_approver_field_is_rejected() {
+fn an_override_for_an_unpermitted_profile_is_refused() {
+    let access = "[hosts.access]\n        profiles = [\"claude\"]\n        \
+                  [hosts.access.override.other]\n        threshold = 1\n        \
+                  factor = [ { authenticator = \"alice\", weight = 1 } ]";
+    match Inventory::parse(&with_approval(access)) {
+        Err(InventoryError::OverrideForUnpermittedProfile { profile, .. }) => {
+            assert_eq!(profile, "other")
+        }
+        other => panic!("wanted OverrideForUnpermittedProfile, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_valid_host_override_parses() {
+    let access = "[hosts.access]\n        profiles = [\"claude\"]\n        \
+                  [hosts.access.override.claude]\n        threshold = 1\n        \
+                  factor = [ { authenticator = \"alice\", weight = 1 } ]";
+    Inventory::parse(&with_approval(access)).expect("a valid override should parse");
+}
+
+#[test]
+fn an_unrecognized_approval_field_is_rejected() {
     let toml = format!(
         r#"
-        [[approval.ed25519]]
-        key-id = "alice"
+        [[approval.authenticator]]
+        id = "alice"
+        kind = "ed25519"
         public-key = "{APPROVER_KEY}"
         favourite_colour = "red"
         "#

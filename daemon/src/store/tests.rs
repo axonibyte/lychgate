@@ -21,6 +21,8 @@ fn doc_with(host: &str) -> StateDoc {
                 approval_deadline: None,
                 ttl_secs: None,
                 nonce: None,
+                profile: None,
+                satisfied: None,
             },
         )]),
     }

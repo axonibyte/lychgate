@@ -22,8 +22,8 @@ use anyhow::Context;
 use lychgate_core::proto::{status_lines, Op, PendingChallenge, Response};
 use lychgate_core::{
     apply_channels, reestablish_channels, revert_channels, ApplyOutcome, ApprovalRequest,
-    ApprovalVerifier, Channel, DriverSet, GrantRegistry, GrantStatus, Host, Inventory,
-    ReestablishOutcome, RegistryError, RevertOutcome, Ttl,
+    Authority, AuthorityModel, Channel, DriverSet, GrantRegistry, GrantStatus, Host, Inventory,
+    Missing, ReestablishOutcome, RegistryError, RevertOutcome, Ttl,
 };
 
 use crate::drivers::deadman::DeadmanControl;
@@ -55,9 +55,16 @@ pub struct Daemon {
     pub deadman: Mutex<Box<dyn DeadmanControl>>,
     /// How long an unapproved request may sit pending before it lapses.
     pub approval_window: Duration,
-    /// Verifies operator approval tokens. `&self` — no lock needed here.
-    pub verifier: Box<dyn ApprovalVerifier>,
+    /// The weighted-threshold approval policy. `None` means `--dry-run`: no
+    /// authority is evaluated and the first `approve` opens the grant (nothing
+    /// is driven). A serving daemon always has `Some` — main refuses to start
+    /// without one.
+    pub approval: Option<AuthorityModel>,
 }
+
+/// The profile name a `--dry-run` daemon records on a pending grant. Dry-run
+/// evaluates no authority, so the value only has to be stable and recognisable.
+const DRY_RUN_PROFILE: &str = "dry-run";
 
 /// The backstop rides the SSH transport, so only ssh-configured hosts get
 /// one; it exists to revert what the ssh-borne channels applied.
@@ -116,7 +123,7 @@ impl Daemon {
     /// daemon-fatal failure (store I/O, journal write).
     pub fn dispatch(&self, op: &Op, now: SystemTime) -> anyhow::Result<Response> {
         match op {
-            Op::Open { host, ttl } => self.open(host, ttl, now),
+            Op::Open { host, ttl, profile } => self.open(host, ttl, profile.as_deref(), now),
             Op::Approve { host, token } => self.approve(host, token, now),
             Op::Renew { host, ttl } => self.renew(host, ttl, now),
             Op::Close { host } => self.close(host, now),
@@ -134,13 +141,128 @@ impl Daemon {
         Ok(status_lines(&registry, now))
     }
 
+    /// The profiles a host permits: its `[hosts.access].profiles` if it narrows,
+    /// else every global profile.
+    fn permitted_profiles(&self, model: &AuthorityModel, host_cfg: &Host) -> Vec<String> {
+        match &host_cfg.access {
+            Some(access) => access.profiles.clone(),
+            None => model.profile_ids().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// The effective authority for `(host, profile)`: the host's override if it
+    /// has one, else the global profile. Errs (human refusal text) if the host
+    /// does not permit the profile.
+    fn resolve_authority(
+        &self,
+        model: &AuthorityModel,
+        host_cfg: &Host,
+        profile: &str,
+    ) -> Result<Authority, String> {
+        if !self
+            .permitted_profiles(model, host_cfg)
+            .iter()
+            .any(|p| p == profile)
+        {
+            return Err(format!(
+                "host {:?} does not permit approval profile {profile:?}",
+                host_cfg.name
+            ));
+        }
+        if let Some(access) = &host_cfg.access {
+            if let Some(body) = access.overrides.get(profile) {
+                // Validated at load; rebuild defensively.
+                return model
+                    .resolve_override(profile, body)
+                    .map_err(|e| e.to_string());
+            }
+        }
+        model
+            .profile(profile)
+            .cloned()
+            .ok_or_else(|| format!("approval profile {profile:?} is not defined"))
+    }
+
+    /// Satisfied weight, threshold, and human labels for what is outstanding.
+    /// A dry-run daemon (no model) reports a trivial single-factor gate.
+    fn progress(
+        &self,
+        authority: Option<&Authority>,
+        satisfied: &std::collections::BTreeSet<String>,
+        elapsed: Duration,
+    ) -> (u64, u32, Vec<String>) {
+        match (self.approval.as_ref(), authority) {
+            (Some(model), Some(a)) => {
+                let out = model.evaluate(a, satisfied, elapsed);
+                (out.weight, out.threshold, describe_missing(&out.missing))
+            }
+            _ => (0, 1, vec!["any approval token (dry-run)".to_string()]),
+        }
+    }
+
     /// Open no longer opens: it records a request awaiting operator approval
-    /// and returns the challenge to sign. No driver runs, no access is granted.
-    fn open(&self, host: &str, ttl_str: &str, now: SystemTime) -> anyhow::Result<Response> {
+    /// under a chosen profile and returns the challenge to sign. No driver runs,
+    /// no access is granted.
+    fn open(
+        &self,
+        host: &str,
+        ttl_str: &str,
+        profile: Option<&str>,
+        now: SystemTime,
+    ) -> anyhow::Result<Response> {
         let ttl = match Ttl::parse(ttl_str) {
             Ok(t) => t,
             Err(e) => return Ok(Response::refused(e)),
         };
+        if self.host(host).is_none() {
+            return Ok(Response::refused(RegistryError::UnknownHost(
+                host.to_string(),
+            )));
+        }
+        let host_cfg = self.host(host).expect("checked present");
+
+        // Resolve the profile and its authority (dry-run has neither).
+        let (chosen_profile, authority) = match &self.approval {
+            None => (DRY_RUN_PROFILE.to_string(), None),
+            Some(model) => {
+                let permitted = self.permitted_profiles(model, &host_cfg);
+                let chosen = match profile {
+                    Some(p) => p.to_string(),
+                    None => match permitted.as_slice() {
+                        [only] => only.clone(),
+                        [] => {
+                            return Ok(Response::refused(format!(
+                                "host {host:?} permits no approval profiles"
+                            )))
+                        }
+                        _ => {
+                            return Ok(Response::refused(format!(
+                                "host {host:?} permits {} profiles ({}); specify --as <profile>",
+                                permitted.len(),
+                                permitted.join(", ")
+                            )))
+                        }
+                    },
+                };
+                let authority = match self.resolve_authority(model, &host_cfg, &chosen) {
+                    Ok(a) => a,
+                    Err(reason) => return Ok(Response::refused(reason)),
+                };
+                // A wait must fit inside the window, or that path could never
+                // accrue its weight before the request lapses.
+                let max_wait = model.max_wait(&authority);
+                if max_wait >= self.approval_window {
+                    return Ok(Response::refused(format!(
+                        "profile {chosen:?} needs a wait of {}s, but the approval window is only {}s; \
+                         raise --approval-window",
+                        max_wait.as_secs(),
+                        self.approval_window.as_secs()
+                    )));
+                }
+                (chosen, Some(authority))
+            }
+        };
+
         let approval_deadline = match now.checked_add(self.approval_window) {
             Some(d) => d,
             None => return Ok(Response::refused("the approval window overflows the clock")),
@@ -148,9 +270,16 @@ impl Daemon {
         let nonce = generate_nonce();
         let declared = self.declared(host);
         // Persist the pending intent, or refuse without writing.
-        match self
-            .with_registry(|reg| reg.begin_pending(host, now, approval_deadline, ttl, nonce))?
-        {
+        match self.with_registry(|reg| {
+            reg.begin_pending(
+                host,
+                now,
+                approval_deadline,
+                ttl,
+                nonce,
+                chosen_profile.clone(),
+            )
+        })? {
             Ok(()) => {}
             Err(refusal) => return Ok(Response::refused(refusal)),
         }
@@ -167,6 +296,9 @@ impl Daemon {
         let challenge =
             ApprovalRequest::new(nonce, host.to_string(), ttl.duration().as_secs(), now)
                 .challenge_string();
+        let empty = std::collections::BTreeSet::new();
+        let (weight, threshold, missing) =
+            self.progress(authority.as_ref(), &empty, Duration::ZERO);
         Ok(Response {
             pending: Some(PendingChallenge {
                 host: host.to_string(),
@@ -174,13 +306,20 @@ impl Daemon {
                 ttl_secs: ttl.duration().as_secs(),
                 requested_at: epoch_secs(now),
                 approval_deadline: epoch_secs(approval_deadline),
+                profile: chosen_profile,
+                weight,
+                threshold,
+                missing,
             }),
             ..Response::ok()
         })
     }
 
-    /// Verify an operator's approval token against the pending request and, if
-    /// it checks out, open the grant.
+    /// Submit one operator proof toward a host's pending request. In `--dry-run`
+    /// the first proof opens the grant. Otherwise the proof is verified against
+    /// the request's challenge, its authenticator recorded, and the profile's
+    /// authority re-evaluated; the grant opens the moment the weighted threshold
+    /// is met, and otherwise stays pending with updated progress.
     fn approve(&self, host: &str, token: &str, now: SystemTime) -> anyhow::Result<Response> {
         // The pending request the token must match, read before verifying.
         let request = {
@@ -192,18 +331,115 @@ impl Daemon {
                 Err(refusal) => return Ok(Response::refused(refusal)),
             }
         };
-        // Verify outside the store lock. A denied approval is journaled — an
-        // audit record exists for exactly this.
-        if let Err(e) = self.verifier.verify(&request, token) {
+        let host_cfg = self.host(host).expect("pending implies a known host");
+
+        // Dry-run: no authority, no verification — the first proof opens.
+        let Some(model) = &self.approval else {
+            return self.open_pending_now(host, &host_cfg, request.requested_at(), now);
+        };
+
+        // Verify outside the store lock. A denied proof is journaled — an audit
+        // record exists for exactly this.
+        let authenticator = match model.verify_ed25519(&request, token) {
+            Ok(id) => id,
+            Err(e) => {
+                self.journal(
+                    now,
+                    &Event::ApprovalDenied {
+                        host: host.to_string(),
+                        reason: e.to_string(),
+                    },
+                )?;
+                return Ok(Response::refused(format!("approval refused: {e}")));
+            }
+        };
+
+        // Record the satisfied authenticator (persisted), journal a newly-added
+        // one, then re-evaluate the authority.
+        let newly =
+            match self.with_registry(|reg| reg.add_satisfied(host, now, authenticator.clone()))? {
+                Ok(added) => added,
+                Err(refusal) => return Ok(Response::refused(refusal)),
+            };
+        if newly {
             self.journal(
                 now,
-                &Event::ApprovalDenied {
+                &Event::ProofAccepted {
                     host: host.to_string(),
-                    reason: e.to_string(),
+                    authenticator: authenticator.clone(),
                 },
             )?;
-            return Ok(Response::refused(format!("approval refused: {e}")));
         }
+
+        let view = match self.with_read_registry(|reg| reg.pending_view(host, now))? {
+            Ok(v) => v,
+            Err(refusal) => return Ok(Response::refused(refusal)),
+        };
+        let authority = match self.resolve_authority(model, &host_cfg, &view.profile) {
+            Ok(a) => a,
+            Err(reason) => return Ok(Response::refused(reason)),
+        };
+        let outcome = model.evaluate(&authority, &view.satisfied, view.elapsed);
+        if outcome.met {
+            return self.open_pending_now(host, &host_cfg, view.requested_at, now);
+        }
+        // Not yet: acknowledge the proof and report progress. Still pending.
+        Ok(Response {
+            pending: Some(self.pending_challenge(host, &view, &authority, now)),
+            ..Response::ok()
+        })
+    }
+
+    /// A read-only registry operation (no snapshot write).
+    fn with_read_registry<T>(
+        &self,
+        op: impl FnOnce(&GrantRegistry) -> Result<T, RegistryError>,
+    ) -> anyhow::Result<Result<T, RegistryError>> {
+        let doc = self.store.read()?;
+        let registry = GrantRegistry::from_parts(&self.inventory, &doc)
+            .with_context(|| format!("validating {}", self.store.path().display()))?;
+        Ok(op(&registry))
+    }
+
+    /// Build the pending-progress challenge block for a still-pending grant.
+    /// Reconstructs the challenge string from the stored request so the operator
+    /// can keep signing toward the threshold.
+    fn pending_challenge(
+        &self,
+        host: &str,
+        view: &lychgate_core::PendingView,
+        authority: &Authority,
+        now: SystemTime,
+    ) -> PendingChallenge {
+        let _ = now;
+        let (weight, threshold, missing) =
+            self.progress(Some(authority), &view.satisfied, view.elapsed);
+        // The daemon does not keep the nonce here; re-derive nothing secret —
+        // report progress without re-issuing the challenge (the operator already
+        // has it from open). challenge left empty signals "already issued".
+        PendingChallenge {
+            host: host.to_string(),
+            challenge: String::new(),
+            ttl_secs: 0,
+            requested_at: epoch_secs(view.requested_at),
+            approval_deadline: 0,
+            profile: view.profile.clone(),
+            weight,
+            threshold,
+            missing,
+        }
+    }
+
+    /// The pending->open tail, shared by an approval that meets the threshold, a
+    /// dry-run approval, and a wait that matures on a pass: drivable channels,
+    /// Pending->Opening under the lock, journal Approved, then drive the open.
+    fn open_pending_now(
+        &self,
+        host: &str,
+        host_cfg: &Host,
+        requested_at: SystemTime,
+        now: SystemTime,
+    ) -> anyhow::Result<Response> {
         let declared = self.declared(host);
         let to_apply = self
             .drivers
@@ -211,7 +447,7 @@ impl Daemon {
             .expect("drivers poisoned")
             .drivable(&declared);
         // Pending -> Opening under the lock: re-checks the state, closing the
-        // gap with the read above (a concurrent close or a window lapse refuses).
+        // gap with the reads above (a concurrent close or a lapse refuses).
         let expires =
             match self.with_registry(|reg| reg.approve_to_opening(host, now, to_apply.clone()))? {
                 Ok(e) => e,
@@ -221,21 +457,14 @@ impl Daemon {
             now,
             &Event::Approved {
                 host: host.to_string(),
-                requested_at: epoch_secs(request.requested_at()),
+                requested_at: epoch_secs(requested_at),
             },
         )?;
-        let host_cfg = self
-            .host(host)
-            .expect("approve_to_opening accepted a known host");
-        self.drive_open(
-            host,
-            &host_cfg,
-            to_apply,
-            declared,
-            request.ttl_secs(),
-            expires,
-            now,
-        )
+        let ttl_secs = expires
+            .duration_since(now)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.drive_open(host, host_cfg, to_apply, declared, ttl_secs, expires, now)
     }
 
     /// Runs the drivers for a grant already committed to Opening: installs the
@@ -603,6 +832,38 @@ impl Daemon {
             self.drive_one_revert(&host, &channels, now)?;
         }
 
+        // A `wait` factor can tip a pending grant over its threshold with no
+        // further human action. Re-evaluate every still-pending grant and open
+        // the ones that now meet their authority. (Dry-run has no waits.)
+        if let Some(model) = &self.approval {
+            let awaiting = {
+                let doc = self.store.read()?;
+                let registry = GrantRegistry::from_parts(&self.inventory, &doc)
+                    .with_context(|| format!("validating {}", self.store.path().display()))?;
+                registry.awaiting_approval(now)
+            };
+            for host in awaiting {
+                let host_cfg = self.host(&host).expect("awaiting implies a known host");
+                let view = match self.with_read_registry(|reg| reg.pending_view(&host, now))? {
+                    Ok(v) => v,
+                    // Lapsed between the list and here — reaped on a later pass.
+                    Err(_) => continue,
+                };
+                let authority = match self.resolve_authority(model, &host_cfg, &view.profile) {
+                    Ok(a) => a,
+                    // e.g. a v3-migrated empty profile: it can never open and
+                    // simply lapses at its deadline.
+                    Err(_) => continue,
+                };
+                if model
+                    .evaluate(&authority, &view.satisfied, view.elapsed)
+                    .met
+                {
+                    self.open_pending_now(&host, &host_cfg, view.requested_at, now)?;
+                }
+            }
+        }
+
         self.report(now)?;
         Ok(())
     }
@@ -732,6 +993,19 @@ impl Daemon {
 enum RevertProgress {
     Closed,
     Stuck { stuck: Vec<Channel> },
+}
+
+/// Human labels for the outstanding factors of an authority — for the operator,
+/// never carrying a secret.
+fn describe_missing(missing: &[Missing]) -> Vec<String> {
+    missing
+        .iter()
+        .map(|m| match m {
+            Missing::Authenticator(id) => format!("a proof from {id:?}"),
+            Missing::Group(id) => format!("a grant from {id:?}"),
+            Missing::Wait { remaining } => format!("+{}s wait", remaining.as_secs()),
+        })
+        .collect()
 }
 
 #[cfg(test)]

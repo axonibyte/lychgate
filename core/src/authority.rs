@@ -75,6 +75,16 @@ pub enum AuthKind {
     Fido2,
 }
 
+/// An authority's body: the threshold and factors, without an id. A group or
+/// profile is a body plus an id; a per-host override is a body keyed by the
+/// profile id it replaces.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorityBody {
+    pub threshold: u32,
+    pub factor: Vec<FactorSpec>,
+}
+
 /// A named authority (a group or a profile share the same shape): a threshold
 /// over weighted factors.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -356,59 +366,75 @@ impl AuthorityModel {
         // 2. Groups and profiles (same shape; separate namespaces).
         let mut groups = BTreeMap::new();
         for g in &spec.group {
-            let (id, authority) = build_authority("group", g)?;
-            if groups.insert(id.clone(), authority).is_some() {
-                return Err(AuthorityError::DuplicateGroup(id));
+            let authority = build_authority("group", &g.id, g.threshold, &g.factor)?;
+            if groups.insert(g.id.clone(), authority).is_some() {
+                return Err(AuthorityError::DuplicateGroup(g.id.clone()));
             }
         }
         let mut profiles = BTreeMap::new();
         for p in &spec.profile {
-            let (id, authority) = build_authority("profile", p)?;
-            if profiles.insert(id.clone(), authority).is_some() {
-                return Err(AuthorityError::DuplicateProfile(id));
+            let authority = build_authority("profile", &p.id, p.threshold, &p.factor)?;
+            if profiles.insert(p.id.clone(), authority).is_some() {
+                return Err(AuthorityError::DuplicateProfile(p.id.clone()));
             }
         }
         if profiles.is_empty() {
             return Err(AuthorityError::NoProfiles);
         }
 
-        // 3. Resolve references: every authenticator/group a factor names exists.
-        let check_refs = |referrer: &str, authority: &Authority| -> Result<(), AuthorityError> {
-            for wf in &authority.factors {
-                match &wf.factor {
-                    Factor::Authenticator(id) if !authenticators.contains_key(id) => {
-                        return Err(AuthorityError::DanglingAuthenticator {
-                            referrer: referrer.to_string(),
-                            id: id.clone(),
-                        })
-                    }
-                    Factor::Group(id) if !groups.contains_key(id) => {
-                        return Err(AuthorityError::DanglingGroup {
-                            referrer: referrer.to_string(),
-                            id: id.clone(),
-                        })
-                    }
-                    _ => {}
-                }
-            }
-            Ok(())
-        };
-        for (id, authority) in &groups {
-            check_refs(&format!("group {id:?}"), authority)?;
-        }
-        for (id, authority) in &profiles {
-            check_refs(&format!("profile {id:?}"), authority)?;
-        }
-
-        // 4. The group graph must be acyclic (profiles are only ever referrers,
-        //    so a cycle can only live among groups).
         let model = AuthorityModel {
             authenticators,
             groups,
             profiles,
         };
+
+        // 3. Resolve references: every authenticator/group a factor names exists.
+        for (id, authority) in &model.groups {
+            model.check_refs(&format!("group {id:?}"), authority)?;
+        }
+        for (id, authority) in &model.profiles {
+            model.check_refs(&format!("profile {id:?}"), authority)?;
+        }
+
+        // 4. The group graph must be acyclic (profiles are only ever referrers,
+        //    so a cycle can only live among groups).
         model.check_group_acyclic()?;
         Ok(model)
+    }
+
+    /// Resolve a per-host override body into a validated [`Authority`] against
+    /// this model: its factor references must exist here, and it must be
+    /// satisfiable. An override is a leaf referrer (nothing references it), so it
+    /// cannot introduce a cycle.
+    pub fn resolve_override(
+        &self,
+        profile_id: &str,
+        body: &AuthorityBody,
+    ) -> Result<Authority, AuthorityError> {
+        let authority = build_authority("override", profile_id, body.threshold, &body.factor)?;
+        self.check_refs(&format!("override for profile {profile_id:?}"), &authority)?;
+        Ok(authority)
+    }
+
+    fn check_refs(&self, referrer: &str, authority: &Authority) -> Result<(), AuthorityError> {
+        for wf in &authority.factors {
+            match &wf.factor {
+                Factor::Authenticator(id) if !self.authenticators.contains_key(id) => {
+                    return Err(AuthorityError::DanglingAuthenticator {
+                        referrer: referrer.to_string(),
+                        id: id.clone(),
+                    })
+                }
+                Factor::Group(id) if !self.groups.contains_key(id) => {
+                    return Err(AuthorityError::DanglingGroup {
+                        referrer: referrer.to_string(),
+                        id: id.clone(),
+                    })
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn check_group_acyclic(&self) -> Result<(), AuthorityError> {
@@ -565,35 +591,38 @@ impl AuthorityModel {
     }
 }
 
-/// Build one authority (a group or a profile) from its spec, validating the
-/// threshold, factors and satisfiability. Reference resolution and cycle
-/// detection happen once all authorities exist.
+/// Build one authority (a group, a profile, or a host override) from its
+/// threshold and factors, validating the threshold, weights, factor shapes and
+/// satisfiability. Reference resolution and cycle detection happen separately,
+/// once the referenced set is known.
 fn build_authority(
     kind: &'static str,
-    spec: &AuthoritySpec,
-) -> Result<(String, Authority), AuthorityError> {
-    if spec.id.is_empty() {
+    id: &str,
+    threshold: u32,
+    factor_specs: &[FactorSpec],
+) -> Result<Authority, AuthorityError> {
+    if id.is_empty() {
         return Err(AuthorityError::EmptyId { kind });
     }
-    if spec.threshold == 0 {
+    if threshold == 0 {
         return Err(AuthorityError::ZeroThreshold {
             kind,
-            id: spec.id.clone(),
+            id: id.to_string(),
         });
     }
-    if spec.factor.is_empty() {
+    if factor_specs.is_empty() {
         return Err(AuthorityError::NoFactors {
             kind,
-            id: spec.id.clone(),
+            id: id.to_string(),
         });
     }
-    let mut factors = Vec::with_capacity(spec.factor.len());
+    let mut factors = Vec::with_capacity(factor_specs.len());
     let mut available: u64 = 0;
-    for fs in &spec.factor {
+    for fs in factor_specs {
         if fs.weight == 0 {
             return Err(AuthorityError::ZeroWeight {
                 kind,
-                id: spec.id.clone(),
+                id: id.to_string(),
             });
         }
         // Exactly one of the three factor kinds must be named.
@@ -608,7 +637,7 @@ fn build_authority(
         if set != 1 {
             return Err(AuthorityError::BadFactor {
                 kind,
-                id: spec.id.clone(),
+                id: id.to_string(),
                 message: if set == 0 {
                     "names none of authenticator/group/wait"
                 } else {
@@ -626,7 +655,7 @@ fn build_authority(
                 .map(|t| t.duration())
                 .map_err(|e| AuthorityError::BadWait {
                     kind,
-                    id: spec.id.clone(),
+                    id: id.to_string(),
                     message: e.to_string(),
                 })?;
             Factor::Wait(dur)
@@ -637,21 +666,15 @@ fn build_authority(
             factor,
         });
     }
-    if (spec.threshold as u64) > available {
+    if (threshold as u64) > available {
         return Err(AuthorityError::Unsatisfiable {
             kind,
-            id: spec.id.clone(),
-            threshold: spec.threshold,
+            id: id.to_string(),
+            threshold,
             available,
         });
     }
-    Ok((
-        spec.id.clone(),
-        Authority {
-            threshold: spec.threshold,
-            factors,
-        },
-    ))
+    Ok(Authority { threshold, factors })
 }
 
 #[cfg(test)]
