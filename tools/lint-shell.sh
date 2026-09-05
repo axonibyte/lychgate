@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.." || exit 2
 
 # The scripts under lint. ci/build-target.sh is bash by shebang; everything
 # in tools/ and rc.d/ is POSIX sh.
-files="tools/check.sh tools/lint-shell.sh tools/install-service.sh tools/install-service-test.sh rc.d/lychgated e2e/ssh-acceptance.sh e2e/revert-under-kill.sh e2e/service-start.sh e2e/run.sh e2e/bmc-acceptance.sh e2e/vnc-acceptance.sh"
+files="tools/check.sh tools/lint-shell.sh tools/install-service.sh tools/install-service-test.sh rc.d/lychgated e2e/ssh-acceptance.sh e2e/revert-under-kill.sh e2e/service-start.sh e2e/run.sh e2e/bmc-acceptance.sh e2e/vnc-acceptance.sh e2e/approval-acceptance.sh"
 [ -f ci/build-target.sh ] && files="${files} ci/build-target.sh"
 
 if command -v shellcheck >/dev/null 2>&1; then
