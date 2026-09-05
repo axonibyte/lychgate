@@ -64,6 +64,10 @@ pub struct AuthenticatorSpec {
     /// (never inline — a secret is a file path, unlike the public ed25519 key).
     #[serde(default)]
     pub secret_file: Option<String>,
+    /// Required for `password`; a path to a mode-600 file holding the Argon2id
+    /// PHC hash (never the plaintext, never inline).
+    #[serde(default)]
+    pub hash_file: Option<String>,
 }
 
 /// The authenticator vocabulary. Only `ed25519` is implemented; the rest parse
@@ -125,6 +129,7 @@ pub struct FactorSpec {
 pub enum Authenticator {
     Ed25519(PublicKey),
     Totp { secret_file: String },
+    Password { hash_file: String },
 }
 
 /// A weighted-threshold authority: `weight-sum(satisfied) >= threshold` opens.
@@ -354,14 +359,15 @@ impl AuthorityModel {
                             })?;
                     Authenticator::Totp { secret_file }
                 }
-                // Reserve the remaining vocabulary without pretending it works.
                 AuthKind::Password => {
-                    return Err(AuthorityError::UnimplementedKind {
+                    let hash_file = a.hash_file.clone().ok_or(AuthorityError::MissingMaterial {
                         id: a.id.clone(),
                         kind: "password",
-                        milestone: "M8a.4",
-                    })
+                        field: "hash-file",
+                    })?;
+                    Authenticator::Password { hash_file }
                 }
+                // Reserve the last kind without pretending it works.
                 AuthKind::Fido2 => {
                     return Err(AuthorityError::UnimplementedKind {
                         id: a.id.clone(),
@@ -508,6 +514,16 @@ impl AuthorityModel {
     pub fn totp_authenticators(&self) -> impl Iterator<Item = (&str, &str)> {
         self.authenticators.iter().filter_map(|(id, a)| match a {
             Authenticator::Totp { secret_file } => Some((id.as_str(), secret_file.as_str())),
+            _ => None,
+        })
+    }
+
+    /// The configured password authenticators as `(id, hash_file)` — for the
+    /// daemon to load each PHC hash at startup and try a submitted password
+    /// against all of them (a password, like a code, names no authenticator).
+    pub fn password_authenticators(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.authenticators.iter().filter_map(|(id, a)| match a {
+            Authenticator::Password { hash_file } => Some((id.as_str(), hash_file.as_str())),
             _ => None,
         })
     }

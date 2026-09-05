@@ -417,19 +417,31 @@ impl Daemon {
             .args(["--interval", "600"])
             .spawn()
             .expect("spawn lychgated");
-        // Precondition asserted before anything else: the daemon is up and
-        // its socket *accepts* — existence alone is not enough, because a
-        // stale socket file from a prior daemon can already be present.
+        // Precondition asserted before anything else: the daemon is actually
+        // *serving*, not merely bound. `UnixListener::bind` accepts connections
+        // into the kernel backlog the instant it runs — before boot_recover and
+        // before the accept loop starts — so a plain connect can succeed against
+        // a daemon that will not answer for a moment yet. Wait for a real
+        // `status` round trip to return, which is the readiness the tests need
+        // (and removes a connect-ok-but-not-serving race that flaked the
+        // stale-socket test under parallel load). A dead child fails fast with
+        // its exit status rather than after the whole deadline.
+        let mut child = child;
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         loop {
-            if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            if cli(&socket, &["status"]).status.success() {
                 break;
             }
+            if let Ok(Some(status)) = child.try_wait() {
+                panic!(
+                    "daemon exited before serving on {}: {status}",
+                    socket.display()
+                );
+            }
             if std::time::Instant::now() >= deadline {
-                let mut child = child;
                 let _ = child.kill();
                 let _ = child.wait();
-                panic!("daemon never accepted on {}", socket.display());
+                panic!("daemon never served on {}", socket.display());
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -721,22 +733,11 @@ fn a_second_daemon_is_refused_while_the_first_listens_and_a_stale_socket_is_not(
     );
 
     // ...and a fresh daemon replaces the stale socket rather than wedging.
-    // Under the full-workspace parallel load this suite runs at (especially the
-    // guest build phase, where every crate's tests run at once on a small VM),
-    // the replacement can be slow to bind and settle its first pass; retry the
-    // status read with a generous budget so the claim (it comes up and answers)
-    // is observed reliably, not raced against a loaded scheduler. A short budget
-    // here has flaked; ~20s is load headroom, not a masked hang — a genuinely
-    // wedged replacement still fails the assert below.
+    // Daemon::start already waits for a real `status` round trip (the daemon is
+    // serving, not merely bound), so one more status here is a settled read, not
+    // a race — this is what a fixed-budget retry used to be papering over.
     let replacement = Daemon::start(&inv, &state_dir);
-    let mut out = cli(&replacement.socket, &["status"]);
-    for _ in 0..100 {
-        if out.status.success() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-        out = cli(&replacement.socket, &["status"]);
-    }
+    let out = cli(&replacement.socket, &["status"]);
     assert!(
         out.status.success(),
         "{}",

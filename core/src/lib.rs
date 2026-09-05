@@ -11,6 +11,7 @@ pub mod channel;
 pub mod deadman;
 pub mod grant;
 pub mod inventory;
+pub mod password;
 pub mod proto;
 pub mod registry;
 pub mod snapshot;
@@ -34,6 +35,7 @@ pub use inventory::{
     BmcConfig, BmcMethod, BmcTls, Channel, Host, HostAccess, Inventory, InventoryError, Os,
     SshConfig, VncConfig,
 };
+pub use password::PasswordError;
 pub use registry::{ExpiredGrant, ExpiredPending, GrantRegistry, RegistryError};
 pub use snapshot::{GrantRecord, SnapshotError, StateDoc, STATE_VERSION};
 pub use totp::{TotpError, TotpSecret};

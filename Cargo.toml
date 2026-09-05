@@ -30,4 +30,7 @@ data-encoding = "2"
 # ours (and KAT'd); the crypto is the crate's. No hand-rolled crypto.
 hmac = "0.12"
 sha1 = "0.10"
+# Password (M8a.4): Argon2id password-at-rest hashing + constant-time verify.
+# Vetted RustCrypto; the KDF and the compare are the crate's.
+argon2 = "0.5"
 lychgate-core = { path = "core" }

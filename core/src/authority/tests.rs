@@ -364,30 +364,25 @@ fn a_group_cycle_is_refused() {
 
 #[test]
 fn an_unimplemented_kind_is_refused_naming_its_milestone() {
-    // ed25519 (M8a.1) and totp (M8a.3) are built; password/fido2 are not yet.
-    for (kind, milestone) in [("password", "M8a.4"), ("fido2", "M8a.5")] {
-        let toml_text = format!(
-            r#"
-            [[authenticator]]
-            id = "x"
-            kind = "{kind}"
-            [[profile]]
-            id = "p"
-            threshold = 1
-            factor = [ {{ authenticator = "x", weight = 1 }} ]
-            "#
-        );
-        match model(&toml_text) {
-            Err(AuthorityError::UnimplementedKind {
-                kind: k,
-                milestone: m,
-                ..
-            }) => {
-                assert_eq!(k, kind);
-                assert_eq!(m, milestone);
-            }
-            other => panic!("wanted UnimplementedKind for {kind}, got {other:?}"),
+    // ed25519, totp and password are built; only fido2 is not yet, so it is the
+    // sole remaining kind that must be refused at load naming its sub-milestone.
+    let toml_text = r#"
+        [[authenticator]]
+        id = "x"
+        kind = "fido2"
+        [[profile]]
+        id = "p"
+        threshold = 1
+        factor = [ { authenticator = "x", weight = 1 } ]
+    "#;
+    match model(toml_text) {
+        Err(AuthorityError::UnimplementedKind {
+            kind, milestone, ..
+        }) => {
+            assert_eq!(kind, "fido2");
+            assert_eq!(milestone, "M8a.5");
         }
+        other => panic!("wanted UnimplementedKind for fido2, got {other:?}"),
     }
 }
 
@@ -426,6 +421,43 @@ fn a_totp_authenticator_parses_with_its_secret_file() {
     let m = model(toml_text).expect("a totp authenticator with a secret file parses");
     let totp: Vec<_> = m.totp_authenticators().collect();
     assert_eq!(totp, [("phone", "/etc/lychgate/phone.totp")]);
+}
+
+#[test]
+fn a_password_authenticator_without_a_hash_file_is_refused() {
+    let toml_text = r#"
+        [[authenticator]]
+        id = "pw"
+        kind = "password"
+        [[profile]]
+        id = "p"
+        threshold = 1
+        factor = [ { authenticator = "pw", weight = 1 } ]
+    "#;
+    match model(toml_text) {
+        Err(AuthorityError::MissingMaterial { kind, field, .. }) => {
+            assert_eq!(kind, "password");
+            assert_eq!(field, "hash-file");
+        }
+        other => panic!("wanted MissingMaterial, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_password_authenticator_parses_with_its_hash_file() {
+    let toml_text = r#"
+        [[authenticator]]
+        id = "pw"
+        kind = "password"
+        hash-file = "/etc/lychgate/oncall.hash"
+        [[profile]]
+        id = "p"
+        threshold = 1
+        factor = [ { authenticator = "pw", weight = 1 } ]
+    "#;
+    let m = model(toml_text).expect("a password authenticator with a hash file parses");
+    let pw: Vec<_> = m.password_authenticators().collect();
+    assert_eq!(pw, [("pw", "/etc/lychgate/oncall.hash")]);
 }
 
 #[test]

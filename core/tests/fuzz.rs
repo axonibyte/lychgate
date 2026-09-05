@@ -251,6 +251,16 @@ fn check(input: &str) {
         // matches never panics on a hostile code; the result is irrelevant here.
         let _ = lychgate_core::totp::matches(&secret, input, UNIX_EPOCH, 1);
     }
+    // A stored password hash comes from a config file: hostile input to the
+    // verifier. hash() itself is not fuzzed — Argon2id is memory-hard, so running
+    // the KDF per iteration would make the suite cost unbounded, and a hostile
+    // *password* into hash() is not a decoder concern.
+    if let Err(e) = lychgate_core::password::verify(input, "pw") {
+        assert!(
+            !e.to_string().is_empty(),
+            "empty password error for {input:?}"
+        );
+    }
 }
 
 /// A minimal authority model with one ed25519 authenticator, built once, so the
@@ -267,6 +277,7 @@ fn fuzz_model() -> &'static AuthorityModel {
                         .into(),
                 ),
                 secret_file: None,
+                hash_file: None,
             }],
             group: vec![],
             profile: vec![AuthoritySpec {
