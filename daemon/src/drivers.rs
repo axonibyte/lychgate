@@ -1,6 +1,7 @@
-//! Real channel drivers and the dead-man control. M5 status: the SSH-borne
-//! channels and the dead-man are live; BMC and VNC are later milestones.
+//! Real channel drivers and the dead-man control. M6 status: the SSH-borne
+//! channels, the dead-man, and the BMC channel are live; VNC is later.
 
+pub mod bmc;
 pub mod deadman;
 pub(crate) mod remote;
 pub mod ssh;

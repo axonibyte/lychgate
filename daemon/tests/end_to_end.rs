@@ -41,25 +41,16 @@ impl Drop for Scratch {
     }
 }
 
-// Flow fixtures use channels with no registered driver (bmc/vnc), so the
-// operator-flow battery exercises the lifecycle without reaching for a live
-// sshd; the SSH drivers are proven by unit tests over a scripted transport
-// and by the guest acceptance script.
+// Flow fixtures use vnc, the only channel with no registered driver, so the
+// operator-flow battery exercises the lifecycle end to end without reaching
+// for a live sshd or BMC; those drivers are proven by their own unit tests
+// over scripted transports and by the guest acceptance scripts.
 const INVENTORY: &str = r#"
 [[hosts]]
 name = "db-01"
 address = "10.0.4.11"
 os = "freebsd"
-channels = ["bmc"]
-
-[hosts.bmc]
-endpoint = "https://10.0.9.5"
-method = "redfish"
-account_user = "breakglass"
-account_id = "4"
-auth_user = "admin"
-auth_password_file = "/etc/lychgate/bmc.pw"
-tls = { mode = "insecure" }
+channels = ["vnc"]
 
 [[hosts]]
 name = "web-02"
@@ -485,10 +476,10 @@ fn the_operator_flow_works_end_to_end_through_both_binaries() {
     let open = &lines[1];
     assert_eq!(open["host"], "db-01");
     assert_eq!(open["ttl_secs"], 4 * 3600);
-    // No drivers yet: nothing was applied, but the declared channels are
-    // recorded so the audit trail shows what a grant reaches for.
+    // vnc has no driver, so nothing was applied, but the declared channels
+    // are recorded so the audit trail shows what a grant reaches for.
     assert_eq!(open["applied"], serde_json::json!([]));
-    assert_eq!(open["declared"], serde_json::json!(["bmc"]));
+    assert_eq!(open["declared"], serde_json::json!(["vnc"]));
     assert!(open["expires_at"].is_u64());
     assert_eq!(lines[2]["host"], "db-01");
 }

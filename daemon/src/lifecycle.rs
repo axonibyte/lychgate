@@ -200,8 +200,20 @@ impl Daemon {
                         expires_at: epoch_secs(expires),
                     },
                 )?;
+                // Collect any one-time credential an applied channel produced
+                // (a BMC break-glass password) to hand back in the response.
+                // It is never journaled — the Open event above records the
+                // channels, never the secret.
+                let secret = {
+                    let mut drivers = self.drivers.lock().expect("drivers poisoned");
+                    applied
+                        .iter()
+                        .find_map(|c| drivers.take_secret(*c))
+                        .map(|s| s.reveal().to_string())
+                };
                 Ok(Response {
                     expires_at: Some(epoch_secs(expires)),
+                    secret,
                     ..Response::ok()
                 })
             }

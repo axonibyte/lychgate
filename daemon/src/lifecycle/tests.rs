@@ -668,3 +668,52 @@ fn hosts_whose_applied_channels_are_not_ssh_borne_get_no_deadman() {
         "a driverless grant grew a backstop"
     );
 }
+
+#[test]
+fn a_bmc_style_secret_reaches_the_open_response_but_never_the_journal() {
+    // A fake bmc driver yields a one-time password at apply. The operator
+    // must get it in the open response; the journal must never contain it.
+    use lychgate_core::channel::fakes::FakeDriver;
+    let dir = scratch_dir("bmcsecret");
+    let log: CallLog = Arc::new(Mutex::new(Vec::new()));
+    let mut drivers = DriverSet::new();
+    drivers
+        .register(FakeDriver::with_secret(
+            Channel::Bmc,
+            Arc::clone(&log),
+            "top-secret-bmc-pw",
+        ))
+        .unwrap();
+    let daemon = Daemon {
+        inventory: Inventory::parse(INVENTORY).unwrap(),
+        store: Store::at(dir.join("grants.json")),
+        journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
+        drivers: Mutex::new(drivers),
+        deadman: Mutex::new(Box::new(FakeDeadman {
+            log: Arc::new(Mutex::new(Vec::new())),
+            fail_install: false,
+            fail_remove: false,
+            fired: Arc::new(Mutex::new(false)),
+        })),
+    };
+    let resp = daemon
+        .dispatch(
+            &Op::Open {
+                host: "db-01".into(),
+                ttl: "4h".into(),
+            },
+            t(0),
+        )
+        .unwrap();
+    // Oracle 1: the operator got the password in the response.
+    assert_eq!(resp.secret.as_deref(), Some("top-secret-bmc-pw"));
+
+    // Oracle 2: the journal file, read raw, contains no trace of it — not in
+    // the open event, not anywhere.
+    let raw = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+    assert!(raw.contains("\"event\":\"open\""), "the open was journaled");
+    assert!(
+        !raw.contains("top-secret-bmc-pw"),
+        "the secret leaked into the journal"
+    );
+}

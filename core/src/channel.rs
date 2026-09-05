@@ -44,6 +44,12 @@ pub trait ChannelDriver {
     fn apply(&mut self, host: &Host) -> Result<(), DriverError>;
     fn revert(&mut self, host: &Host) -> Result<(), DriverError>;
     fn verify(&mut self, host: &Host) -> Result<ChannelState, DriverError>;
+
+    /// A secret this driver's last apply produced for the operator (a BMC
+    /// break-glass password), taken exactly once. Most channels have none.
+    fn take_secret(&mut self) -> Option<crate::bmc::Secret> {
+        None
+    }
 }
 
 /// The registered drivers, keyed by channel. Until M4 the production set is
@@ -70,6 +76,12 @@ impl DriverSet {
         }
         self.drivers.insert(channel, driver);
         Ok(())
+    }
+
+    /// Drains a secret a driver produced at open, if any — the caller hands
+    /// it to the operator once and drops it.
+    pub fn take_secret(&mut self, channel: Channel) -> Option<crate::bmc::Secret> {
+        self.drivers.get_mut(&channel).and_then(|d| d.take_secret())
     }
 
     /// The channels of `requested` that have a registered driver, in the

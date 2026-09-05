@@ -98,6 +98,11 @@ fn run() -> anyhow::Result<ExitCode> {
         (Command::Open { host, .. }, r) => {
             let expires = r.expires_at.unwrap_or(0);
             println!("grant open on {host} until epoch {expires}");
+            if let Some(secret) = &r.secret {
+                // Shown exactly once — the daemon does not store or journal
+                // it. Copy it now.
+                println!("break-glass BMC password (shown once): {secret}");
+            }
         }
         (Command::Renew { host, .. }, r) => {
             let expires = r.expires_at.unwrap_or(0);

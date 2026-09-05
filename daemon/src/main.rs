@@ -126,6 +126,13 @@ fn main() -> anyhow::Result<()> {
             transport::ExecSshTransport,
         )))
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    driver_set
+        .register(drivers::bmc::BmcDriver::new(
+            Box::new(drivers::bmc::CurlBmcTransport),
+            Box::new(drivers::bmc::UrandomPasswords),
+            Box::new(drivers::bmc::NoEscrow),
+        ))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let daemon = Arc::new(Daemon {
         inventory,
         store,
@@ -140,9 +147,8 @@ fn main() -> anyhow::Result<()> {
     daemon.boot_recover(SystemTime::now())?;
 
     println!(
-        "lychgated: watching {} host(s); ssh and authorized-keys channels \
-         are live, bmc and vnc are bookkeeping-only until their drivers \
-         exist",
+        "lychgated: watching {} host(s); ssh, authorized-keys and bmc \
+         channels are live, vnc is bookkeeping-only until its driver exists",
         daemon.inventory.hosts.len()
     );
 

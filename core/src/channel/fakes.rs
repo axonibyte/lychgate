@@ -27,6 +27,9 @@ pub struct FakeDriver {
     log: CallLog,
     /// Tracks what "the host" would show, so verify has real state to read.
     open: bool,
+    /// An optional one-time secret this driver yields at apply, for testing
+    /// the BMC password handoff without a real BMC.
+    secret: Option<crate::bmc::Secret>,
 }
 
 impl FakeDriver {
@@ -36,6 +39,18 @@ impl FakeDriver {
             script,
             log,
             open: false,
+            secret: None,
+        })
+    }
+
+    /// A fake that yields `secret` from take_secret after a successful apply.
+    pub fn with_secret(channel: Channel, log: CallLog, secret: &str) -> Box<FakeDriver> {
+        Box::new(FakeDriver {
+            channel,
+            script: Script::Succeed,
+            log,
+            open: false,
+            secret: Some(crate::bmc::Secret::new(secret.to_string())),
         })
     }
 }
@@ -85,5 +100,9 @@ impl ChannelDriver for FakeDriver {
         } else {
             ChannelState::Closed
         })
+    }
+
+    fn take_secret(&mut self) -> Option<crate::bmc::Secret> {
+        self.secret.take()
     }
 }

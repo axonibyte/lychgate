@@ -229,6 +229,10 @@ pub struct Response {
     pub outcome: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub grants: Option<Vec<GrantLine>>,
+    /// A one-time credential for the operator (a BMC break-glass password).
+    /// Carried to the CLI and shown once; never journaled.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,6 +251,7 @@ impl Response {
             expires_at: None,
             outcome: None,
             grants: None,
+            secret: None,
         }
     }
 
