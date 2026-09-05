@@ -35,10 +35,13 @@ daemon-held SSH tunnel to the VM's RFB port plus a rotated one-time VNC password
 (set through a configurable, platform-agnostic command). All are verified
 against the target's actual state and reverted on close or expiry, with a
 target-side dead-man backstopping the ssh channels and the tunnel dying with the
-daemon it belongs to. Opening a grant requires an operator approval: `open`
-records a pending request and returns a challenge, and the grant opens only once
-an operator signs that challenge (`ssh-keygen -Y sign`, an Ed25519 key in the
-allowed-signers set) and hands the token back through `lychgate approve`. The
+daemon it belongs to. Opening a grant is gated on a **weighted-threshold
+approval authority** (EOS/Antelope model): `open --as <profile>` records a
+pending request and returns a challenge, and the grant opens only once the
+profile's threshold is met by weighted factors — operator signatures
+(`ssh-keygen -Y sign`, an Ed25519 key in the allowed-signers set) handed back
+through `lychgate approve`, nested groups, and/or an elapsed `wait`. Proofs
+accumulate across calls and a wait matures on the daemon's own loop. The
 daemon holds grant state durably, serves the CLI over
 an owner-only unix socket, journals every transition (never a credential or
 token), and re-establishes a console tunnel that outlived a restart. A `--dry-run` mode
@@ -85,22 +88,27 @@ Validates the inventory and grant state, binds the control socket
 interval, and journals every transition to `<state-dir>/journal.jsonl`.
 `--once` runs a single pass for cron; a second daemon on the same socket is
 refused. `--approval-window <secs>` bounds how long a pending request waits for
-an operator (default 300, cap 3600); a request not approved in time lapses and
-is reaped. `--dry-run` registers no channel drivers *and* accepts any approval
-token, so grants open and close as pure bookkeeping and touch no host — for
+its authority to be satisfied (default 300, cap 24h — long enough for a `wait`
+factor); a request not satisfied in time lapses and is reaped. `--dry-run`
+registers no channel drivers *and* evaluates no authority (the first proof
+opens), so grants open and close as pure bookkeeping and touch no host — for
 validating an inventory or rehearsing the lifecycle. Outside `--dry-run`, the
-daemon refuses to start with no `[approval]` approver configured, since a grant
+daemon refuses to start with no `[approval]` policy configured, since a grant
 could then never be opened.
 
 ```sh
-lychgate open  --host db-01 --ttl 4h   # prints a challenge; the grant is pending
-# an operator, on their own device, signs the challenge:
+lychgate open  --host db-01 --as claude --ttl 4h   # prints a challenge; pending
+# each operator whose factor the profile needs signs the challenge:
 printf %s '<challenge>' | ssh-keygen -Y sign -n lychgate-approval -f ~/.ssh/id_ed25519
-lychgate approve --host db-01          # paste the signature on stdin, then EOF
-lychgate status
+lychgate approve --host db-01          # paste a signature on stdin, then EOF
+                                       # repeat per factor; the grant opens when
+                                       # the profile's weighted threshold is met
+lychgate status                        # shows pending progress (weight / threshold)
 lychgate renew --host db-01 --ttl 2h   # accepted only within 2h of expiry
 lychgate close --host db-01
 ```
+
+`--as` may be omitted when the host permits exactly one profile.
 
 The one-time secret for a channel (the BMC or VNC password) is shown once by
 `approve`, where the grant actually opens — not by `open`. TTLs take the forms
@@ -153,19 +161,48 @@ clear_password_cmd = "cbsd bhyve-vnc jname={target} vncpassword=none apply=1"
 become_cmd = "doas"                  # optional privilege prefix
 ```
 
-A top-level `[approval]` table lists the operators who may approve an open. It
-is required outside `--dry-run` — with no approver, no grant can ever open, so
-the daemon refuses to start.
+The `[approval]` section defines the weighted-threshold authorities that gate
+opening (the EOS/Antelope model): authenticators (leaf proofs), groups (nested
+authorities), and profiles (the gate a host is opened under). An open under a
+profile succeeds when its satisfied factors' weights sum to at least its
+threshold — where a factor is an authenticator, a group, or a `wait`. It is
+required outside `--dry-run`; a policy with no profile refuses the daemon's start.
 
 ```toml
-# Each approver is an Ed25519 public key that may sign an open challenge with
-# `ssh-keygen -Y sign -n lychgate-approval`. The full openssh public-key line
-# (with comment) is accepted. TOTP and FIDO2 approvers land in later releases
-# behind the same seam.
-[approval]
-[[approval.ed25519]]
-key-id = "oncall"                    # a label for the journal; must be unique
+# Authenticators are leaf proofs. Only ed25519 (an SSHSIG signed with
+# `ssh-keygen -Y sign -n lychgate-approval`) is built today; totp/password/fido2
+# parse but are refused at load until their sub-milestone. The full openssh
+# public-key line (with comment) is accepted; a public key is inline, a secret
+# would be a file path.
+[[approval.authenticator]]
+id = "oncall-key"
+kind = "ed25519"
 public-key = "ssh-ed25519 AAAA... oncall@phone"
+
+# A group is itself a threshold over weighted factors.
+[[approval.group]]
+id = "SYSADMIN"
+threshold = 1
+factor = [ { authenticator = "oncall-key", weight = 1 } ]
+
+# A profile is the gate an open is evaluated against.
+[[approval.profile]]
+id = "claude"
+threshold = 3
+factor = [
+  { group = "SYSADMIN", weight = 2 },   # a grant from a sysadmin
+  { wait  = "1h",        weight = 1 },   # ...plus an hour's cool-off
+]
+```
+
+A host may narrow which profiles it permits, and override a profile's authority
+for itself, under `[hosts.access]`; a host with no such block permits every
+profile at its default authority.
+
+```toml
+[hosts.access]
+profiles = ["claude", "contractor"]
+# [hosts.access.override.claude] threshold = 2 / factor = [ ... ]   # optional
 ```
 
 The ssh channel needs the host's `sshd_config` to

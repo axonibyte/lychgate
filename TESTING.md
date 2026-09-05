@@ -51,10 +51,13 @@ Mutation record: 35 at scaffold, 49 for M1, 25 for M2, 25 for M3, 25 for
 M4, 17 for M5, 23 for M6 (bmc string logic + inventory 12, bmc driver 11),
 29 for M7 (vnc config + template validation 9, the reestablish/suspend/
 secret-label contract 7, the vnc driver + tunnel + dry-run 8, the lifecycle
-re-establishment + serialization 5), and 24 for M8a.1 (approval canonical
+re-establishment + serialization 5), 24 for M8a.1 (approval canonical
 encoding + SSHSIG verify + AnyOf fail-closed 9, pending grant/registry
 transitions 6, snapshot v3 validation + store readable-set 6, lifecycle
-approve/deny + journal 3) — ~252 checked to date, 0 surviving now.
+approve/deny + journal 3), and 22 for M8a.2 (authority engine: threshold and
+wait boundaries + nested-group resolution + the config refusals 12, pending
+accumulator + snapshot v4 + proto v4 6, daemon open-on-wait + the revert race 4)
+— ~274 checked to date, 0 surviving now.
 Across the project, five survivors have
 appeared and each exposed a real gap rather than being waved through:
 redundant guards removed (the proto version arm, the listener cap check,
@@ -67,14 +70,16 @@ completes), and close stays idempotent.
 
 Cross-platform record: the full battery ran green on both reaper guests
 (freebsd-15.1 on pkg rust 1.96, ubuntu-26.04 in the pinned rust:1.97 image)
-at M1–M8a.1 close — the store's rename/lock semantics,
+at M1–M8a.2 close — the store's rename/lock semantics,
 signal handling, unix-socket transport, the SSH drivers, the
 crontab dead-man's revert-under-kill, the vnc tunnel's
 parent-death signal (`PR_SET_PDEATHSIG` on Linux, `PROC_PDEATHSIG_CTL` on
 FreeBSD): the pdeathsig proof, which has no in-process oracle, killed the
-forward with the daemon on both platforms; and — new at M8a.1 — the real SSHSIG
-approval path, where `ssh-keygen -Y sign` (OpenSSH 10 on both guests) produces a
-token the daemon verifies before a grant opens. All proven on both deployment
+forward with the daemon on both platforms; the real SSHSIG approval path, where
+`ssh-keygen -Y sign` (OpenSSH 10 on both guests) produces a token the daemon
+verifies before a grant opens; and — new at M8a.2 — the weighted authority model,
+where accumulation and a real elapsed `wait` open a nested-group multi-factor
+gate. All proven on both deployment
 platforms, not assumed from the workstation.
 
 ## Tier 2 — seeded fuzz: EXISTS (M2)
@@ -229,46 +234,59 @@ rotated password's expiry is the reap loop's alone — and if the parent-death
 signal loses a fork/exec race on a hard crash, an orphaned forward is caught on
 the next boot by the fixed-port teardown, not instantly.
 
-## Approval tier: EXISTS (M8a.1)
+## Approval tier: EXISTS (M8a.1–2)
 
-Opening a grant now requires an operator approval, and the tier proves it from
-the bytes up. The challenge is a canonical, domain-separated, length-prefixed
+Opening a grant requires an operator approval, and the tier proves it from the
+bytes up. The challenge is a canonical, domain-separated, length-prefixed
 encoding of `(nonce, host, ttl, requested_at)`; a golden vector pins the exact
 bytes and a framing test shows the length prefixes defeat a delimiter collision,
 so daemon and `ssh-keygen` cannot disagree about what was signed. The SSHSIG
-Ed25519 backend is proven against committed `ssh-keygen -Y sign` fixtures: a good
-signature verifies, and the oracle self-test refuses a signature over the wrong
-bytes, under the wrong namespace, for a different request, and from a signer not
-in the allowed set — the four ways a verify must fail, each asserted, not
-assumed. `AnyOf` composes backends fail-closed (an empty approver set refuses
-rather than opens). The `[approval]` config is Tier-1 validated (a present-but-
-empty table, an empty or duplicate key-id, and a public key that will not parse
-are each refused at load, not at three a.m.). The pending lifecycle is proven at
-the grant/registry/snapshot tiers: a second open while one is pending is refused,
-approval anchors expiry at approve-time not request-time, the approval window
-lapses at its exact deadline and is reaped, and a v3 pending record is validated
-strictly (deadline after request, window within the cap, a 32-byte nonce, no
-channels or open/expiry fields) while a v2 pre-approval file still loads. The
-`Approve` op and the token/challenge decoders join the fuzz seed set.
+Ed25519 verify is proven against committed `ssh-keygen -Y sign` fixtures: a good
+signature resolves to its authenticator id, and the oracle self-test refuses a
+signature over the wrong bytes, under the wrong namespace, for a different
+request, and from a signer not configured — the four ways a verify must fail,
+each asserted, not assumed.
 
-End to end, `e2e/approval-acceptance.sh` runs the real binaries on a guest with a
-real `ssh-keygen -Y sign` token: `open` returns a pending challenge and no grant,
-a signature from the configured operator key approves it and the grant opens, a
-signature from an unconfigured key is refused with the grant left pending, and an
-approval after `--approval-window` has lapsed is refused. The whole real-driver
-battery (ssh/bmc/vnc/revert-under-kill/service-start) now runs through the same
-open → sign → approve round trip via `e2e/lib.sh`, so every acceptance proof is
-also a proof that the approval gate does not get in the way of a legitimate open.
-Both guests green.
+Since M8a.2 the gate is a **weighted-threshold authority** (EOS/Antelope model),
+and the engine is a pure KAT surface. The worked example — a threshold-5 profile
+over a nested group, a standalone factor and a wait — is pinned as a golden
+vector: both documented paths reach the threshold and open, and the near-misses
+(one weight short; a subgroup one proof short contributing nothing) do not; the
+threshold (`>=`) and wait-boundary (`>=`) comparisons are mutation-checked
+(flipping either to `>` fails the KAT). Config is validated at load, each refusal
+naming the offender: a reference cycle, a dangling authenticator/group, an
+unsatisfiable threshold (threshold > Σ weights), a zero threshold or weight, and
+an authenticator of an unimplemented kind. The accumulating pending lifecycle is
+proven at the grant/registry tiers — proofs accumulate and a lapsed request
+refuses further ones — and the daemon opens a wait-only profile on a pass once
+the wait matures, with an oracle self-test that it stays pending before then.
+Snapshot is v4 (profile + satisfied set, validated strictly) with v2/v3
+read-compat; proto is v4; the token/challenge decoders and the model's verify
+join the fuzz seed set.
 
-**What the approval tier does NOT prove:** TOTP (M8a.2) and FIDO2 (M8a.3) — only
-the seam is built for those. Trust in the Ed25519 backend reduces to the
-allowed-signers set in `[approval]`; a compromised operator key is out of scope,
-as is revocation (edit the inventory and reload). The out-of-band paste path is
-exercised by piping the token; a phone/QR round trip is a CLI convenience not yet
-built. The `--dry-run` `AcceptAny` verifier that lets the hermetic e2e open
-without a key proves the *lifecycle*, deliberately not the *crypto* — the real
-SSHSIG verify is proven only by the guest acceptance and the fixture tests.
+End to end on both guests: `e2e/approval-acceptance.sh` runs the real binaries
+with a real `ssh-keygen -Y sign` token (a configured key opens; a stranger and a
+lapsed window are refused), and `e2e/authority-acceptance.sh` proves the weighted
+model live — accumulation across multiple `approve` calls opens a nested-group
+multi-factor gate, the daemon's own pass loop opens a grant on a matured `wait`
+with no further proof, and a stranger is refused. That fast-interval e2e also
+reproduced a latent revert race (a reap pass and an operator close both reverting
+one host) that is now fixed and does not recur. The whole real-driver battery
+(ssh/bmc/vnc/revert-under-kill/service-start) runs through the open → sign →
+approve round trip via `e2e/lib.sh`, so every acceptance proof also proves the
+approval gate does not get in the way of a legitimate open.
+
+**What the approval tier does NOT prove:** TOTP (M8a.3), password (M8a.4) and
+FIDO2 (M8a.5) — those authenticator kinds parse but are refused at load until
+built, so no policy can yet exercise them; the weighted model is proven with
+Ed25519 factors standing in. Trust reduces to the configured public keys; a
+compromised operator key is out of scope, as is revocation (edit the inventory
+and reload). The out-of-band paste path is exercised by piping the token; a
+phone/QR round trip is a CLI convenience not yet built. `--dry-run` (no model,
+first proof opens) proves the *lifecycle*, deliberately not the *crypto* — the
+real SSHSIG verify is proven only by the guest acceptances and the fixture tests.
+Cross-*profile* identity binding (requiring the same operator across two factors)
+is not modelled: factors are independent.
 
 ## Wire contract and operator-flow tiers: EXISTS (M2)
 
@@ -288,11 +306,12 @@ the first listens, a stale socket replaced, a missing daemon failing fast.
   daemon says which mode it is in at startup.
 - The dead-man timer on the target reverts access if the daemon host dies
   (M5), but it depends on cron; a host without cron is refused an open.
-- Reaching the owner-only socket lets a process *request* a grant, but since
-  M8a.1 opening it also requires an operator approval (a valid SSHSIG over the
-  daemon's challenge from a configured signer). Root on the daemon host is still
-  the boundary for status/close and for who runs the daemon; the approval gate
-  is what stands between socket access and an open grant.
+- Reaching the owner-only socket lets a process *request* a grant, but opening
+  it requires satisfying the profile's weighted-threshold authority (M8a.1–2) —
+  by M8a.2 that can be several factors and/or an elapsed wait, not one signature.
+  Root on the daemon host is still the boundary for status/close and for who runs
+  the daemon; the approval gate is what stands between socket access and an open
+  grant.
 - The listener's take() allocation bound (a writer that never sends a
   newline) has no behavioral oracle — the observable is memory — and is
   stated in a comment rather than pretend-tested.

@@ -73,9 +73,9 @@ Policy decisions, all enforced in core and all tested:
   (the vnc tunnel) that outlived a restart is re-established. All four
   channels are live: a grant flips PermitRootLogin via a verified drop-in,
   installs break-glass keys in the fence, enables a break-glass iDRAC account,
-  and brings up a console tunnel with a rotated password. As of M8a.1 opening is
-  gated on an operator approval verified against a pluggable seam (Ed25519/SSHSIG
-  first). `--dry-run` registers no drivers and accepts any approval token,
+  and brings up a console tunnel with a rotated password. As of M8a.2 opening is
+  gated on a weighted-threshold approval authority (Ed25519/SSHSIG factors, with
+  groups and waits). `--dry-run` registers no drivers and accepts any approval token,
   opening grants as pure bookkeeping.
 - **`lychgate`** — the operator CLI, built for FreeBSD, Linux, and Windows
   (an operator's workstation may be anything; the daemon's host may not).
@@ -107,30 +107,46 @@ The reason the project exists is to let an agent work inside a grant that a
 *human* deliberately opened. So opening is gated on an operator approval, and
 the design principle is: the human authorizes, the agent works inside the grant.
 
-The flow is **out-of-band** — the daemon grows no network listener. `open`
-records the Pending grant and returns a **challenge**: a canonical,
+The flow is **out-of-band** — the daemon grows no network listener. `open --as
+<profile>` records the Pending grant and returns a **challenge**: a canonical,
 domain-separated, length-prefixed encoding of `(nonce, host, ttl, requested_at)`,
-rendered `lg1.req.<base64url>`. The operator, on whatever device they trust,
-signs exactly those bytes and hands the token back through `lychgate approve`
-(on stdin, off the argv). The daemon verifies the token against the pending
-request's own challenge before it transitions Pending → Opening. The
-length-prefixing is deliberate: daemon and signer must agree on the signed bytes
-with no field-order or delimiter ambiguity.
+rendered `lg1.req.<base64url>`. Operators, on whatever devices they trust, sign
+exactly those bytes and hand the tokens back through `lychgate approve` (on
+stdin, off the argv). The length-prefixing is deliberate: daemon and signer must
+agree on the signed bytes with no field-order or delimiter ambiguity.
 
-Verification is a pure `ApprovalVerifier` seam in core. `AnyOf` composes backends
-**fail-closed**: an empty approver set refuses (it never silently opens), the
-first accept wins, and all-reject is a refusal that names itself. Three credential
-types live behind that one seam, phased:
+**The gate is a weighted-threshold authority** (`core/src/authority.rs`),
+modelled on EOS/Antelope permissions. An authority is a `threshold` over
+weighted factors; a factor is one of:
 
-- **Ed25519 = SSHSIG** (M8a.1, shipped). The operator signs with
-  `ssh-keygen -Y sign -n lychgate-approval -f <key>`, reusing existing SSH keys,
-  ssh-agent, and hardware `ed25519-sk` tokens. The daemon parses the SSHSIG
-  envelope, checks the namespace, and verifies the Ed25519 signature over the
-  challenge against the configured allowed-signers set — the `[approval]`
-  inventory table of `(key-id, ssh-ed25519 public-key)` pairs. No bespoke signing
-  tool and no hand-rolled crypto: the `ssh-key` crate does the verify. Trust
-  reduces to that allowed-signers set; revocation is an inventory edit.
-- **TOTP** (M8a.2) and **FIDO2** (M8a.3) land behind the same trait.
+- an **authenticator** — a leaf proof identified by id (an Ed25519 SSHSIG today;
+  TOTP, password and FIDO2 in later sub-milestones);
+- a **group** — itself an authority, satisfied when *its* threshold is met, so
+  gates nest into a DAG;
+- a **wait** — satisfied once a duration has elapsed since the request.
+
+The grant opens when the satisfied factors' weights sum to at least the
+threshold. Authorities attach to named **profiles**; a host's `[hosts.access]`
+lists which profiles it permits and may override a profile's authority (the
+host × profile matrix). Evaluation is pure — `from_spec` validates the whole
+policy at load (references resolve, groups are acyclic, every threshold is
+satisfiable, unimplemented authenticator kinds are refused naming their
+sub-milestone), and `evaluate` sums weights against the set of verified
+authenticator ids and the elapsed time. **Fail-closed throughout**: a policy with
+no profile is refused, an unsatisfiable threshold is refused, and a `[approval]`
+absent outside `--dry-run` refuses the daemon's start.
+
+Approval **accumulates**: proofs arrive across one or more `approve` calls and a
+wait's weight accrues over time, so a pending grant persists *which
+authenticators are satisfied* (never a secret) and the reap loop opens it the
+instant the weighted sum crosses the threshold — a `wait` can open a grant with
+no further human action. `approve` verifies each proof against the request's own
+challenge (`AuthorityModel::verify_ed25519` for the Ed25519 kind: parse the
+SSHSIG envelope, check the namespace, match the signer to a configured
+authenticator, verify over the challenge) and records the authenticator it
+satisfies. No bespoke signing tool and no hand-rolled crypto — the `ssh-key`
+crate does the verify; trust reduces to the configured public keys, and
+revocation is an inventory edit.
 
 A failed approval is journaled (`ApprovalDenied`, with a reason) — a deliberate
 departure from "refusals journal nothing", because a rejected authorization is
@@ -166,9 +182,9 @@ step, is [ROADMAP.md](ROADMAP.md). The sketch below is the shape of it:
    console it exposes with [autovnc](https://github.com/calebpower/autovnc) or
    any VNC client. No dead-man — the tunnel dying with the daemon is the
    backstop, and the password's expiry is the reap loop's alone.
-5. **Operator surface** — the approval gate (M8a.1, done; see
-   [Approval](#approval)) leads; still ahead are the MCP server so a Claude
+5. **Operator surface** — the weighted-threshold approval gate (M8a.1–2, done;
+   see [Approval](#approval)) leads; still ahead are the MCP server so a Claude
    session can request and use a grant without shell access, drill mode
    (scheduled open-and-revert against a canary host, because a revert path never
    observed firing is indistinguishable from one that does not work), and the
-   remaining credential backends (TOTP, FIDO2).
+   remaining authenticator kinds (TOTP, password, FIDO2).

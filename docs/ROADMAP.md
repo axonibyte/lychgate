@@ -445,8 +445,9 @@ Design decisions, resolved at milestone start:
   signing tool, no hand-rolled crypto — the `ssh-key` crate does the verify.
 - **One pluggable seam, credentials phased.** `ApprovalVerifier` is a pure core
   trait; `AnyOf` composes backends fail-closed (empty set → refuse). This
-  milestone ships the lifecycle, the seam and Ed25519; TOTP (M8a.2) and FIDO2
-  (M8a.3) land behind the same trait.
+  milestone ships the lifecycle, the seam and Ed25519. (M8a.2 generalized this
+  seam into the weighted-threshold authority model, so the composite retired
+  there; TOTP, password and FIDO2 now land as authenticator kinds in M8a.3–5.)
 - **The challenge is a canonical, domain-separated, length-prefixed encoding**
   of `(nonce, host, ttl, requested_at)`, so daemon and `ssh-keygen` sign exactly
   the same bytes with no field-order or delimiter ambiguity.
@@ -475,10 +476,64 @@ the daemon's own challenge; an unconfigured signer and a lapsed window are both
 refused fail-closed; the secret is issued once at approve and never journaled.
 Verified green on both reaper guests.
 
-### M8a.2 onward — PLANNED
+### M8a.2 — Weighted-threshold authorities (EOS/Antelope model) — DONE (2026-09-05), bumps to v0.6.0
 
-- **M8a.2 TOTP** and **M8a.3 FIDO2** behind the `ApprovalVerifier` seam, each
-  landing green and guest-verified.
+The single-approver gate becomes a weighted-threshold authority graph, modelled
+on EOS/Antelope permissions: opening is gated on an **authority** — a threshold
+over weighted factors, where a factor is an **authenticator** (an Ed25519 SSHSIG
+today), a reference to a **group** (itself an authority, so gates nest into a
+DAG), or a **wait** (satisfied once a duration elapses). The gate opens when the
+satisfied factors' weights sum to at least the threshold. This subsumes MFA (a
+group whose threshold equals its factor count) and the M8a.1 single approver (a
+threshold-1 authority with one weight-1 factor).
+
+Design decisions, resolved at milestone start:
+
+- **Host × profile matrix.** Authorities attach to named *profiles* (`claude`,
+  `contractor`); a host lists which profiles it permits and may override a
+  profile's authority. `open --host H --as <profile>` selects the gate; a host
+  with no `[hosts.access]` permits every profile at its default authority.
+- **Accumulating pending grant.** Proofs arrive across one or more `approve`
+  calls and wait-weight accrues over time; the reap loop opens the grant the
+  moment the weighted sum crosses the threshold. The pending grant persists
+  *which authenticators are satisfied* — never a secret or token.
+- **Engine first, credentials phased.** This milestone delivers the engine,
+  config, accumulation, proto/state v4, daemon and CLI, proven with the Ed25519
+  authenticator plus waits and nested groups; TOTP, password and FIDO2 slot in
+  behind the finished engine as later sub-milestones.
+
+**Deliverables** — `core/src/authority.rs` (the pure model, `evaluate`, and
+`from_spec` doing all structural validation: reference resolution, acyclic
+groups, satisfiability, unimplemented-kind refusal); the `[approval]` schema
+(`[[approval.authenticator]]` / `[[approval.group]]` / `[[approval.profile]]`)
+and per-host `[hosts.access]` with profile overrides; the accumulating `Pending`
+grant (profile + satisfied set) with open-on-wait on the pass loop; store/proto
+schema v4 (v2 and v3 files still load); `open --as`; journal `ProofAccepted`.
+Bumps to **v0.6.0** (breaking config + wire/state change).
+
+**Tests** — the worked-example golden KAT (both paths to threshold 5 open, the
+near-misses do not; threshold and wait boundaries mutation-checked); config
+refusals (cycle, dangling ref, unsatisfiable, zero threshold/weight, unimplemented
+kind) each naming the offender; the pending accumulator and a lapsed request
+refusing proofs; a wait-only profile opening on a pass with an oracle self-test
+that it stays pending before the wait matures; host-access validation; snapshot
+v4 round-trip with v2/v3 read-compat; proto v4; and `e2e/authority-acceptance.sh`
+proving accumulation, open-on-wait and a refused stranger end to end on both
+guests. That fast-interval e2e also surfaced and fixed a latent revert race
+between the reap loop and an operator close.
+
+**Acceptance** — met: a grant opens exactly when its profile's weighted
+threshold is met — by proofs, by an elapsed wait, or a mix — and never below it;
+an unconfigured signer is refused. Verified green on both reaper guests.
+
+### M8a.3 onward — PLANNED
+
+- **M8a.3 TOTP** (RFC 6238 over RustCrypto hmac+sha1, RFC-6238 Appendix-B KAT, a
+  single-use consumed-code ledger persisted like the store, secret from a
+  mode-600 file), **M8a.4 password** (a salted-hash verifier from a file — the
+  weakest, replayable factor, documented), and **M8a.5 FIDO2** (CTAP2 assertion;
+  ES256/EdDSA over `authData || challenge_hash`), each a new authenticator kind
+  behind the finished engine, landing green and guest-verified.
 - MCP server exposing `open` (returns pending until approved), `status`,
   `renew`, `close`, and access handles, so a Claude session can request and
   use a grant without shell access to the daemon host.
