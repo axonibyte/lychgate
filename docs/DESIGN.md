@@ -54,10 +54,12 @@ Policy decisions, all enforced in core and all tested:
   single-instance enforcement), and runs the write-ahead grant lifecycle
   over a `ChannelDriver` seam: open persists intent before driving, commits
   Open on success or NeedsRevert on failure; close and expiry revert through
-  NeedsRevert; a crash mid-open is demoted at boot. As of M4 the ssh and
-  authorized-keys channels are live: a grant really flips PermitRootLogin
-  via a verified drop-in and installs break-glass keys in the fence; bmc
-  and vnc stay bookkeeping-only until their drivers exist.
+  NeedsRevert; a crash mid-open is demoted at boot, and a daemon-held resource
+  (the vnc tunnel) that outlived a restart is re-established. As of M7 all four
+  channels are live: a grant flips PermitRootLogin via a verified drop-in,
+  installs break-glass keys in the fence, enables a break-glass iDRAC account,
+  and brings up a console tunnel with a rotated password. `--dry-run` registers
+  no drivers, opening grants as pure bookkeeping.
 - **`lychgate`** — the operator CLI, built for FreeBSD, Linux, and Windows
   (an operator's workstation may be anything; the daemon's host may not).
   open/renew/close/status work end to end against a local daemon; refusals
@@ -99,9 +101,14 @@ step, is [ROADMAP.md](ROADMAP.md). The sketch below is the shape of it:
    `AccountService` over curl, fresh password each open (shown once, escrowed,
    never journaled); racadm/ipmitool named-but-unimplemented. No dead-man (an
    iDRAC has no shell) — expiry enforcement is the daemon's alone.
-4. **vnc** — brokered console sessions via
-   [autovnc](https://github.com/calebpower/autovnc), serialized because bhyve's
-   RFB server accepts exactly one client.
+4. **vnc** (done, M7) — console reachability as a daemon-held `ssh -L` tunnel
+   to the VM's RFB port, plus a one-time VNC password rotated through a
+   configurable, platform-agnostic command (cbsd is the pilot). The tunnel dies
+   with the daemon (a parent-death signal) and is re-established on restart;
+   serialization is the per-host single-grant rule. The agent drives the
+   console it exposes with [autovnc](https://github.com/calebpower/autovnc) or
+   any VNC client. No dead-man — the tunnel dying with the daemon is the
+   backstop, and the password's expiry is the reap loop's alone.
 5. **Operator surface** — daemon transport for the CLI, audit journal,
    drill mode (scheduled open-and-revert against a canary host, because a
    revert path never observed firing is indistinguishable from one that does

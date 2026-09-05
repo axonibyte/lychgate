@@ -362,28 +362,56 @@ GET/PATCH over HTTP, password shown once and absent from the journal,
 stranger-slot refused. A real iDRAC remains the ceiling, named in
 TESTING.md as the gap the mock does not close.
 
-## M7 — VNC driver — PLANNED
+## M7 — VNC driver — DONE (2026-09-05), stays v0.4.0
 
 Console access joins the grant.
 
-**Deliverables**
+Design decisions, resolved at milestone start:
 
-- autovnc integration: a grant with the `vnc` channel yields a working
-  console target (host, port, password file path) for the operator or agent,
-  established through autovnc's session API/CLI.
-- Serialization: one console client at a time per target (bhyve's RFB server
-  accepts exactly one) — the daemon queues or refuses, explicitly.
-- Revert semantics: closing the grant tears down any tunnel/port-forward
-  lychgate created and rotates the VNC password where the platform allows.
+- **autovnc is a client, not a broker.** It reads screens and injects
+  keystrokes against `AUTOVNC_HOST`/`PORT`/`PASSWORD_FILE`; it runs no daemon
+  and sets no password. So lychgate does the gating itself, and autovnc is what
+  the agent runs against the endpoint lychgate exposes — not something lychgated
+  drives.
+- **Reachability is an SSH port-forward tunnel** the daemon holds
+  (`ssh -N -L`), not a firewall rule: the RFB server stays bound to the
+  hypervisor's localhost, and the tunnel dying with the daemon is the
+  reachability backstop. That is not automatic — an orphan reparents to init —
+  so the child is spawned with `PR_SET_PDEATHSIG`/`PROC_PDEATHSIG_CTL`, torn
+  down explicitly on a graceful stop, and a stray on the fixed port is caught on
+  the next boot.
+- **The password is rotated per open through an agnostic command.** lychgate
+  generates a one-time password and hands it to an operator-supplied set command
+  (cbsd is the pilot) via a mode-600 file, never an argv; a clear command undoes
+  it on revert. Shown once in the open response, never journaled.
+- **Contention is refused, not queued** — the per-host single-grant model gives
+  this for free; no waiting state.
+- **A `--dry-run` bookkeeping mode** registers no drivers, so the hermetic
+  end-to-end tests exercise the lifecycle without a host now that every channel
+  is driven; it is also the seed for M8's drill mode.
 
-**Tests** — unit on target/session bookkeeping and the serialization rule
-(concurrency-flavored: N simultaneous requests, assert the resource's state
-read back, not response counts — this is the project's first Tier 6-style
-harness); integration against a bhyve guest in a reaper session where
-available.
+**Deliverables** — the `vnc` channel is live: `[hosts.vnc]` config (hypervisor
+connection, RFB endpoint, fixed local forward port, agnostic set/clear
+commands), the daemon-held tunnel with a parent-death signal, per-open password
+rotation, boot re-establishment of tunnels that outlived a restart (reachability
+only, never re-rotating), shutdown teardown, and the console endpoint + one-time
+password surfaced in the open response.
 
-**Acceptance** — two concurrent `open`s for the same console produce one
-session and one honest refusal/queue position, never two dead connections.
+**Tests** — Tier-1 config/template validation and password generation; the
+driver over scripted transports (substitution, password off every argv,
+apply/revert ordering and idempotence, verify, secret-once); the tunnel over a
+fake spawner binding a real socket (readiness, teardown, stray detection); the
+project's first Tier-6 harness — sixteen simultaneous opens of one console
+produce exactly one grant and one apply, asserted from resource and committed
+state; and `e2e/vnc-acceptance.sh` end to end against real sshd and an RFB mock,
+including the pdeathsig fail-closed proof (SIGKILL the daemon, the tunnel dies),
+run on both guests.
+
+**Acceptance** — met: concurrent opens for one console yield one grant and one
+honest refusal (never two connections); open makes the forward reachable and
+rotates the password shown-once and journal-clean; close tears both down.
+Verified green on both reaper guests, including the OS-specific pdeathsig proof
+on FreeBSD and Ubuntu.
 
 ## M8 — Operator surface and the long-tail tiers — PLANNED, bumps to v0.5.0
 

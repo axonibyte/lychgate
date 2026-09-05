@@ -26,17 +26,21 @@ Grant policy, by design:
 
 ## Status
 
-The control plane is real, and the `ssh`, `authorized-keys`, and `bmc`
-channels are live: opening a grant flips the host's `PermitRootLogin` posture through a verified
-drop-in, installs break-glass keys inside a lychgate-owned fence in
-authorized_keys, and enables a break-glass iDRAC account over Redfish with a
-fresh one-time password — all verified against the target's actual state and
-all reverted on close or expiry, with a target-side dead-man backstopping the
-ssh channels. The daemon holds grant state durably, serves the CLI over an
-owner-only unix socket, and journals every transition (never a credential).
-The `vnc` channel remains bookkeeping-only until its driver exists. See
-[TESTING.md](TESTING.md) for exactly what is and is not proven,
-[docs/DESIGN.md](docs/DESIGN.md) for the architecture, and
+The control plane is real, and all four channels — `ssh`, `authorized-keys`,
+`bmc`, and `vnc` — are live: opening a grant flips the host's `PermitRootLogin`
+posture through a verified drop-in, installs break-glass keys inside a
+lychgate-owned fence in authorized_keys, enables a break-glass iDRAC account
+over Redfish with a fresh one-time password, and brings up a console: a
+daemon-held SSH tunnel to the VM's RFB port plus a rotated one-time VNC password
+(set through a configurable, platform-agnostic command). All are verified
+against the target's actual state and reverted on close or expiry, with a
+target-side dead-man backstopping the ssh channels and the tunnel dying with the
+daemon it belongs to. The daemon holds grant state durably, serves the CLI over
+an owner-only unix socket, journals every transition (never a credential), and
+re-establishes a console tunnel that outlived a restart. A `--dry-run` mode
+opens grants as pure bookkeeping, touching no host — for validating an inventory
+or rehearsing the lifecycle. See [TESTING.md](TESTING.md) for exactly what is
+and is not proven, [docs/DESIGN.md](docs/DESIGN.md) for the architecture, and
 [docs/ROADMAP.md](docs/ROADMAP.md) for the milestone plan of record.
 
 ## Components
@@ -76,7 +80,9 @@ Validates the inventory and grant state, binds the control socket
 (`<state-dir>/lychgated.sock`, owner-only), reaps expired grants on an
 interval, and journals every transition to `<state-dir>/journal.jsonl`.
 `--once` runs a single pass for cron; a second daemon on the same socket is
-refused.
+refused. `--dry-run` registers no channel drivers, so grants open and close as
+pure bookkeeping and touch no host — for validating an inventory or rehearsing
+the lifecycle.
 
 ```sh
 lychgate open  --host db-01 --ttl 4h
@@ -98,7 +104,7 @@ An inventory names each host, its address, its operating system (`freebsd` or
 name = "db-01"
 address = "10.0.4.11"
 os = "freebsd"
-channels = ["ssh", "authorized-keys", "bmc"]
+channels = ["ssh", "authorized-keys", "bmc", "vnc"]
 
 # Required when ssh or authorized-keys channels are declared.
 [hosts.ssh]
@@ -117,6 +123,21 @@ account_id = "4"                     # its AccountService slot
 auth_user = "lychgate-svc"
 auth_password_file = "/usr/local/etc/lychgate/db-01.bmc"   # not inline
 tls = { mode = "ca-file", path = "/usr/local/etc/lychgate/idrac-ca.pem" }
+
+# Required when the vnc channel is declared. lychgated holds an ssh -L from
+# the daemon host's local_port to rfb_host:rfb_port on the hypervisor for the
+# grant, and rotates a one-time VNC password via the configurable commands.
+[hosts.vnc]
+agent_user = "lychgate"              # ssh login on the hypervisor (host.address)
+rfb_host = "127.0.0.1"               # where the VM's RFB server binds there
+rfb_port = 5900
+local_port = 5959                    # forwarded on the daemon host; unique per host
+target = "vm-guest-01"               # VM id passed to the commands as {target}
+# Agnostic: cbsd is the pilot; {password_file} is a mode-600 file lychgate
+# stages (never the password on an argv). Single quotes are refused at load.
+set_password_cmd = "cbsd bhyve-vnc jname={target} vncpasswordfile={password_file} apply=1"
+clear_password_cmd = "cbsd bhyve-vnc jname={target} vncpassword=none apply=1"
+become_cmd = "doas"                  # optional privilege prefix
 ```
 
 The ssh channel needs the host's `sshd_config` to

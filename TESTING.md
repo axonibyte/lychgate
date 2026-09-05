@@ -48,8 +48,11 @@ loop with a daemon-stop entry. The service installer has its own battery
 (`tools/install-service-test.sh`), run by the gate and CI.
 
 Mutation record: 35 at scaffold, 49 for M1, 25 for M2, 25 for M3, 25 for
-M4, 17 for M5, and 23 for M6 (bmc string logic + inventory 12, bmc driver
-11) — ~199 checked to date, 0 surviving now. Across the project, five survivors have
+M4, 17 for M5, 23 for M6 (bmc string logic + inventory 12, bmc driver 11),
+and 29 for M7 (vnc config + template validation 9, the reestablish/suspend/
+secret-label contract 7, the vnc driver + tunnel + dry-run 8, the lifecycle
+re-establishment + serialization 5) — ~228 checked to date, 0 surviving now.
+Across the project, five survivors have
 appeared and each exposed a real gap rather than being waved through:
 redundant guards removed (the proto version arm, the listener cap check,
 the empty-needs-revert refusal that turned out to be a legitimate
@@ -61,9 +64,12 @@ completes), and close stays idempotent.
 
 Cross-platform record: the full battery ran green on both reaper guests
 (freebsd-15.1 on pkg rust 1.96, ubuntu-26.04 in the pinned rust:1.97 image)
-at M1–M6 close — the store's rename/lock semantics,
-signal handling, unix-socket transport, the SSH drivers, and the
-crontab dead-man's revert-under-kill are proven on both deployment
+at M1–M7 close — the store's rename/lock semantics,
+signal handling, unix-socket transport, the SSH drivers, the
+crontab dead-man's revert-under-kill, and — new at M7 — the vnc tunnel's
+parent-death signal (`PR_SET_PDEATHSIG` on Linux, `PROC_PDEATHSIG_CTL` on
+FreeBSD): the pdeathsig proof, which has no in-process oracle, killed the
+forward with the daemon on both platforms. All proven on both deployment
 platforms, not assumed from the workstation.
 
 ## Tier 2 — seeded fuzz: EXISTS (M2)
@@ -171,6 +177,53 @@ has no shell for the crontab backstop — so if the daemon dies for longer
 than a bmc grant's TTL, the account stays enabled until the daemon returns;
 expiry enforcement for bmc is lychgated's alone.
 
+## VNC console tier: EXISTS (M7)
+
+Opening the vnc channel gives a grant temporary console access: a daemon-held
+`ssh -L` tunnel from the daemon host's fixed local_port to the VM's RFB port on
+its hypervisor, plus a one-time VNC password rotated through a configurable,
+platform-agnostic command (cbsd is the pilot). The config and command templates
+are Tier-1 validated and fuzzed (single quotes refused so lychgate owns the
+shell quoting; `{password_file}` required in set and forbidden in clear; unknown
+placeholders named; `local_port` unique across the inventory). The driver is
+proven over a scripted transport and a fake tunnel: the password is staged in a
+mode-600 file and removed at once, is on no argv (scanned across the whole call
+log — the in-process counterpart of the acceptance's journal grep), apply
+rotates-then-tunnels and revert tunnels-down-then-clears (idempotent), verify
+reads the forward's listening state, reestablish re-asserts reachability without
+re-rotating, and the one-time password is handed off exactly once. The tunnel's
+own lifecycle — readiness probe, teardown, self-exited-child reaping, and a
+stray on the fixed port reported stuck rather than killed by port — is proven
+over a fake spawner that binds a real local socket. End to end,
+`e2e/vnc-acceptance.sh` runs the real binaries against real sshd and an RFB mock
+(open reaches the forwarded port and rotates the password shown-once and
+journal-clean; close tears both down; a second open on a held console refused),
+and its pdeathsig phase proves the tunnel dies with a SIGKILLed daemon on both
+guests. Boot re-establishment (a tunnel that outlived a restart is rebuilt,
+reachability only; one that cannot be is demoted to needs-revert) is proven at
+the lifecycle tier.
+
+**Serialization (Tier 6):** the project's first thread-racing harness fires
+sixteen simultaneous opens of one console and reads back exactly one grant and
+one apply — one tunnel, one password — the losers refused as
+already-open/mid-open before reaching a driver. The oracle is resource and
+committed state, not response counts. The serializer is the store's file lock
+plus `begin_open` refusing any non-Closed grant.
+
+**What the VNC tier does NOT prove:** a real bhyve/cbsd. The RFB mock is a bare
+TCP acceptor, not a one-client RFB server, so real RFB authentication and the
+single-viewer rule are out of reach; the concurrency harness serializes
+same-process threads, not cross-process racing clients beyond what the file lock
+already gives, and its fake apply is instant, so it does not prove a slow real
+`ssh -L` cannot interleave. The one-time password exists in plaintext in a
+mode-600 file on the hypervisor for the set command's runtime (bmc avoids even
+that, feeding curl on stdin), and the password's set-state is not independently
+re-readable, so verify keys on the tunnel's reachability. There is no dead-man
+for vnc: the tunnel dying with the daemon is the reachability backstop, and the
+rotated password's expiry is the reap loop's alone — and if the parent-death
+signal loses a fork/exec race on a hard crash, an orphaned forward is caught on
+the next boot by the fixed-port teardown, not instantly.
+
 ## Wire contract and operator-flow tiers: EXISTS (M2)
 
 The request/response surface is pinned by a contract table in
@@ -184,9 +237,9 @@ the first listens, a stale socket replaced, a missing daemon failing fast.
 
 **What these tiers do NOT prove:**
 
-- The ssh and authorized-keys channels really change hosts (M4); bmc and
-  vnc remain bookkeeping-only until their drivers exist, and the daemon
-  says so at startup.
+- All four channels really change hosts (ssh/authorized-keys M4, bmc M6, vnc
+  M7); `--dry-run` opens grants as bookkeeping only, touching nothing, and the
+  daemon says which mode it is in at startup.
 - The dead-man timer on the target reverts access if the daemon host dies
   (M5), but it depends on cron; a host without cron is refused an open.
 - Authorization is the socket's file mode and nothing else: any process that
@@ -200,8 +253,9 @@ the first listens, a stale socket replaced, a missing daemon failing fast.
 - Journal durability is fsync-per-line by construction, not by test; the
   residual power-loss windows (a lost line detectable as a pid/seq gap; a
   duplicated observation) are documented in the journal module, not tested.
-- Concurrency is serialized by the store lock and exercised synthetically,
-  not by racing clients (Tier 6 harnesses are M7+ territory).
+- Concurrency: the M7 Tier-6 harness now races sixteen same-process threads
+  for one console (see the VNC console tier); cross-*process* racing beyond
+  what the store's file lock gives is still not exercised.
 - The service files stage correctly; whether rc(8)/systemd actually start the
   daemon from them belongs to M5's full-stack tier on the reaper guests.
 
@@ -210,17 +264,12 @@ the methodology's §15 says to build them.
 
 ## Tier roadmap — NOT YET BUILT
 
-In adoption order (return on effort, per methodology §15):
+In adoption order (return on effort, per methodology §15). Tier 4 (full stack,
+hostile — revert-under-kill) landed at M5 and Tier 6 (concurrency) at M7; both
+have their own sections above. What remains:
 
-4. **Full stack, hostile** — `lychgated` driving real hosts (reaper guests),
-   started hostile; the load-bearing claim is *revert-under-kill*: open a
-   grant, kill the daemon, prove the dead-man timer on the target closes
-   everything anyway. Two oracles: sshd's own config report **and** an actual
-   connection attempt.
 5. **Source-as-data** — once there are seams that can rot (driver registry,
    channel vocabulary, CLI/daemon flag parity).
-6. **Concurrency** — simultaneous open/close/renew against one host; assert
-   the grant state read back, not response counts.
 7. **Simulated users** — last, and the oracle self-test gets written first: an
    invariant that has never fired is indistinguishable from a passing suite.
 
