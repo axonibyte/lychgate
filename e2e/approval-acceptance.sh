@@ -105,10 +105,15 @@ set_password_cmd = "${work}/set-vnc-pw.sh {target} {password_file}"
 clear_password_cmd = "${work}/clear-vnc-pw.sh {target}"
 password_file = "${work}/staged.pw"
 
-[approval]
-[[approval.ed25519]]
-key-id = "operator"
+[[approval.authenticator]]
+id = "operator"
+kind = "ed25519"
 public-key = "$(cat "${work}/approver.pub")"
+
+[[approval.profile]]
+id = "default"
+threshold = 1
+factor = [ { authenticator = "operator", weight = 1 } ]
 EOF
 
 note "starting the RFB mock on 127.0.0.1:${rfb_port}"

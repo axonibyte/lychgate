@@ -755,31 +755,52 @@ impl Daemon {
                         }
                     }
                 }
-                self.with_registry(|reg| reg.finish_revert(host))?
-                    .expect("a needs-revert grant can always finish");
-                self.journal(
-                    now,
-                    &Event::Close {
-                        host: host.to_string(),
-                        deadman_fired,
-                    },
-                )?;
+                // Driver I/O runs with the store lock released, so a concurrent
+                // pass and an operator close can both revert the same host. The
+                // store lock serializes the commit: whoever finishes first
+                // transitions Closed and journals; a loser finds the grant
+                // already Closed (NotOpen) — not an error, and it must not
+                // re-journal the Close. Anything else is impossible for a known
+                // needs-revert host.
+                match self.with_registry(|reg| reg.finish_revert(host))? {
+                    Ok(()) => {
+                        self.journal(
+                            now,
+                            &Event::Close {
+                                host: host.to_string(),
+                                deadman_fired,
+                            },
+                        )?;
+                    }
+                    Err(RegistryError::Grant(lychgate_core::GrantError::NotOpen)) => {}
+                    Err(other) => {
+                        return Err(anyhow::anyhow!("finishing revert of {host:?}: {other}"))
+                    }
+                }
                 Ok(RevertProgress::Closed)
             }
             RevertOutcome::Stuck { stuck } => {
                 let stuck_channels: Vec<Channel> = stuck.iter().map(|(c, _)| *c).collect();
-                let changed = self
-                    .with_registry(|reg| reg.retain_stuck(host, stuck_channels.clone()))?
-                    .expect("a needs-revert grant can always retain");
-                if changed {
-                    // Progress worth recording; per-retry churn is stdout only.
-                    println!(
-                        "lychgated: {host} revert incomplete, still stuck: {stuck_channels:?}"
-                    );
+                // Same race: a concurrent actor may have finished the revert
+                // between our driver call and this commit, closing the grant.
+                match self.with_registry(|reg| reg.retain_stuck(host, stuck_channels.clone()))? {
+                    Ok(changed) => {
+                        if changed {
+                            // Progress worth recording; per-retry churn is stdout only.
+                            println!(
+                                "lychgated: {host} revert incomplete, still stuck: {stuck_channels:?}"
+                            );
+                        }
+                        Ok(RevertProgress::Stuck {
+                            stuck: stuck_channels,
+                        })
+                    }
+                    // Already closed out from under us — the grant is closed.
+                    Err(RegistryError::Grant(lychgate_core::GrantError::NotOpen)) => {
+                        Ok(RevertProgress::Closed)
+                    }
+                    Err(other) => Err(anyhow::anyhow!("retaining stuck for {host:?}: {other}")),
                 }
-                Ok(RevertProgress::Stuck {
-                    stuck: stuck_channels,
-                })
             }
         }
     }

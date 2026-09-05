@@ -15,11 +15,24 @@ approval_keygen() {
 }
 
 # Emit an [approval] TOML block trusting the key at $1.pub, for appending to an
-# inventory. The full openssh public-key line (with comment) parses; the real
-# SSHSIG path proves that in approval-acceptance.sh.
+# inventory: one ed25519 authenticator and a threshold-1 "default" profile that
+# needs a single proof from it. A host with no [hosts.access] permits every
+# profile, so `open` (no --as) picks "default" and one signature opens the grant.
+# The full openssh public-key line (with comment) parses; the real SSHSIG path is
+# proven in approval-acceptance.sh and the weighted model in authority-acceptance.sh.
 approval_block() {
-    printf '\n[approval]\n[[approval.ed25519]]\nkey-id = "acceptance"\npublic-key = "%s"\n' \
-        "$(cat "$1.pub")"
+    cat <<EOF
+
+[[approval.authenticator]]
+id = "acceptance"
+kind = "ed25519"
+public-key = "$(cat "$1.pub")"
+
+[[approval.profile]]
+id = "default"
+threshold = 1
+factor = [ { authenticator = "acceptance", weight = 1 } ]
+EOF
 }
 
 # open_and_approve <socket> <host> <ttl> <approver_key>
