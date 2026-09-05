@@ -85,6 +85,8 @@ phase "approval acceptance" sh e2e/approval-acceptance.sh
 
 phase "authority acceptance" sh e2e/authority-acceptance.sh
 
+phase "totp acceptance" sh e2e/totp-acceptance.sh
+
 # The oracle self-test: with the dead-man sabotaged away, revert-under-kill
 # MUST fail. A harness that passes here detects nothing.
 echo ""

@@ -721,12 +721,16 @@ fn a_second_daemon_is_refused_while_the_first_listens_and_a_stale_socket_is_not(
     );
 
     // ...and a fresh daemon replaces the stale socket rather than wedging.
-    // Under the parallel test load this suite runs at, the replacement can
-    // be slow to settle its first pass; retry the status read a few times so
-    // the claim (it comes up and answers) is observed reliably, not raced.
+    // Under the full-workspace parallel load this suite runs at (especially the
+    // guest build phase, where every crate's tests run at once on a small VM),
+    // the replacement can be slow to bind and settle its first pass; retry the
+    // status read with a generous budget so the claim (it comes up and answers)
+    // is observed reliably, not raced against a loaded scheduler. A short budget
+    // here has flaked; ~20s is load headroom, not a masked hang — a genuinely
+    // wedged replacement still fails the assert below.
     let replacement = Daemon::start(&inv, &state_dir);
     let mut out = cli(&replacement.socket, &["status"]);
-    for _ in 0..10 {
+    for _ in 0..100 {
         if out.status.success() {
             break;
         }
