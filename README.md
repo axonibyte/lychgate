@@ -39,9 +39,11 @@ daemon it belongs to. Opening a grant is gated on a **weighted-threshold
 approval authority** (EOS/Antelope model): `open --as <profile>` records a
 pending request and returns a challenge, and the grant opens only once the
 profile's threshold is met by weighted factors — operator signatures
-(`ssh-keygen -Y sign`, an Ed25519 key in the allowed-signers set) handed back
-through `lychgate approve`, nested groups, and/or an elapsed `wait`. Proofs
-accumulate across calls and a wait matures on the daemon's own loop. The
+(`ssh-keygen -Y sign`, an Ed25519 key in the allowed-signers set), TOTP codes
+from an authenticator app (RFC 6238, single-use), nested groups, and/or an
+elapsed `wait`, handed back through `lychgate approve`. Proofs accumulate across
+calls and a wait matures on the daemon's own loop, so a profile can demand
+genuine multi-factor approval. The
 daemon holds grant state durably, serves the CLI over
 an owner-only unix socket, journals every transition (never a credential or
 token), and re-establishes a console tunnel that outlived a restart. A `--dry-run` mode
@@ -169,28 +171,37 @@ threshold — where a factor is an authenticator, a group, or a `wait`. It is
 required outside `--dry-run`; a policy with no profile refuses the daemon's start.
 
 ```toml
-# Authenticators are leaf proofs. Only ed25519 (an SSHSIG signed with
-# `ssh-keygen -Y sign -n lychgate-approval`) is built today; totp/password/fido2
-# parse but are refused at load until their sub-milestone. The full openssh
-# public-key line (with comment) is accepted; a public key is inline, a secret
-# would be a file path.
+# Authenticators are leaf proofs. ed25519 (an SSHSIG signed with
+# `ssh-keygen -Y sign -n lychgate-approval`) and totp (an RFC 6238 code from an
+# authenticator app) are built; password/fido2 parse but are refused at load
+# until their sub-milestone. A public key is inline (the full openssh line, with
+# comment); a secret is always a mode-600 file path, never inline.
 [[approval.authenticator]]
 id = "oncall-key"
 kind = "ed25519"
 public-key = "ssh-ed25519 AAAA... oncall@phone"
 
-# A group is itself a threshold over weighted factors.
+[[approval.authenticator]]
+id = "oncall-totp"
+kind = "totp"
+secret-file = "/usr/local/etc/lychgate/oncall.totp"   # base32, mode 600
+
+# A group is itself a threshold over weighted factors — here, MFA: an SSHSIG AND
+# a TOTP code from the on-call operator.
 [[approval.group]]
 id = "SYSADMIN"
-threshold = 1
-factor = [ { authenticator = "oncall-key", weight = 1 } ]
+threshold = 2
+factor = [
+  { authenticator = "oncall-key",  weight = 1 },
+  { authenticator = "oncall-totp", weight = 1 },
+]
 
 # A profile is the gate an open is evaluated against.
 [[approval.profile]]
 id = "claude"
 threshold = 3
 factor = [
-  { group = "SYSADMIN", weight = 2 },   # a grant from a sysadmin
+  { group = "SYSADMIN", weight = 2 },   # a full MFA grant from a sysadmin
   { wait  = "1h",        weight = 1 },   # ...plus an hour's cool-off
 ]
 ```

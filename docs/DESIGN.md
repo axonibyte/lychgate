@@ -73,9 +73,9 @@ Policy decisions, all enforced in core and all tested:
   (the vnc tunnel) that outlived a restart is re-established. All four
   channels are live: a grant flips PermitRootLogin via a verified drop-in,
   installs break-glass keys in the fence, enables a break-glass iDRAC account,
-  and brings up a console tunnel with a rotated password. As of M8a.2 opening is
-  gated on a weighted-threshold approval authority (Ed25519/SSHSIG factors, with
-  groups and waits). `--dry-run` registers no drivers and accepts any approval token,
+  and brings up a console tunnel with a rotated password. As of M8a.3 opening is
+  gated on a weighted-threshold approval authority (Ed25519/SSHSIG and TOTP
+  factors, with groups and waits). `--dry-run` registers no drivers and accepts any approval token,
   opening grants as pure bookkeeping.
 - **`lychgate`** — the operator CLI, built for FreeBSD, Linux, and Windows
   (an operator's workstation may be anything; the daemon's host may not).
@@ -119,8 +119,8 @@ agree on the signed bytes with no field-order or delimiter ambiguity.
 modelled on EOS/Antelope permissions. An authority is a `threshold` over
 weighted factors; a factor is one of:
 
-- an **authenticator** — a leaf proof identified by id (an Ed25519 SSHSIG today;
-  TOTP, password and FIDO2 in later sub-milestones);
+- an **authenticator** — a leaf proof identified by id (an Ed25519 SSHSIG or a
+  TOTP code today; password and FIDO2 in later sub-milestones);
 - a **group** — itself an authority, satisfied when *its* threshold is met, so
   gates nest into a DAG;
 - a **wait** — satisfied once a duration has elapsed since the request.
@@ -141,12 +141,23 @@ wait's weight accrues over time, so a pending grant persists *which
 authenticators are satisfied* (never a secret) and the reap loop opens it the
 instant the weighted sum crosses the threshold — a `wait` can open a grant with
 no further human action. `approve` verifies each proof against the request's own
-challenge (`AuthorityModel::verify_ed25519` for the Ed25519 kind: parse the
-SSHSIG envelope, check the namespace, match the signer to a configured
-authenticator, verify over the challenge) and records the authenticator it
-satisfies. No bespoke signing tool and no hand-rolled crypto — the `ssh-key`
-crate does the verify; trust reduces to the configured public keys, and
+challenge, routing by proof shape: an SSHSIG blob to `verify_ed25519` (parse the
+envelope, check the namespace, match the signer to a configured key, verify over
+the challenge); an all-digits code to TOTP, tried against every configured secret
+(RFC 6238, ±1 step) and spent once against a persisted single-use ledger. No
+bespoke signing tool and no hand-rolled crypto — `ssh-key` and RustCrypto's
+`hmac`/`sha1` do the verify; trust reduces to the configured keys/secrets, and
 revocation is an inventory edit.
+
+A TOTP code, unlike an SSHSIG, does **not** bind to the host or challenge — it
+proves possession of the shared secret at a moment, nothing more. The single-use
+ledger stops replay (even across a restart within the window), the code is
+recorded on the specific pending grant it was submitted to, the window is short,
+and the socket is root-only; the weighted model prices this weakness through
+weights (a code alone rarely meets a threshold worth guarding). That is *why* the
+gate is weighted, not a reason TOTP is unsafe. The secret is read from a mode-600
+file at startup (fail-closed on absence), never inline in the world-readable
+inventory.
 
 A failed approval is journaled (`ApprovalDenied`, with a reason) — a deliberate
 departure from "refusals journal nothing", because a rejected authorization is
@@ -187,4 +198,4 @@ step, is [ROADMAP.md](ROADMAP.md). The sketch below is the shape of it:
    session can request and use a grant without shell access, drill mode
    (scheduled open-and-revert against a canary host, because a revert path never
    observed firing is indistinguishable from one that does not work), and the
-   remaining authenticator kinds (TOTP, password, FIDO2).
+   remaining authenticator kinds (password, FIDO2).

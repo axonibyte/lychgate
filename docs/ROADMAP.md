@@ -526,12 +526,47 @@ between the reap loop and an operator close.
 threshold is met — by proofs, by an elapsed wait, or a mix — and never below it;
 an unconfigured signer is refused. Verified green on both reaper guests.
 
-### M8a.3 onward — PLANNED
+### M8a.3 — TOTP authenticator (RFC 6238) — DONE (2026-09-05), bumps to v0.7.0
 
-- **M8a.3 TOTP** (RFC 6238 over RustCrypto hmac+sha1, RFC-6238 Appendix-B KAT, a
-  single-use consumed-code ledger persisted like the store, secret from a
-  mode-600 file), **M8a.4 password** (a salted-hash verifier from a file — the
-  weakest, replayable factor, documented), and **M8a.5 FIDO2** (CTAP2 assertion;
+TOTP joins Ed25519 as an authenticator kind behind the finished engine, so a
+profile can require a code from an authenticator app — and, with an Ed25519
+factor, express genuine multi-factor approval. `core/src/totp.rs` is pure: it
+computes HOTP(secret, counter) via HMAC-SHA1 (RustCrypto) and the RFC 4226 §5.3
+truncation, and checks a submitted code against a ±1-step window, returning the
+matched counter. The parameters are the app defaults (SHA-1, 30s, 6 digits).
+
+Decisions, resolved at milestone start: RFC 6238 over RustCrypto `hmac`+`sha1`
+with the truncation ours (KAT'd against RFC 4226 Appendix D); a **base32 secret
+from a mode-600 file**, read at daemon start (fail-closed on a missing/malformed
+file); **auto-detect + try-all routing** (`approve` still takes one token — an
+SSHSIG blob routes to the Ed25519 verify, an all-digits code to TOTP, tried
+against every configured secret); a **dedicated single-use ledger file**
+(totp-ledger.json, the grant-store lock/tmp-rename idiom, pruned to the window)
+so a code cannot be replayed even across a daemon restart within its window.
+
+**Deliverables** — `core/src/totp.rs` (TotpSecret base32 parse, `code_at`,
+`matches`); the `totp` authenticator kind (`secret-file`) in `authority.rs`;
+`daemon/src/totp_ledger.rs`; startup secret loading and the `verify_proof`
+dispatch in the daemon; the `ApprovalError::AlreadyUsed` replay refusal. Adds the
+`hmac`/`sha1` deps. Bumps to **v0.7.0** (additive — existing policies keep
+working).
+
+**Tests** — the RFC 4226 Appendix-D KAT and the ±skew boundary
+(mutation-checked); the ledger consumes once, refuses replays across a reload,
+prunes, and refuses a corrupt file; the daemon opens a single-factor TOTP
+profile, refuses a spent code on a fresh grant, refuses a wrong code, and refuses
+a missing secret file at startup; `e2e/totp-acceptance.sh` proves a real code
+opens, the replay is refused, and a **two-factor profile (Ed25519 AND TOTP)**
+opens only after both — the real MFA proof — on both guests.
+
+**Acceptance** — met: a profile can require a TOTP factor; a code opens exactly
+once and cannot be replayed; a genuine two-factor gate needs both an SSHSIG and a
+code. Verified green on both reaper guests.
+
+### M8a.4 onward — PLANNED
+
+- **M8a.4 password** (a salted-hash verifier from a file — the weakest,
+  replayable factor, documented) and **M8a.5 FIDO2** (CTAP2 assertion;
   ES256/EdDSA over `authData || challenge_hash`), each a new authenticator kind
   behind the finished engine, landing green and guest-verified.
 - MCP server exposing `open` (returns pending until approved), `status`,
