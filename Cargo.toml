@@ -21,4 +21,9 @@ libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+# Approval crypto (M8): SSHSIG parse + ed25519 verify (reusing operators' ssh
+# keys), and base64url for the challenge/token codecs. Vetted RustCrypto; no
+# hand-rolled crypto. Kept lean — only the ed25519 signature type is enabled.
+ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "std"] }
+data-encoding = "2"
 lychgate-core = { path = "core" }

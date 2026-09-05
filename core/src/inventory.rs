@@ -13,6 +13,32 @@ use serde::{Deserialize, Serialize};
 pub struct Inventory {
     #[serde(default)]
     pub hosts: Vec<Host>,
+    /// Deployment-wide operator-approval policy. When present, opening any
+    /// grant requires a token from one of the configured approvers. Absent, a
+    /// daemon must decide its own default (lychgated refuses to serve without
+    /// an approver unless --dry-run) — see the daemon, not the schema.
+    #[serde(default)]
+    pub approval: Option<ApprovalConfig>,
+}
+
+/// The approvers a deployment accepts. Any one of them may approve (the
+/// fail-closed `AnyOf` composite); an empty table is refused at load. TOTP and
+/// FIDO2 approver lists land in later sub-milestones.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalConfig {
+    #[serde(default)]
+    pub ed25519: Vec<Ed25519Approver>,
+}
+
+/// One SSHSIG Ed25519 approver: an identity and the OpenSSH public key whose
+/// `ssh-keygen -Y sign -n lychgate-approval` signatures are accepted. The key
+/// is public, so it is inline (unlike a secret, which is always a file path).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct Ed25519Approver {
+    pub key_id: String,
+    pub public_key: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -272,6 +298,16 @@ pub enum InventoryError {
         other: String,
         port: u16,
     },
+    /// An [approval] table with no approvers — fail-closed: nothing could ever
+    /// approve a grant.
+    ApprovalNoApprovers,
+    ApprovalEmptyKeyId,
+    ApprovalDuplicateKeyId(String),
+    /// A configured approver public key does not parse.
+    ApprovalBadPublicKey {
+        id: String,
+        message: String,
+    },
 }
 
 impl fmt::Display for InventoryError {
@@ -357,6 +393,20 @@ impl fmt::Display for InventoryError {
             InventoryError::VncLocalPortConflict { host, other, port } => write!(
                 f,
                 "host {host:?}: local_port {port} is also forwarded by host {other:?}; two hosts cannot share one daemon-local forward port"
+            ),
+            InventoryError::ApprovalNoApprovers => write!(
+                f,
+                "[approval] is present but lists no approvers; opening a grant could never be approved (fail-closed)"
+            ),
+            InventoryError::ApprovalEmptyKeyId => {
+                write!(f, "an [[approval.ed25519]] entry has an empty key-id")
+            }
+            InventoryError::ApprovalDuplicateKeyId(id) => {
+                write!(f, "approver key-id {id:?} appears more than once")
+            }
+            InventoryError::ApprovalBadPublicKey { id, message } => write!(
+                f,
+                "approver {id:?}: public-key does not parse: {message}"
             ),
         }
     }
@@ -517,6 +567,29 @@ impl Inventory {
                     }
                 }
                 (None, false) => {}
+            }
+        }
+
+        // Deployment-wide approval policy (not per-host).
+        if let Some(approval) = &self.approval {
+            if approval.ed25519.is_empty() {
+                return Err(InventoryError::ApprovalNoApprovers);
+            }
+            let mut ids = BTreeSet::new();
+            for e in &approval.ed25519 {
+                if e.key_id.is_empty() {
+                    return Err(InventoryError::ApprovalEmptyKeyId);
+                }
+                if !ids.insert(&e.key_id) {
+                    return Err(InventoryError::ApprovalDuplicateKeyId(e.key_id.clone()));
+                }
+                // A bad approver key must fail at load, not at 03:00.
+                if let Err(err) = crate::approval::parse_ssh_public_key(&e.public_key) {
+                    return Err(InventoryError::ApprovalBadPublicKey {
+                        id: e.key_id.clone(),
+                        message: err.to_string(),
+                    });
+                }
             }
         }
         Ok(())

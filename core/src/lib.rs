@@ -4,6 +4,7 @@
 //! observation (`Grant::status(now)`), so no background thread is required
 //! for a lapsed grant to read as expired.
 
+pub mod approval;
 pub mod bmc;
 pub mod channel;
 pub mod deadman;
@@ -16,14 +17,18 @@ pub mod ssh;
 pub mod ttl;
 pub mod vnc;
 
+pub use approval::{
+    parse_ssh_public_key, AnyOf, ApprovalError, ApprovalRequest, ApprovalVerifier, SshSigVerifier,
+    APPROVAL_NAMESPACE,
+};
 pub use channel::{
     apply_channels, reestablish_channels, revert_channels, ApplyOutcome, ChannelDriver,
     ChannelState, DriverError, DriverSet, ReestablishOutcome, RevertOutcome,
 };
 pub use grant::{Grant, GrantError, GrantStatus};
 pub use inventory::{
-    BmcConfig, BmcMethod, BmcTls, Channel, Host, Inventory, InventoryError, Os, SshConfig,
-    VncConfig,
+    ApprovalConfig, BmcConfig, BmcMethod, BmcTls, Channel, Ed25519Approver, Host, Inventory,
+    InventoryError, Os, SshConfig, VncConfig,
 };
 pub use registry::{ExpiredGrant, GrantRegistry, RegistryError};
 pub use snapshot::{GrantRecord, SnapshotError, StateDoc, STATE_VERSION};

@@ -16,6 +16,11 @@
 //! - Any seed that ever found a defect gets promoted into FIXED_SEEDS
 //!   permanently, with a comment naming what it found.
 
+use std::time::UNIX_EPOCH;
+
+use lychgate_core::approval::{
+    parse_ssh_public_key, ApprovalRequest, ApprovalVerifier, SshSigVerifier,
+};
 use lychgate_core::bmc::parse_account;
 use lychgate_core::proto::decode_request;
 use lychgate_core::ssh::{fence_remove, fence_upsert, parse_effective_posture};
@@ -94,6 +99,13 @@ const TOKENS: &[&str] = &[
     "{target}",
     "{password_file}",
     "[hosts.vnc]",
+    "approve",
+    "token",
+    "[approval]",
+    "ssh-ed25519 ",
+    "lg1.req.",
+    "-----BEGIN SSH SIGNATURE-----",
+    "U1NIU0lH",
     "0",
     "1",
     "2",
@@ -212,6 +224,28 @@ fn check(input: &str) {
     // BMC AccountService responses arrive from the iDRAC over the network.
     if let Err(e) = parse_account(input, "breakglass") {
         assert!(!e.to_string().is_empty(), "empty bmc error for {input:?}");
+    }
+    // Approval material — a configured key and a pasted SSHSIG token — arrives
+    // as operator-supplied strings: hostile by definition.
+    if let Err(e) = parse_ssh_public_key(input) {
+        assert!(
+            !e.to_string().is_empty(),
+            "empty approval key error for {input:?}"
+        );
+    }
+    let verifier = SshSigVerifier::new(vec![(
+        "fuzz".to_string(),
+        parse_ssh_public_key(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIOBaP66AKPs9nRYDzUrJjGJMYxn0rIWv/tNftYWIu25",
+        )
+        .expect("a valid fixed key"),
+    )]);
+    let req = ApprovalRequest::new([0u8; 32], "h".to_string(), 3600, UNIX_EPOCH);
+    if let Err(e) = verifier.verify(&req, input) {
+        assert!(
+            !e.to_string().is_empty(),
+            "empty approval verify error for {input:?}"
+        );
     }
 }
 

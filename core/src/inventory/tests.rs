@@ -806,3 +806,98 @@ fn an_unrecognized_vnc_field_is_rejected_rather_than_ignored() {
         Err(InventoryError::Toml(_))
     ));
 }
+
+// --- [approval] config (M8) ------------------------------------------------
+
+const APPROVER_KEY: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIOBaP66AKPs9nRYDzUrJjGJMYxn0rIWv/tNftYWIu25 alice";
+
+#[test]
+fn a_full_approval_config_parses_with_its_approver() {
+    let toml = format!(
+        r#"
+        [approval]
+        [[approval.ed25519]]
+        key-id = "alice"
+        public-key = "{APPROVER_KEY}"
+        "#
+    );
+    let inv = Inventory::parse(&toml).unwrap();
+    let approval = inv.approval.as_ref().unwrap();
+    assert_eq!(approval.ed25519.len(), 1);
+    assert_eq!(approval.ed25519[0].key_id, "alice");
+}
+
+#[test]
+fn an_approval_table_with_no_approvers_is_refused() {
+    let toml = r#"
+        [approval]
+    "#;
+    assert_eq!(
+        Inventory::parse(toml),
+        Err(InventoryError::ApprovalNoApprovers)
+    );
+}
+
+#[test]
+fn an_empty_approver_key_id_is_refused() {
+    let toml = format!(
+        r#"
+        [[approval.ed25519]]
+        key-id = ""
+        public-key = "{APPROVER_KEY}"
+        "#
+    );
+    assert_eq!(
+        Inventory::parse(&toml),
+        Err(InventoryError::ApprovalEmptyKeyId)
+    );
+}
+
+#[test]
+fn a_duplicate_approver_key_id_is_refused() {
+    let toml = format!(
+        r#"
+        [[approval.ed25519]]
+        key-id = "alice"
+        public-key = "{APPROVER_KEY}"
+
+        [[approval.ed25519]]
+        key-id = "alice"
+        public-key = "{APPROVER_KEY}"
+        "#
+    );
+    assert_eq!(
+        Inventory::parse(&toml),
+        Err(InventoryError::ApprovalDuplicateKeyId("alice".into()))
+    );
+}
+
+#[test]
+fn a_bad_approver_public_key_is_refused_at_load() {
+    let toml = r#"
+        [[approval.ed25519]]
+        key-id = "alice"
+        public-key = "ssh-ed25519 this-is-not-base64"
+    "#;
+    match Inventory::parse(toml) {
+        Err(InventoryError::ApprovalBadPublicKey { id, .. }) => assert_eq!(id, "alice"),
+        other => panic!("wanted ApprovalBadPublicKey, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_unrecognized_approver_field_is_rejected() {
+    let toml = format!(
+        r#"
+        [[approval.ed25519]]
+        key-id = "alice"
+        public-key = "{APPROVER_KEY}"
+        favourite_colour = "red"
+        "#
+    );
+    assert!(matches!(
+        Inventory::parse(&toml),
+        Err(InventoryError::Toml(_))
+    ));
+}
