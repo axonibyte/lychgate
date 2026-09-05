@@ -124,3 +124,18 @@ fn parse_account_never_panics_on_arbitrary_input() {
         let _ = parse_account(body, "breakglass");
     }
 }
+
+#[test]
+fn generate_len_defaults_to_delegating_to_generate() {
+    // The bmc generator is fixed-length: the default generate_len ignores the
+    // requested length. (The vnc generator overrides this; proven there.)
+    struct Fixed;
+    impl PasswordGen for Fixed {
+        fn generate(&mut self) -> Secret {
+            Secret::new("FIXED".to_string())
+        }
+    }
+    let mut g = Fixed;
+    assert_eq!(g.generate_len(4).reveal(), "FIXED");
+    assert_eq!(g.generate_len(64).reveal(), "FIXED");
+}

@@ -45,6 +45,13 @@ impl fmt::Display for Secret {
 /// a seeded stub so request-body assertions are deterministic.
 pub trait PasswordGen: Send {
     fn generate(&mut self) -> Secret;
+
+    /// Generate a password of a specific length. The bmc generator is
+    /// fixed-length, so the default ignores `len` and delegates to `generate`;
+    /// the vnc generator, whose length is configurable per host, overrides it.
+    fn generate_len(&mut self, _len: usize) -> Secret {
+        self.generate()
+    }
 }
 
 /// The character set: iDRAC rejects some punctuation in passwords, so this

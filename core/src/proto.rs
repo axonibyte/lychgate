@@ -229,10 +229,16 @@ pub struct Response {
     pub outcome: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub grants: Option<Vec<GrantLine>>,
-    /// A one-time credential for the operator (a BMC break-glass password).
-    /// Carried to the CLI and shown once; never journaled.
+    /// A one-time credential for the operator (a BMC break-glass password, or
+    /// a one-time VNC password). Carried to the CLI and shown once; never
+    /// journaled.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub secret: Option<String>,
+    /// How the CLI labels that secret, e.g. "break-glass BMC password" or
+    /// "one-time VNC password". Absent, the CLI falls back to the BMC wording,
+    /// so an older daemon's responses print exactly as before.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub secret_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +258,7 @@ impl Response {
             outcome: None,
             grants: None,
             secret: None,
+            secret_label: None,
         }
     }
 

@@ -300,3 +300,97 @@ fn a_channel_that_fails_apply_and_wont_revert_is_stuck_itself() {
         other => panic!("wanted Failed, got {other:?}"),
     }
 }
+
+// --- reestablish + suspend (M7) --------------------------------------------
+
+#[test]
+fn reestablish_restores_when_every_channel_reads_open() {
+    // A resource that survived the restart reads Open.
+    let log: CallLog = Arc::new(Mutex::new(Vec::new()));
+    let mut set = DriverSet::new();
+    set.register(FakeDriver::already_open(
+        Channel::Vnc,
+        Script::Succeed,
+        Arc::clone(&log),
+    ))
+    .unwrap();
+    assert_eq!(
+        reestablish_channels(&mut set, &host(), &[Channel::Vnc]),
+        ReestablishOutcome::Restored
+    );
+    // The default reestablish delegates to verify: the log is the proof.
+    assert_eq!(*log.lock().unwrap(), vec![(Channel::Vnc, "verify")]);
+}
+
+#[test]
+fn a_channel_that_reads_closed_after_a_restart_is_lost() {
+    // open=false: verify reports Closed, so re-establishment fails.
+    let (mut set, _log) = set_with(&[(Channel::Vnc, Script::Succeed)]);
+    match reestablish_channels(&mut set, &host(), &[Channel::Vnc]) {
+        ReestablishOutcome::Lost { lost } => {
+            assert_eq!(lost.len(), 1);
+            assert_eq!(lost[0].0, Channel::Vnc);
+            assert!(lost[0].1.to_string().contains("closed"), "{}", lost[0].1);
+        }
+        other => panic!("wanted Lost, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_channel_with_no_driver_is_lost_on_reestablish() {
+    let mut set = DriverSet::new();
+    match reestablish_channels(&mut set, &host(), &[Channel::Vnc]) {
+        ReestablishOutcome::Lost { lost } => {
+            assert_eq!(lost[0].0, Channel::Vnc);
+            assert!(lost[0].1.to_string().contains("no driver"), "{}", lost[0].1);
+        }
+        other => panic!("wanted Lost, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_channel_that_errors_on_reestablish_is_lost() {
+    struct ErrReestablish;
+    impl ChannelDriver for ErrReestablish {
+        fn channel(&self) -> Channel {
+            Channel::Vnc
+        }
+        fn apply(&mut self, _: &Host) -> Result<(), DriverError> {
+            Ok(())
+        }
+        fn revert(&mut self, _: &Host) -> Result<(), DriverError> {
+            Ok(())
+        }
+        fn verify(&mut self, _: &Host) -> Result<ChannelState, DriverError> {
+            Ok(ChannelState::Open)
+        }
+        fn reestablish(&mut self, _: &Host) -> Result<ChannelState, DriverError> {
+            Err(DriverError("tunnel would not come back up".into()))
+        }
+    }
+    let mut set = DriverSet::new();
+    set.register(Box::new(ErrReestablish)).unwrap();
+    match reestablish_channels(&mut set, &host(), &[Channel::Vnc]) {
+        ReestablishOutcome::Lost { lost } => {
+            assert!(
+                lost[0].1.to_string().contains("come back up"),
+                "{}",
+                lost[0].1
+            );
+        }
+        other => panic!("wanted Lost, got {other:?}"),
+    }
+}
+
+#[test]
+fn suspend_all_suspends_every_driver_without_reverting() {
+    let (mut set, log) = set_with(&[
+        (Channel::Ssh, Script::Succeed),
+        (Channel::Vnc, Script::Succeed),
+    ]);
+    set.suspend_all();
+    let calls: Vec<&'static str> = log.lock().unwrap().iter().map(|(_, c)| *c).collect();
+    // Both suspended; the second oracle is the absence of any revert.
+    assert_eq!(calls.iter().filter(|c| **c == "suspend").count(), 2);
+    assert!(!calls.contains(&"revert"), "{calls:?}");
+}

@@ -53,6 +53,18 @@ impl FakeDriver {
             secret: Some(crate::bmc::Secret::new(secret.to_string())),
         })
     }
+
+    /// A fake that already reads as open — models a durable resource that
+    /// survived a restart, so `reestablish` (default = verify) reports Open.
+    pub fn already_open(channel: Channel, script: Script, log: CallLog) -> Box<FakeDriver> {
+        Box::new(FakeDriver {
+            channel,
+            script,
+            log,
+            open: true,
+            secret: None,
+        })
+    }
 }
 
 impl ChannelDriver for FakeDriver {
@@ -104,5 +116,12 @@ impl ChannelDriver for FakeDriver {
 
     fn take_secret(&mut self) -> Option<crate::bmc::Secret> {
         self.secret.take()
+    }
+
+    fn suspend(&mut self) {
+        // Models killing a daemon-held resource (the tunnel) without
+        // reverting: the "host" now reads closed, but no revert ran.
+        self.log.lock().unwrap().push((self.channel, "suspend"));
+        self.open = false;
     }
 }

@@ -50,6 +50,23 @@ pub trait ChannelDriver {
     fn take_secret(&mut self) -> Option<crate::bmc::Secret> {
         None
     }
+
+    /// Re-assert a daemon-held ephemeral resource for a grant that is durably
+    /// Open after a restart. Host-side channels have nothing to re-assert, so
+    /// the default just reads actual state — drift (a posture reverted while
+    /// the daemon was down) then surfaces as `Closed`. A driver that holds a
+    /// process (the vnc tunnel) overrides this to bring it back up, and
+    /// deliberately does NOT re-run the full apply: re-rotating a credential
+    /// the operator already holds would break their live session.
+    fn reestablish(&mut self, host: &Host) -> Result<ChannelState, DriverError> {
+        self.verify(host)
+    }
+
+    /// Tear down any daemon-held ephemeral resource WITHOUT reverting host
+    /// state — for a graceful daemon shutdown, where grants stay durably open
+    /// and are restored on the next boot. Host-side channels have nothing to
+    /// suspend; the default is a no-op.
+    fn suspend(&mut self) {}
 }
 
 /// The registered drivers, keyed by channel. Until M4 the production set is
@@ -93,6 +110,15 @@ impl DriverSet {
             .copied()
             .filter(|c| self.drivers.contains_key(c))
             .collect()
+    }
+
+    /// Suspends every registered driver's ephemeral resources (a graceful
+    /// daemon shutdown). Host-side channels no-op; the vnc driver kills its
+    /// held tunnels without reverting the target.
+    pub fn suspend_all(&mut self) {
+        for driver in self.drivers.values_mut() {
+            driver.suspend();
+        }
     }
 }
 
@@ -184,6 +210,53 @@ pub fn revert_channels(set: &mut DriverSet, host: &Host, channels: &[Channel]) -
         RevertOutcome::Reverted
     } else {
         RevertOutcome::Stuck { stuck }
+    }
+}
+
+/// The outcome of re-establishing a durably-open grant's daemon-held
+/// resources after a daemon restart.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReestablishOutcome {
+    /// Every channel is back up, or had nothing to re-assert.
+    Restored,
+    /// Some channels could not be restored — they errored, read back closed,
+    /// or have no registered driver. The grant must be reverted rather than
+    /// left half-reachable: reachability we cannot restore, we retract.
+    Lost { lost: Vec<(Channel, DriverError)> },
+}
+
+/// Re-establishes each channel's daemon-held resource for a grant that is
+/// durably Open. Mirror of `apply_channels`/`revert_channels`. A channel that
+/// errors, reads back `Closed`, or has no driver is collected into `lost`;
+/// otherwise the grant's reachability is intact.
+pub fn reestablish_channels(
+    set: &mut DriverSet,
+    host: &Host,
+    channels: &[Channel],
+) -> ReestablishOutcome {
+    let mut lost = Vec::new();
+    for &channel in channels {
+        match set.drivers.get_mut(&channel) {
+            None => lost.push((
+                channel,
+                DriverError(format!("no driver registered for channel {channel:?}")),
+            )),
+            Some(driver) => match driver.reestablish(host) {
+                Ok(ChannelState::Open) => {}
+                Ok(ChannelState::Closed) => lost.push((
+                    channel,
+                    DriverError(format!(
+                        "channel {channel:?} read back closed after re-establishment"
+                    )),
+                )),
+                Err(e) => lost.push((channel, e)),
+            },
+        }
+    }
+    if lost.is_empty() {
+        ReestablishOutcome::Restored
+    } else {
+        ReestablishOutcome::Lost { lost }
     }
 }
 

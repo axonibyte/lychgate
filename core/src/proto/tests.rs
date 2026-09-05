@@ -266,3 +266,23 @@ fn responses_carry_the_current_protocol_version() {
     let v: serde_json::Value = serde_json::from_str(&ok.encode()).unwrap();
     assert_eq!(v["proto"], 2);
 }
+
+#[test]
+fn a_response_secret_label_round_trips_and_is_omitted_when_absent() {
+    let mut r = Response::ok();
+    r.secret = Some("pw".to_string());
+    r.secret_label = Some("one-time VNC password".to_string());
+    let line = r.encode();
+    assert!(
+        line.contains("\"secret_label\":\"one-time VNC password\""),
+        "{line}"
+    );
+    assert_eq!(
+        Response::decode(&line).unwrap().secret_label.as_deref(),
+        Some("one-time VNC password")
+    );
+
+    // Absent by default: the field must not appear, so a daemon that never
+    // sets it prints exactly as before (the bmc acceptance greps that line).
+    assert!(!Response::ok().encode().contains("secret_label"));
+}
