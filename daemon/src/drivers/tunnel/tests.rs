@@ -6,6 +6,20 @@ use std::sync::Arc;
 
 use lychgate_core::Inventory;
 
+// Every test here binds a real ephemeral 127.0.0.1 socket, and `free_port()`
+// picks a port then releases it. Run in parallel, one test can bind the exact
+// port another is probing: a Listen-mode fake grabbing a DontListen test's
+// freed port makes that test's readiness probe see a *neighbour's* listener and
+// report a forward "up" that never came up. Serialize them behind one lock —
+// the assertions are untouched; they simply stop racing each other for a port.
+// Poisoning is recovered from so a single failure does not cascade into the
+// rest reporting a lock error instead of their real result.
+static PORT_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn port_guard() -> std::sync::MutexGuard<'static, ()> {
+    PORT_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn free_port() -> u16 {
     TcpListener::bind(("127.0.0.1", 0))
         .unwrap()
@@ -111,6 +125,7 @@ fn short(spawner: Box<dyn TunnelSpawner>) -> TunnelSet {
 
 #[test]
 fn up_brings_the_forward_up_and_down_tears_it_down() {
+    let _guard = port_guard();
     let port = free_port();
     let (spawner, _alive) = FakeSpawner::new(Mode::Listen);
     let mut ts = short(spawner);
@@ -127,6 +142,7 @@ fn up_brings_the_forward_up_and_down_tears_it_down() {
 
 #[test]
 fn down_is_idempotent() {
+    let _guard = port_guard();
     let port = free_port();
     let (spawner, _alive) = FakeSpawner::new(Mode::Listen);
     let mut ts = short(spawner);
@@ -139,6 +155,7 @@ fn down_is_idempotent() {
 
 #[test]
 fn down_of_a_never_opened_host_succeeds() {
+    let _guard = port_guard();
     let port = free_port();
     let (spawner, _alive) = FakeSpawner::new(Mode::Listen);
     let mut ts = short(spawner);
@@ -148,6 +165,7 @@ fn down_of_a_never_opened_host_succeeds() {
 
 #[test]
 fn up_fails_and_retains_nothing_when_the_forward_never_listens() {
+    let _guard = port_guard();
     let port = free_port();
     let (spawner, _alive) = FakeSpawner::new(Mode::DontListen);
     let mut ts = short(spawner);
@@ -162,6 +180,7 @@ fn up_fails_and_retains_nothing_when_the_forward_never_listens() {
 
 #[test]
 fn up_propagates_a_spawn_failure() {
+    let _guard = port_guard();
     let port = free_port();
     let (spawner, _alive) = FakeSpawner::new(Mode::FailSpawn);
     let mut ts = short(spawner);
@@ -171,6 +190,7 @@ fn up_propagates_a_spawn_failure() {
 
 #[test]
 fn a_child_that_died_on_its_own_reads_as_not_listening() {
+    let _guard = port_guard();
     let port = free_port();
     let (spawner, alive) = FakeSpawner::new(Mode::Listen);
     let mut ts = short(spawner);
@@ -189,6 +209,7 @@ fn down_reports_a_stray_still_holding_the_port_rather_than_killing_it() {
     // Models a boot orphan: a forward on the fixed port that this TunnelSet
     // does not own. down must not silently succeed (fail-open), nor kill an
     // arbitrary process by port — it reports the port stuck.
+    let _guard = port_guard();
     let port = free_port();
     let _squatter = TcpListener::bind(("127.0.0.1", port)).unwrap();
     let (spawner, _alive) = FakeSpawner::new(Mode::Listen);
