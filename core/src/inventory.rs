@@ -29,6 +29,9 @@ pub struct Host {
     /// Required exactly when the host declares a `bmc` channel.
     #[serde(default)]
     pub bmc: Option<BmcConfig>,
+    /// Required exactly when the host declares a `vnc` channel.
+    #[serde(default)]
+    pub vnc: Option<VncConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -72,6 +75,17 @@ fn default_ssh_port() -> u16 {
     22
 }
 
+fn default_rfb_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_vnc_password_len() -> usize {
+    // Classic RFB VNC-Auth (DES challenge-response) truncates the password to
+    // 8 bytes; a longer value buys nothing on such servers. 8 is the honest
+    // default. See TESTING.md.
+    8
+}
+
 fn default_authorized_keys_path() -> String {
     "/root/.ssh/authorized_keys".to_string()
 }
@@ -111,6 +125,53 @@ pub struct SshConfig {
     /// Overrides the per-OS default drop-in path.
     #[serde(default)]
     pub dropin_path: Option<String>,
+}
+
+/// The `vnc` channel's config: how to reach the hypervisor, where the VM's
+/// RFB server listens on it, which local port lychgated forwards, and the
+/// agnostic commands that set and clear the VM's VNC password. The connection
+/// fields are the channel's own (not `[hosts.ssh]`): a vnc-only host should
+/// not have to declare an ssh channel — which mutates PermitRootLogin — merely
+/// to reach cbsd.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct VncConfig {
+    /// The account lychgated connects to the hypervisor as.
+    pub agent_user: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    /// Passed to ssh -i when set.
+    #[serde(default)]
+    pub identity_file: Option<String>,
+    /// Privilege prefix for the password commands, e.g. "doas".
+    #[serde(default)]
+    pub become_cmd: Option<String>,
+    /// Where the VM's RFB server binds on the hypervisor — the tunnel's remote
+    /// side. Defaults to loopback: RFB should never be world-exposed.
+    #[serde(default = "default_rfb_host")]
+    pub rfb_host: String,
+    /// The RFB port on the hypervisor (the tunnel's remote side).
+    pub rfb_port: u16,
+    /// The port lychgated forwards on the daemon host (the tunnel's local
+    /// side). Fixed per host so verify and boot re-establishment can find it
+    /// without remembering a pid; unique across hosts.
+    pub local_port: u16,
+    /// The VM identifier handed to the password commands as `{target}`.
+    pub target: String,
+    /// Command that sets the VM's VNC password. Must reference
+    /// `{password_file}` (where lychgate stages the fresh password) and may
+    /// reference `{target}`. Validated at load; see `crate::vnc`.
+    pub set_password_cmd: String,
+    /// Command that clears/rotates away the VNC password on revert. May
+    /// reference `{target}`; never `{password_file}`.
+    pub clear_password_cmd: String,
+    #[serde(default = "default_vnc_password_len")]
+    pub password_len: usize,
+    /// Where on the hypervisor lychgate stages the one-time password (mode
+    /// 600, removed immediately after the set command). Substituted as
+    /// `{password_file}`.
+    #[serde(default)]
+    pub password_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -174,6 +235,43 @@ pub enum InventoryError {
         host: String,
         method: String,
     },
+    /// vnc channel needs [hosts.vnc]; and vice versa.
+    VncConfigMissing {
+        host: String,
+    },
+    VncConfigUnused {
+        host: String,
+    },
+    /// A password command template lychgate could not render safely.
+    VncCommandQuoted {
+        host: String,
+        which: &'static str,
+    },
+    VncMissingPasswordFile {
+        host: String,
+    },
+    VncClearHasPasswordFile {
+        host: String,
+    },
+    VncUnknownPlaceholder {
+        host: String,
+        which: &'static str,
+        placeholder: String,
+    },
+    /// A zero port or password length — no auth, or nowhere to forward.
+    VncBadPort {
+        host: String,
+        field: &'static str,
+    },
+    VncBadPasswordLen {
+        host: String,
+    },
+    /// Two hosts forward the same daemon-local port; only one can own it.
+    VncLocalPortConflict {
+        host: String,
+        other: String,
+        port: u16,
+    },
 }
 
 impl fmt::Display for InventoryError {
@@ -224,6 +322,42 @@ impl fmt::Display for InventoryError {
                 f,
                 "host {host:?}: bmc method {method:?} is not implemented yet; only redfish is"
             ),
+            InventoryError::VncConfigMissing { host } => write!(
+                f,
+                "host {host:?} declares a vnc channel but has no [hosts.vnc] config"
+            ),
+            InventoryError::VncConfigUnused { host } => write!(
+                f,
+                "host {host:?} has [hosts.vnc] config but declares no vnc channel; dead config is a typo"
+            ),
+            InventoryError::VncCommandQuoted { host, which } => write!(
+                f,
+                "host {host:?}: {which} contains a single quote; lychgate must own the shell quoting, so a template that quotes its own arguments is refused"
+            ),
+            InventoryError::VncMissingPasswordFile { host } => write!(
+                f,
+                "host {host:?}: set_password_cmd never references {{password_file}}, so the generated password would never reach the target"
+            ),
+            InventoryError::VncClearHasPasswordFile { host } => write!(
+                f,
+                "host {host:?}: clear_password_cmd references {{password_file}}, but the clear command is never handed a password"
+            ),
+            InventoryError::VncUnknownPlaceholder { host, which, placeholder } => write!(
+                f,
+                "host {host:?}: {which} references unknown placeholder {{{placeholder}}}; lychgate would leave it in the command literally"
+            ),
+            InventoryError::VncBadPort { host, field } => write!(
+                f,
+                "host {host:?}: vnc {field} is zero"
+            ),
+            InventoryError::VncBadPasswordLen { host } => write!(
+                f,
+                "host {host:?}: vnc password_len is zero, which is no password at all"
+            ),
+            InventoryError::VncLocalPortConflict { host, other, port } => write!(
+                f,
+                "host {host:?}: local_port {port} is also forwarded by host {other:?}; two hosts cannot share one daemon-local forward port"
+            ),
         }
     }
 }
@@ -240,6 +374,10 @@ impl Inventory {
 
     fn validate(&self) -> Result<(), InventoryError> {
         let mut names = BTreeSet::new();
+        // local_port is a daemon-host resource: two hosts forwarding the same
+        // one would collide, so ownership must be unique across the inventory.
+        let mut local_ports: std::collections::BTreeMap<u16, String> =
+            std::collections::BTreeMap::new();
         for host in &self.hosts {
             if host.name.is_empty() {
                 return Err(InventoryError::EmptyHostName);
@@ -330,8 +468,85 @@ impl Inventory {
                 }
                 (None, false) => {}
             }
+
+            let wants_vnc = host.channels.contains(&Channel::Vnc);
+            match (&host.vnc, wants_vnc) {
+                (None, true) => {
+                    return Err(InventoryError::VncConfigMissing {
+                        host: host.name.clone(),
+                    })
+                }
+                (Some(_), false) => {
+                    return Err(InventoryError::VncConfigUnused {
+                        host: host.name.clone(),
+                    })
+                }
+                (Some(vnc), true) => {
+                    if vnc.rfb_port == 0 {
+                        return Err(InventoryError::VncBadPort {
+                            host: host.name.clone(),
+                            field: "rfb_port",
+                        });
+                    }
+                    if vnc.local_port == 0 {
+                        return Err(InventoryError::VncBadPort {
+                            host: host.name.clone(),
+                            field: "local_port",
+                        });
+                    }
+                    if vnc.password_len == 0 {
+                        return Err(InventoryError::VncBadPasswordLen {
+                            host: host.name.clone(),
+                        });
+                    }
+                    // The password commands are refused here, not at 03:00, if
+                    // lychgate could not render them safely.
+                    if let Err(e) = crate::vnc::check_set_command(&vnc.set_password_cmd) {
+                        return Err(vnc_template_error(&host.name, "set_password_cmd", e));
+                    }
+                    if let Err(e) = crate::vnc::check_clear_command(&vnc.clear_password_cmd) {
+                        return Err(vnc_template_error(&host.name, "clear_password_cmd", e));
+                    }
+                    // Fixed per host, unique across the inventory.
+                    if let Some(other) = local_ports.insert(vnc.local_port, host.name.clone()) {
+                        return Err(InventoryError::VncLocalPortConflict {
+                            host: host.name.clone(),
+                            other,
+                            port: vnc.local_port,
+                        });
+                    }
+                }
+                (None, false) => {}
+            }
         }
         Ok(())
+    }
+}
+
+/// Maps a template refusal from `crate::vnc` onto the inventory error that
+/// names the host and the offending field.
+fn vnc_template_error(
+    host: &str,
+    which: &'static str,
+    e: crate::vnc::VncTemplateError,
+) -> InventoryError {
+    use crate::vnc::VncTemplateError::*;
+    match e {
+        Quoted => InventoryError::VncCommandQuoted {
+            host: host.to_string(),
+            which,
+        },
+        MissingPasswordFile => InventoryError::VncMissingPasswordFile {
+            host: host.to_string(),
+        },
+        ClearHasPasswordFile => InventoryError::VncClearHasPasswordFile {
+            host: host.to_string(),
+        },
+        UnknownPlaceholder(placeholder) => InventoryError::VncUnknownPlaceholder {
+            host: host.to_string(),
+            which,
+            placeholder,
+        },
     }
 }
 

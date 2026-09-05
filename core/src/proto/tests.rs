@@ -17,11 +17,27 @@ fn inventory() -> Inventory {
         os = "freebsd"
         channels = ["vnc"]
 
+        [hosts.vnc]
+        agent_user = "lychgate"
+        rfb_port = 5900
+        local_port = 5959
+        target = "db"
+        set_password_cmd = "set {target} {password_file}"
+        clear_password_cmd = "clear {target}"
+
         [[hosts]]
         name = "web-02"
         address = "10.0.4.12"
         os = "linux"
         channels = ["vnc"]
+
+        [hosts.vnc]
+        agent_user = "lychgate"
+        rfb_port = 5900
+        local_port = 5960
+        target = "web"
+        set_password_cmd = "set {target} {password_file}"
+        clear_password_cmd = "clear {target}"
         "#,
     )
     .expect("test inventory is legal")

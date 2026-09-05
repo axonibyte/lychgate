@@ -15,6 +15,14 @@ fn a_single_host_with_its_fields_parses_intact() {
         address = "10.0.4.11"
         os = "freebsd"
         channels = ["vnc"]
+
+        [hosts.vnc]
+        agent_user = "lychgate"
+        rfb_port = 5900
+        local_port = 5959
+        target = "vm-01"
+        set_password_cmd = "cbsd bhyve-vnc jname={target} vncpasswordfile={password_file} apply=1"
+        clear_password_cmd = "cbsd bhyve-vnc jname={target} vncpassword=none apply=1"
         "#,
     )
     .unwrap();
@@ -27,6 +35,22 @@ fn a_single_host_with_its_fields_parses_intact() {
             channels: vec![Channel::Vnc],
             ssh: None,
             bmc: None,
+            // Defaults fill what the config omits.
+            vnc: Some(VncConfig {
+                agent_user: "lychgate".into(),
+                port: 22,
+                identity_file: None,
+                become_cmd: None,
+                rfb_host: "127.0.0.1".into(),
+                rfb_port: 5900,
+                local_port: 5959,
+                target: "vm-01".into(),
+                set_password_cmd:
+                    "cbsd bhyve-vnc jname={target} vncpasswordfile={password_file} apply=1".into(),
+                clear_password_cmd: "cbsd bhyve-vnc jname={target} vncpassword=none apply=1".into(),
+                password_len: 8,
+                password_file: None,
+            }),
         }]
     );
 }
@@ -41,11 +65,27 @@ fn multiple_hosts_parse_in_declaration_order() {
         os = "linux"
         channels = ["vnc"]
 
+        [hosts.vnc]
+        agent_user = "lychgate"
+        rfb_port = 5900
+        local_port = 5959
+        target = "web"
+        set_password_cmd = "set {target} {password_file}"
+        clear_password_cmd = "clear {target}"
+
         [[hosts]]
         name = "db-01"
         address = "10.0.4.11"
         os = "freebsd"
         channels = ["vnc"]
+
+        [hosts.vnc]
+        agent_user = "lychgate"
+        rfb_port = 5900
+        local_port = 5960
+        target = "db"
+        set_password_cmd = "set {target} {password_file}"
+        clear_password_cmd = "clear {target}"
         "#,
     )
     .unwrap();
@@ -65,10 +105,34 @@ fn host_with(name: &str, address: &str, channels: &str) -> String {
     )
 }
 
+// A fully-valid vnc host: since every channel now requires config, tests that
+// need a host to pass coupling (so a *later* check can fire) use this.
+fn host_with_vnc(name: &str, address: &str, local_port: u16) -> String {
+    format!(
+        r#"
+        [[hosts]]
+        name = "{name}"
+        address = "{address}"
+        os = "linux"
+        channels = ["vnc"]
+
+        [hosts.vnc]
+        agent_user = "lychgate"
+        rfb_port = 5900
+        local_port = {local_port}
+        target = "guest"
+        set_password_cmd = "set {{target}} {{password_file}}"
+        clear_password_cmd = "clear {{target}}"
+        "#
+    )
+}
+
 #[test]
 fn two_hosts_with_the_same_name_are_rejected() {
-    let toml = host_with("db-01", "10.0.4.11", r#"["vnc"]"#)
-        + &host_with("db-01", "10.0.4.12", r#"["vnc"]"#);
+    // The first host validates fully; the duplicate name on the second is
+    // caught before its own coupling runs.
+    let toml =
+        host_with_vnc("db-01", "10.0.4.11", 5959) + &host_with_vnc("db-01", "10.0.4.12", 5960);
     assert_eq!(
         Inventory::parse(&toml),
         Err(InventoryError::DuplicateHostName("db-01".into()))
@@ -447,6 +511,295 @@ fn insecure_tls_must_be_spelled_out_and_ca_file_needs_its_path() {
         account_id = "4"
         auth_user = "admin"
         auth_password_file = "/etc/lychgate/bmc.pw"
+    "#;
+    assert!(matches!(
+        Inventory::parse(toml),
+        Err(InventoryError::Toml(_))
+    ));
+}
+
+// --- [hosts.vnc] coupling (M7) ---------------------------------------------
+
+const VNC_HOST: &str = r#"
+[[hosts]]
+name = "hv-01"
+address = "10.0.5.20"
+os = "freebsd"
+channels = ["vnc"]
+
+[hosts.vnc]
+agent_user = "lychgate"
+port = 2222
+identity_file = "/etc/lychgate/id_vnc"
+become_cmd = "doas"
+rfb_host = "127.0.0.1"
+rfb_port = 5900
+local_port = 5959
+target = "guest-01"
+set_password_cmd = "cbsd bhyve-vnc jname={target} vncpasswordfile={password_file} apply=1"
+clear_password_cmd = "cbsd bhyve-vnc jname={target} vncpassword=none apply=1"
+password_len = 12
+"#;
+
+// A vnc host with customizable command templates and ports, for the coupling
+// refusals. The `set`/`clear` values are inserted verbatim into the TOML, so
+// their `{target}`/`{password_file}` placeholders pass through unescaped.
+fn vnc_host_with(
+    set: &str,
+    clear: &str,
+    rfb_port: u16,
+    local_port: u16,
+    password_len: u32,
+) -> String {
+    format!(
+        r#"
+        [[hosts]]
+        name = "hv-01"
+        address = "10.0.5.20"
+        os = "freebsd"
+        channels = ["vnc"]
+
+        [hosts.vnc]
+        agent_user = "lychgate"
+        rfb_port = {rfb_port}
+        local_port = {local_port}
+        target = "guest-01"
+        set_password_cmd = "{set}"
+        clear_password_cmd = "{clear}"
+        password_len = {password_len}
+        "#
+    )
+}
+
+fn vnc_host_named(name: &str, local_port: u16) -> String {
+    format!(
+        r#"
+        [[hosts]]
+        name = "{name}"
+        address = "10.0.5.20"
+        os = "freebsd"
+        channels = ["vnc"]
+
+        [hosts.vnc]
+        agent_user = "lychgate"
+        rfb_port = 5900
+        local_port = {local_port}
+        target = "guest"
+        set_password_cmd = "set {{target}} {{password_file}}"
+        clear_password_cmd = "clear {{target}}"
+        "#
+    )
+}
+
+#[test]
+fn a_full_vnc_config_parses_with_its_fields_intact() {
+    let inv = Inventory::parse(VNC_HOST).unwrap();
+    let vnc = inv.hosts[0].vnc.as_ref().unwrap();
+    assert_eq!(vnc.agent_user, "lychgate");
+    assert_eq!(vnc.port, 2222);
+    assert_eq!(vnc.identity_file.as_deref(), Some("/etc/lychgate/id_vnc"));
+    assert_eq!(vnc.become_cmd.as_deref(), Some("doas"));
+    assert_eq!(vnc.rfb_host, "127.0.0.1");
+    assert_eq!(vnc.rfb_port, 5900);
+    assert_eq!(vnc.local_port, 5959);
+    assert_eq!(vnc.target, "guest-01");
+    assert_eq!(vnc.password_len, 12);
+    assert_eq!(vnc.password_file, None);
+}
+
+#[test]
+fn a_vnc_channel_without_vnc_config_is_refused() {
+    let toml = r#"
+        [[hosts]]
+        name = "hv-01"
+        address = "10.0.5.20"
+        os = "freebsd"
+        channels = ["vnc"]
+    "#;
+    assert_eq!(
+        Inventory::parse(toml),
+        Err(InventoryError::VncConfigMissing {
+            host: "hv-01".into()
+        })
+    );
+}
+
+#[test]
+fn vnc_config_on_a_host_without_a_vnc_channel_is_refused_as_dead_config() {
+    let toml = r#"
+        [[hosts]]
+        name = "hv-01"
+        address = "10.0.5.20"
+        os = "freebsd"
+        channels = ["ssh"]
+
+        [hosts.ssh]
+        agent_user = "lychgate"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+
+        [hosts.vnc]
+        agent_user = "lychgate"
+        rfb_port = 5900
+        local_port = 5959
+        target = "guest"
+        set_password_cmd = "set {target} {password_file}"
+        clear_password_cmd = "clear {target}"
+    "#;
+    assert_eq!(
+        Inventory::parse(toml),
+        Err(InventoryError::VncConfigUnused {
+            host: "hv-01".into()
+        })
+    );
+}
+
+#[test]
+fn a_set_password_cmd_without_the_password_file_placeholder_is_refused() {
+    let toml = vnc_host_with(
+        "cbsd jname={target} apply=1",
+        "clear {target}",
+        5900,
+        5959,
+        8,
+    );
+    assert_eq!(
+        Inventory::parse(&toml),
+        Err(InventoryError::VncMissingPasswordFile {
+            host: "hv-01".into()
+        })
+    );
+}
+
+#[test]
+fn a_clear_password_cmd_referencing_the_password_file_is_refused() {
+    let toml = vnc_host_with(
+        "set {target} {password_file}",
+        "wipe {target} {password_file}",
+        5900,
+        5959,
+        8,
+    );
+    assert_eq!(
+        Inventory::parse(&toml),
+        Err(InventoryError::VncClearHasPasswordFile {
+            host: "hv-01".into()
+        })
+    );
+}
+
+#[test]
+fn a_quoted_set_command_template_is_refused_at_load() {
+    let toml = vnc_host_with(
+        "set {target} '{password_file}'",
+        "clear {target}",
+        5900,
+        5959,
+        8,
+    );
+    assert_eq!(
+        Inventory::parse(&toml),
+        Err(InventoryError::VncCommandQuoted {
+            host: "hv-01".into(),
+            which: "set_password_cmd"
+        })
+    );
+}
+
+#[test]
+fn an_unknown_placeholder_in_a_set_command_is_refused_naming_it() {
+    let toml = vnc_host_with(
+        "set {targett} {password_file}",
+        "clear {target}",
+        5900,
+        5959,
+        8,
+    );
+    match Inventory::parse(&toml) {
+        Err(InventoryError::VncUnknownPlaceholder {
+            host,
+            which,
+            placeholder,
+        }) => {
+            assert_eq!(host, "hv-01");
+            assert_eq!(which, "set_password_cmd");
+            assert_eq!(placeholder, "targett");
+        }
+        other => panic!("wanted VncUnknownPlaceholder, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_zero_rfb_port_is_refused() {
+    let toml = vnc_host_with("set {target} {password_file}", "clear {target}", 0, 5959, 8);
+    assert_eq!(
+        Inventory::parse(&toml),
+        Err(InventoryError::VncBadPort {
+            host: "hv-01".into(),
+            field: "rfb_port"
+        })
+    );
+}
+
+#[test]
+fn a_zero_local_port_is_refused() {
+    let toml = vnc_host_with("set {target} {password_file}", "clear {target}", 5900, 0, 8);
+    assert_eq!(
+        Inventory::parse(&toml),
+        Err(InventoryError::VncBadPort {
+            host: "hv-01".into(),
+            field: "local_port"
+        })
+    );
+}
+
+#[test]
+fn a_zero_password_length_is_refused() {
+    let toml = vnc_host_with(
+        "set {target} {password_file}",
+        "clear {target}",
+        5900,
+        5959,
+        0,
+    );
+    assert_eq!(
+        Inventory::parse(&toml),
+        Err(InventoryError::VncBadPasswordLen {
+            host: "hv-01".into()
+        })
+    );
+}
+
+#[test]
+fn two_vnc_hosts_sharing_a_local_port_are_refused() {
+    let toml = vnc_host_named("hv-01", 5959) + &vnc_host_named("hv-02", 5959);
+    assert_eq!(
+        Inventory::parse(&toml),
+        Err(InventoryError::VncLocalPortConflict {
+            host: "hv-02".into(),
+            other: "hv-01".into(),
+            port: 5959,
+        })
+    );
+}
+
+#[test]
+fn an_unrecognized_vnc_field_is_rejected_rather_than_ignored() {
+    let toml = r#"
+        [[hosts]]
+        name = "hv-01"
+        address = "10.0.5.20"
+        os = "freebsd"
+        channels = ["vnc"]
+
+        [hosts.vnc]
+        agent_user = "lychgate"
+        rfb_port = 5900
+        local_port = 5959
+        target = "guest"
+        set_password_cmd = "set {target} {password_file}"
+        clear_password_cmd = "clear {target}"
+        favourite_colour = "red"
     "#;
     assert!(matches!(
         Inventory::parse(toml),

@@ -48,7 +48,21 @@ if [ "${os}" = "FreeBSD" ]; then
     trap cleanup EXIT INT TERM
 
     mkdir -p /usr/local/etc/lychgate
-    printf '[[hosts]]\nname = "web"\naddress = "10.0.0.1"\nos = "linux"\nchannels = ["vnc"]\n' > "${inv}"
+    cat > "${inv}" <<'EOF'
+[[hosts]]
+name = "web"
+address = "10.0.0.1"
+os = "linux"
+channels = ["vnc"]
+
+[hosts.vnc]
+agent_user = "lychgate"
+rfb_port = 5900
+local_port = 5959
+target = "web"
+set_password_cmd = "set {target} {password_file}"
+clear_password_cmd = "clear {target}"
+EOF
     ./tools/install-service.sh >/dev/null || fail "installer failed"
     sysrc lychgated_enable=YES >/dev/null
     sysrc "lychgated_inventory=${inv}" >/dev/null
@@ -74,7 +88,21 @@ else
     trap cleanup EXIT INT TERM
 
     mkdir -p /etc/lychgate
-    printf '[[hosts]]\nname = "web"\naddress = "10.0.0.1"\nos = "linux"\nchannels = ["vnc"]\n' > "${inv}"
+    cat > "${inv}" <<'EOF'
+[[hosts]]
+name = "web"
+address = "10.0.0.1"
+os = "linux"
+channels = ["vnc"]
+
+[hosts.vnc]
+agent_user = "lychgate"
+rfb_port = 5900
+local_port = 5959
+target = "web"
+set_password_cmd = "set {target} {password_file}"
+clear_password_cmd = "clear {target}"
+EOF
     ./tools/install-service.sh >/dev/null || fail "installer failed"
     systemctl daemon-reload
 

@@ -14,6 +14,7 @@ pub mod registry;
 pub mod snapshot;
 pub mod ssh;
 pub mod ttl;
+pub mod vnc;
 
 pub use channel::{
     apply_channels, revert_channels, ApplyOutcome, ChannelDriver, ChannelState, DriverError,
@@ -22,6 +23,7 @@ pub use channel::{
 pub use grant::{Grant, GrantError, GrantStatus};
 pub use inventory::{
     BmcConfig, BmcMethod, BmcTls, Channel, Host, Inventory, InventoryError, Os, SshConfig,
+    VncConfig,
 };
 pub use registry::{ExpiredGrant, GrantRegistry, RegistryError};
 pub use snapshot::{GrantRecord, SnapshotError, StateDoc, STATE_VERSION};

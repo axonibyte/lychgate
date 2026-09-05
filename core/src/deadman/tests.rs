@@ -120,6 +120,14 @@ fn a_host_without_ssh_config_renders_no_script() {
         address = "10.0.4.12"
         os = "linux"
         channels = ["vnc"]
+
+        [hosts.vnc]
+        agent_user = "lychgate"
+        rfb_port = 5900
+        local_port = 5959
+        target = "web"
+        set_password_cmd = "set {target} {password_file}"
+        clear_password_cmd = "clear {target}"
         "#,
     )
     .unwrap();
