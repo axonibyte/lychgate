@@ -5,3 +5,5 @@ pub mod bmc;
 pub mod deadman;
 pub(crate) mod remote;
 pub mod ssh;
+pub mod tunnel;
+pub mod vnc;

@@ -57,10 +57,12 @@ impl Drop for Scratch {
     }
 }
 
-// Flow fixtures use vnc, the only channel with no registered driver, so the
-// operator-flow battery exercises the lifecycle end to end without reaching
-// for a live sshd or BMC; those drivers are proven by their own unit tests
-// over scripted transports and by the guest acceptance scripts.
+// Every spawn here runs the daemon in --dry-run: no channel is driven, so the
+// lifecycle, wire protocol, store and journal are exercised end to end without
+// reaching for a live sshd, BMC, or vnc tunnel. The real drivers are proven by
+// their own unit tests over scripted transports and by the guest acceptance
+// scripts. (The channel declared below is therefore immaterial; vnc is used
+// as it needs no ssh/bmc posture config.)
 const INVENTORY: &str = r#"
 [[hosts]]
 name = "db-01"
@@ -106,7 +108,7 @@ fn state_with(dir: &Path, body: &str) -> PathBuf {
 
 fn run_once(inventory: &Path, state_dir: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_lychgated"))
-        .args(["--inventory"])
+        .args(["--dry-run", "--inventory"])
         .arg(inventory)
         .arg("--state-dir")
         .arg(state_dir)
@@ -204,7 +206,7 @@ fn a_kill_and_restart_observes_the_same_truth() {
 
     // Kill a running daemon mid-flight (SIGKILL: no handler, no cleanup)...
     let mut child = Command::new(env!("CARGO_BIN_EXE_lychgated"))
-        .args(["--inventory"])
+        .args(["--dry-run", "--inventory"])
         .arg(&inv)
         .arg("--state-dir")
         .arg(&state_dir)
@@ -309,7 +311,7 @@ fn a_zero_interval_is_refused() {
     std::fs::create_dir_all(&state_dir).unwrap();
 
     let out = Command::new(env!("CARGO_BIN_EXE_lychgated"))
-        .args(["--inventory"])
+        .args(["--dry-run", "--inventory"])
         .arg(&inv)
         .arg("--state-dir")
         .arg(&state_dir)
@@ -331,7 +333,7 @@ fn sigterm_ends_the_loop_with_a_daemon_stop_entry() {
     std::fs::create_dir_all(&state_dir).unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_lychgated"))
-        .args(["--inventory"])
+        .args(["--dry-run", "--inventory"])
         .arg(&inv)
         .arg("--state-dir")
         .arg(&state_dir)
@@ -402,9 +404,24 @@ struct Daemon {
 }
 
 impl Daemon {
+    /// The default: no drivers, so opens are bookkeeping and touch no host.
     fn start(inv: &Path, state_dir: &Path) -> Daemon {
+        Self::spawn(inv, state_dir, true)
+    }
+
+    /// Drivers registered (as in production). Used by the one test that proves
+    /// a channel is actually driven without --dry-run.
+    fn start_live(inv: &Path, state_dir: &Path) -> Daemon {
+        Self::spawn(inv, state_dir, false)
+    }
+
+    fn spawn(inv: &Path, state_dir: &Path, dry_run: bool) -> Daemon {
         let socket = state_dir.join("lychgated.sock");
-        let child = Command::new(env!("CARGO_BIN_EXE_lychgated"))
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_lychgated"));
+        if dry_run {
+            cmd.arg("--dry-run");
+        }
+        let child = cmd
             .args(["--inventory"])
             .arg(inv)
             .arg("--state-dir")
@@ -517,8 +534,8 @@ fn the_operator_flow_works_end_to_end_through_both_binaries() {
     let open = &lines[1];
     assert_eq!(open["host"], "db-01");
     assert_eq!(open["ttl_secs"], 4 * 3600);
-    // vnc has no driver, so nothing was applied, but the declared channels
-    // are recorded so the audit trail shows what a grant reaches for.
+    // --dry-run drives nothing, so nothing was applied, but the declared
+    // channels are recorded so the audit trail shows what a grant reaches for.
     assert_eq!(open["applied"], serde_json::json!([]));
     assert_eq!(open["declared"], serde_json::json!(["vnc"]));
     assert!(open["expires_at"].is_u64());
@@ -593,7 +610,11 @@ fn an_oversized_request_is_refused_and_the_daemon_survives_it() {
 
     let mut stream = std::os::unix::net::UnixStream::connect(&daemon.socket).unwrap();
     let big = format!("{{\"proto\":1,\"op\":\"{}\"}}\n", "x".repeat(80 * 1024));
-    stream.write_all(big.as_bytes()).unwrap();
+    // The daemon reads up to the cap, refuses, and closes — which under load
+    // can EPIPE our still-in-flight write. That close is the correct behavior,
+    // so tolerate the write error; the refusal it sent first is still readable
+    // below, and the survival oracle proves the daemon lived.
+    let _ = stream.write_all(big.as_bytes());
     let mut reply = String::new();
     BufReader::new(&stream).read_line(&mut reply).unwrap();
     let v: serde_json::Value = serde_json::from_str(reply.trim()).unwrap();
@@ -636,7 +657,7 @@ fn a_second_daemon_is_refused_while_the_first_listens_and_a_stale_socket_is_not(
 
     // Live socket: the second daemon must refuse to start.
     let out = Command::new(env!("CARGO_BIN_EXE_lychgated"))
-        .args(["--inventory"])
+        .args(["--dry-run", "--inventory"])
         .arg(&inv)
         .arg("--state-dir")
         .arg(&state_dir)
@@ -701,4 +722,61 @@ fn the_cli_enforces_ttl_policy_before_touching_the_socket() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("cap"), "{stderr}");
     assert!(!stderr.contains("connecting to"), "{stderr}");
+}
+
+/// A local port with nothing listening (bound then released): a connect to it
+/// is refused, so an ssh there fails fast.
+fn dead_port() -> u16 {
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+#[test]
+fn without_dry_run_the_vnc_channel_is_actually_driven() {
+    // The counterpart to every other test here: with the drivers registered,
+    // opening a vnc grant reaches for the (dead) hypervisor and is refused,
+    // rather than succeeding as bookkeeping. This is what proves --dry-run is
+    // load-bearing: the same open under --dry-run succeeds with applied=[].
+    let _serial = serial();
+    let dir = Scratch::new("livevnc");
+    let inv_path = dir.join("inventory.toml");
+    std::fs::write(
+        &inv_path,
+        format!(
+            r#"
+[[hosts]]
+name = "hv"
+address = "127.0.0.1"
+os = "freebsd"
+channels = ["vnc"]
+
+[hosts.vnc]
+agent_user = "lychgate"
+port = {}
+rfb_port = 5900
+local_port = {}
+target = "vm"
+set_password_cmd = "true {{target}} {{password_file}}"
+clear_password_cmd = "true {{target}}"
+"#,
+            dead_port(),
+            dead_port(),
+        ),
+    )
+    .unwrap();
+    let state_dir = dir.join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let daemon = Daemon::start_live(&inv_path, &state_dir);
+    let out = cli(&daemon.socket, &["open", "--host", "hv", "--ttl", "1h"]);
+    daemon.stop();
+
+    assert!(
+        !out.status.success(),
+        "the open should be refused: the driver could not reach the hypervisor; stdout={}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }

@@ -46,6 +46,13 @@ struct Cli {
     /// driving the real binary.
     #[arg(long)]
     once: bool,
+
+    /// Register no channel drivers: grants open and close as pure bookkeeping,
+    /// touching no host. For validating an inventory, rehearsing the grant
+    /// lifecycle, and the hermetic end-to-end tests — nothing is driven, so a
+    /// grant's applied-channel set is always empty.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 /// Set by the signal handler, read by the loops. SIGKILL-safety is not this
@@ -113,26 +120,37 @@ fn main() -> anyhow::Result<()> {
         },
     )?;
 
-    // The SSH-borne channels are live as of M4; BMC and VNC drivers do not
-    // exist yet, so those channels stay bookkeeping-only for now.
+    // The ssh-borne and bmc channels are live. --dry-run registers nothing, so
+    // every declared channel is bookkeeping-only and no host is touched.
     let mut driver_set = DriverSet::new();
-    driver_set
-        .register(drivers::ssh::SshPostureDriver::new(Box::new(
-            transport::ExecSshTransport,
-        )))
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    driver_set
-        .register(drivers::ssh::AuthorizedKeysDriver::new(Box::new(
-            transport::ExecSshTransport,
-        )))
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    driver_set
-        .register(drivers::bmc::BmcDriver::new(
-            Box::new(drivers::bmc::CurlBmcTransport),
-            Box::new(drivers::bmc::UrandomPasswords),
-            Box::new(drivers::bmc::NoEscrow),
-        ))
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    if !cli.dry_run {
+        driver_set
+            .register(drivers::ssh::SshPostureDriver::new(Box::new(
+                transport::ExecSshTransport,
+            )))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        driver_set
+            .register(drivers::ssh::AuthorizedKeysDriver::new(Box::new(
+                transport::ExecSshTransport,
+            )))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        driver_set
+            .register(drivers::bmc::BmcDriver::new(
+                Box::new(drivers::bmc::CurlBmcTransport),
+                Box::new(drivers::bmc::UrandomPasswords),
+                Box::new(drivers::bmc::NoEscrow),
+            ))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        driver_set
+            .register(drivers::vnc::VncDriver::new(
+                Box::new(drivers::vnc::ExecSshVncTransport),
+                Box::new(drivers::vnc::UrandomVncPasswords),
+                Box::new(drivers::tunnel::TunnelSet::new(Box::new(
+                    drivers::tunnel::ExecTunnelSpawner,
+                ))),
+            ))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
     let daemon = Arc::new(Daemon {
         inventory,
         store,
@@ -146,11 +164,19 @@ fn main() -> anyhow::Result<()> {
     // Recover from a crash mid-open before serving anything.
     daemon.boot_recover(SystemTime::now())?;
 
-    println!(
-        "lychgated: watching {} host(s); ssh, authorized-keys and bmc \
-         channels are live, vnc is bookkeeping-only until its driver exists",
-        daemon.inventory.hosts.len()
-    );
+    if cli.dry_run {
+        println!(
+            "lychgated: watching {} host(s) in --dry-run; no channel is driven, \
+             grants open and close as bookkeeping only",
+            daemon.inventory.hosts.len()
+        );
+    } else {
+        println!(
+            "lychgated: watching {} host(s); ssh, authorized-keys, bmc and vnc \
+             channels are live",
+            daemon.inventory.hosts.len()
+        );
+    }
 
     let listener_thread = listener.map(|listener| {
         let daemon = Arc::clone(&daemon);
