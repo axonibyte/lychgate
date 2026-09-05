@@ -11,6 +11,8 @@ set -u
 
 bin="${LYCHGATE_BIN_DIR:-./target/debug}"
 here="$(dirname "$0")"
+# shellcheck source=e2e/lib.sh
+. "${here}/lib.sh"
 work="$(mktemp -d /tmp/lychgate-bmc-XXXXXX)"
 state="${work}/state"
 mkdir -p "${state}"
@@ -66,6 +68,8 @@ auth_user = "admin"
 auth_password_file = "${work}/bmc.pw"
 tls = { mode = "insecure" }
 EOF
+approval_keygen "${work}/approver"
+approval_block "${work}/approver" >> "${work}/inventory.toml"
 
 note "starting lychgated"
 "${bin}/lychgated" --inventory "${work}/inventory.toml" --state-dir "${state}" \
@@ -78,9 +82,9 @@ while [ ! -S "${state}/lychgated.sock" ]; do
     sleep 0.1
 done
 
-note "opening the grant"
-out="$("${bin}/lychgate" --socket "${state}/lychgated.sock" open --host idrac --ttl 15m)" \
-    || { fail "open refused: ${out}"; cat "${work}/daemon.log"; }
+note "opening the grant (open -> sign -> approve)"
+out="$(open_and_approve "${state}/lychgated.sock" idrac 15m "${work}/approver")" \
+    || { fail "open/approve refused: ${out}"; cat "${work}/daemon.log"; }
 
 # The account is enabled on the mock...
 grep -q '"Enabled": true' "${mock_state}" || fail "account not enabled after open: $(cat "${mock_state}")"
@@ -103,10 +107,12 @@ note "closing the grant"
     || { fail "close refused"; cat "${work}/daemon.log"; }
 grep -q '"Enabled": false' "${mock_state}" || fail "account not disabled after close: $(cat "${mock_state}")"
 
-# A slot held by a stranger is refused, touching nothing.
+# A slot held by a stranger is refused, touching nothing. Since M8 the driver
+# runs at approve, not open, so the refusal now surfaces there — open_and_approve
+# returns non-zero either way.
 echo '{"UserName":"root","Enabled":true}' > "${mock_state}"
-if "${bin}/lychgate" --socket "${state}/lychgated.sock" open --host idrac --ttl 15m >/dev/null 2>&1; then
-    fail "open succeeded against a slot held by a stranger"
+if open_and_approve "${state}/lychgated.sock" idrac 15m "${work}/approver" >/dev/null 2>&1; then
+    fail "open/approve succeeded against a slot held by a stranger"
 else
     grep -q '"UserName": "root"' "${mock_state}" || fail "the stranger's account was modified"
     note "a stranger-held slot is refused, untouched"

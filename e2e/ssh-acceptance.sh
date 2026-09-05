@@ -17,6 +17,8 @@
 set -u
 
 bin="${LYCHGATE_BIN_DIR:-./target/debug}"
+# shellcheck source=e2e/lib.sh
+. "$(dirname "$0")/lib.sh"
 work="$(mktemp -d /tmp/lychgate-m4-XXXXXX)"
 state="${work}/state"
 mkdir -p "${state}"
@@ -84,6 +86,7 @@ trap cleanup EXIT INT TERM
 for name in agent human emergency; do
     ssh-keygen -q -t ed25519 -N "" -C "lychgate-m4-${name}" -f "${work}/${name}" </dev/null
 done
+approval_keygen "${work}/approver"
 {
     cat "${work}/agent.pub"
     cat "${work}/human.pub"
@@ -116,6 +119,7 @@ root_posture_emergency = "${emergency}"
 identity_file = "${work}/agent"
 emergency_keys = ["$(cat "${work}/emergency.pub")"]
 EOF
+approval_block "${work}/approver" >> "${work}/inventory.toml"
 
 # Accept our own host key for 127.0.0.1 up front so BatchMode never prompts.
 ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "${work}/agent" \
@@ -137,9 +141,9 @@ while [ ! -S "${state}/lychgated.sock" ]; do
     sleep 0.1
 done
 
-note "opening the grant"
-if ! "${bin}/lychgate" --socket "${state}/lychgated.sock" open --host self --ttl 15m; then
-    fail "open refused"
+note "opening the grant (open -> sign -> approve)"
+if ! open_and_approve "${state}/lychgated.sock" self 15m "${work}/approver" >/dev/null; then
+    fail "open/approve refused"
     cat "${work}/daemon.log"
 fi
 

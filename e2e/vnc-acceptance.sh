@@ -27,6 +27,8 @@ set -u
 
 bin="${LYCHGATE_BIN_DIR:-./target/debug}"
 here="$(dirname "$0")"
+# shellcheck source=e2e/lib.sh
+. "${here}/lib.sh"
 work="$(mktemp -d /tmp/lychgate-m7-XXXXXX)"
 state="${work}/state"
 mkdir -p "${state}"
@@ -66,6 +68,7 @@ trap cleanup EXIT INT TERM
 # ssh-to-self for both the tunnel and the password commands.
 ssh-keygen -q -t ed25519 -N "" -C "lychgate-m7-agent" -f "${work}/agent" </dev/null
 cat "${work}/agent.pub" >> "${akeys}"
+approval_keygen "${work}/approver"
 ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "${work}/agent" \
     root@127.0.0.1 true || { echo "cannot ssh to self; aborting" >&2; exit 2; }
 
@@ -116,6 +119,7 @@ set_password_cmd = "${work}/set-vnc-pw.sh {target} {password_file}"
 clear_password_cmd = "${work}/clear-vnc-pw.sh {target}"
 password_file = "${staged}"
 EOF
+approval_block "${work}/approver" >> "${work}/inventory.toml"
 
 reachable() {
     python3 -c "import socket,sys
@@ -146,9 +150,9 @@ start_daemon
 
 # --- 1. open: reachable, password rotated, shown once, journal-clean --------
 
-note "opening the grant"
-out="$("${bin}/lychgate" --socket "${state}/lychgated.sock" open --host hv --ttl 15m)" \
-    || { fail "open refused: ${out}"; cat "${work}/daemon.log"; }
+note "opening the grant (open -> sign -> approve)"
+out="$(open_and_approve "${state}/lychgated.sock" hv 15m "${work}/approver")" \
+    || { fail "open/approve refused: ${out}"; cat "${work}/daemon.log"; }
 
 if reachable; then
     note "the forwarded port reaches the RFB mock"
@@ -186,8 +190,10 @@ grep -q "^clear acc-vm" "${work}/witness.log" || fail "the clear-password comman
 
 # --- 3. a second open while one is held is refused --------------------------
 
-"${bin}/lychgate" --socket "${state}/lychgated.sock" open --host hv --ttl 15m >/dev/null \
-    || { fail "re-open refused unexpectedly"; }
+open_and_approve "${state}/lychgated.sock" hv 15m "${work}/approver" >/dev/null \
+    || { fail "re-open/approve refused unexpectedly"; }
+# A second open while one is held is refused at the open step (no pending is
+# even created), before any approval is in play.
 if "${bin}/lychgate" --socket "${state}/lychgated.sock" open --host hv --ttl 15m >/dev/null 2>&1; then
     fail "a second open on an already-open console was accepted"
 else

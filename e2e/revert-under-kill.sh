@@ -17,6 +17,8 @@ sabotage=0
 [ "${1:-}" = "--sabotage" ] && sabotage=1
 
 bin="${LYCHGATE_BIN_DIR:-./target/debug}"
+# shellcheck source=e2e/lib.sh
+. "$(dirname "$0")/lib.sh"
 work="$(mktemp -d /tmp/lychgate-m5-XXXXXX)"
 state="${work}/state"
 mkdir -p "${state}"
@@ -78,6 +80,7 @@ trap cleanup EXIT INT TERM
 for name in agent human emergency; do
     ssh-keygen -q -t ed25519 -N "" -C "lychgate-m5-${name}" -f "${work}/${name}" </dev/null
 done
+approval_keygen "${work}/approver"
 {
     cat "${work}/agent.pub"
     cat "${work}/human.pub"
@@ -111,6 +114,7 @@ root_posture_emergency = "${emergency}"
 identity_file = "${work}/agent"
 emergency_keys = ["$(cat "${work}/emergency.pub")"]
 EOF
+approval_block "${work}/approver" >> "${work}/inventory.toml"
 
 ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "${work}/agent" \
     root@127.0.0.1 true || { echo "cannot ssh to self; aborting" >&2; exit 2; }
@@ -129,9 +133,9 @@ while [ ! -S "${state}/lychgated.sock" ]; do
 done
 
 deadline_at=$(( $(date +%s) + 90 ))
-note "opening a 90s grant"
-"${bin}/lychgate" --socket "${state}/lychgated.sock" open --host self --ttl 90s \
-    || { fail "open refused"; cat "${work}/daemon.log"; exit 1; }
+note "opening a 90s grant (open -> sign -> approve)"
+open_and_approve "${state}/lychgated.sock" self 90s "${work}/approver" >/dev/null \
+    || { fail "open/approve refused"; cat "${work}/daemon.log"; exit 1; }
 
 # --- preconditions, asserted before the kill --------------------------------
 

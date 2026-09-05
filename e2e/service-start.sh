@@ -7,6 +7,8 @@
 set -u
 
 bin="${LYCHGATE_BIN_DIR:-./target/debug}"
+# shellcheck source=e2e/lib.sh
+. "$(dirname "$0")/lib.sh"
 failed=0
 fail() {
     echo "FAIL: $1" >&2
@@ -36,6 +38,12 @@ wait_socket() {
 
 install -m 755 "${bin}/lychgated" /usr/local/sbin/lychgated
 
+# The daemon fails closed on start with no approver configured, so a realistic
+# deployment inventory carries one. This test never opens a grant — it only
+# proves the service starts and stops — so the approver's key need only exist.
+keydir="$(mktemp -d /tmp/lychgate-svc-XXXXXX)"
+approval_keygen "${keydir}/approver"
+
 if [ "${os}" = "FreeBSD" ]; then
     statedir="/var/db/lychgate"
     inv="/usr/local/etc/lychgate/inventory.toml"
@@ -43,7 +51,7 @@ if [ "${os}" = "FreeBSD" ]; then
         service lychgated stop >/dev/null 2>&1
         sysrc -x lychgated_enable lychgated_inventory >/dev/null 2>&1
         rm -f /usr/local/etc/rc.d/lychgated /usr/local/sbin/lychgated
-        rm -rf "${statedir}" /usr/local/etc/lychgate
+        rm -rf "${statedir}" /usr/local/etc/lychgate "${keydir}"
     }
     trap cleanup EXIT INT TERM
 
@@ -63,6 +71,7 @@ target = "web"
 set_password_cmd = "set {target} {password_file}"
 clear_password_cmd = "clear {target}"
 EOF
+    approval_block "${keydir}/approver" >> "${inv}"
     ./tools/install-service.sh >/dev/null || fail "installer failed"
     sysrc lychgated_enable=YES >/dev/null
     sysrc "lychgated_inventory=${inv}" >/dev/null
@@ -83,7 +92,7 @@ else
         systemctl disable lychgated >/dev/null 2>&1
         rm -f /etc/systemd/system/lychgated.service /usr/local/sbin/lychgated
         systemctl daemon-reload >/dev/null 2>&1
-        rm -rf "${statedir}" /etc/lychgate
+        rm -rf "${statedir}" /etc/lychgate "${keydir}"
     }
     trap cleanup EXIT INT TERM
 
@@ -103,6 +112,7 @@ target = "web"
 set_password_cmd = "set {target} {password_file}"
 clear_password_cmd = "clear {target}"
 EOF
+    approval_block "${keydir}/approver" >> "${inv}"
     ./tools/install-service.sh >/dev/null || fail "installer failed"
     systemctl daemon-reload
 
