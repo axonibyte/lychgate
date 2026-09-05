@@ -423,6 +423,29 @@ impl Daemon {
         if trimmed.starts_with("-----BEGIN SSH SIGNATURE-----") {
             return Ok(model.verify_ed25519(request, token));
         }
+        if trimmed.starts_with(lychgate_core::fido2::TOKEN_PREFIX) {
+            // A FIDO2 assertion. Bound to the challenge (no ledger — a distinct
+            // nonce per request means it cannot be replayed for another grant).
+            // Try each configured credential; verify checks the credential id, so
+            // a non-matching one returns WrongCredential and is skipped, while the
+            // matching one's real verdict (Ok, or a definite failure) is used.
+            let challenge = request.challenge_string();
+            let mut matched_err = None;
+            for (id, cred) in model.fido2_credentials() {
+                match lychgate_core::fido2::verify(cred, trimmed, &challenge) {
+                    Ok(()) => return Ok(Ok(id.to_string())),
+                    Err(lychgate_core::Fido2Error::WrongCredential) => continue,
+                    Err(e) => matched_err = Some(e),
+                }
+            }
+            return Ok(Err(match matched_err {
+                Some(lychgate_core::Fido2Error::Malformed(m)) => ApprovalError::Malformed(m),
+                Some(_) => ApprovalError::BadSignature,
+                None => ApprovalError::UnknownApprover(
+                    "no configured FIDO2 credential matches this assertion".to_string(),
+                ),
+            }));
+        }
         if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) {
             // A TOTP code names no authenticator, so try each configured secret;
             // the ledger makes the first fresh match single-use.

@@ -12,3 +12,5 @@ repository.workspace = true
 anyhow = { workspace = true }
 clap = { workspace = true }
 lychgate-core = { workspace = true }
+# base64url for the FIDO2 software-authenticator files and tokens.
+data-encoding = { workspace = true }

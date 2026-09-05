@@ -68,6 +68,29 @@ enum Command {
     /// `[[approval.authenticator]] kind="password"` hash-file. Local — talks to
     /// no daemon. Redirect the output into a mode-600 file.
     HashPassword,
+    /// Register a FIDO2 credential and print its `[[approval.authenticator]]`
+    /// block. Local — talks to no daemon. `--software-key <file>` creates (or
+    /// reuses) a software authenticator in that mode-600 file; the hardware
+    /// ceremony is the `fido2-client`-feature build.
+    Fido2Register {
+        /// Signature algorithm: es256 or eddsa.
+        #[arg(long, default_value = "es256")]
+        alg: String,
+        /// The software authenticator file to create/reuse (mode 600).
+        #[arg(long)]
+        software_key: Option<PathBuf>,
+    },
+    /// Produce a FIDO2 assertion over a challenge, printing the token to pipe
+    /// into `approve`. Local. `--software-key <file>` uses a software
+    /// authenticator; hardware is the `fido2-client`-feature build.
+    Fido2Assert {
+        /// The challenge string from `open`.
+        #[arg(long)]
+        challenge: String,
+        /// The software authenticator file (from fido2-register).
+        #[arg(long)]
+        software_key: Option<PathBuf>,
+    },
 }
 
 fn human(secs: u64) -> String {
@@ -100,12 +123,125 @@ fn hash_password() -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn read_urandom(n: usize) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut b = vec![0u8; n];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut b))
+        .map_err(|e| anyhow::anyhow!("reading /dev/urandom: {e}"))?;
+    Ok(b)
+}
+
+fn parse_alg(s: &str) -> anyhow::Result<lychgate_core::Alg> {
+    match s {
+        "es256" => Ok(lychgate_core::Alg::Es256),
+        "eddsa" => Ok(lychgate_core::Alg::EdDsa),
+        other => anyhow::bail!("unknown fido2 alg {other:?}; expected es256 or eddsa"),
+    }
+}
+
+/// A software authenticator file, mode 600: three base-content lines —
+/// `<alg>`, `<credential-id base64url>`, `<private-key base64url>`.
+fn read_softkey(path: &std::path::Path) -> anyhow::Result<(lychgate_core::Alg, Vec<u8>, Vec<u8>)> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+    let mut lines = text.lines();
+    let alg = parse_alg(lines.next().unwrap_or("").trim())?;
+    let dec = |s: Option<&str>, what: &str| -> anyhow::Result<Vec<u8>> {
+        data_encoding::BASE64URL_NOPAD
+            .decode(s.unwrap_or("").trim().as_bytes())
+            .map_err(|_| anyhow::anyhow!("{what} in the key file is not base64url"))
+    };
+    let cred_id = dec(lines.next(), "credential-id")?;
+    let priv_key = dec(lines.next(), "private key")?;
+    Ok((alg, cred_id, priv_key))
+}
+
+fn fido2_register(
+    alg_str: &str,
+    software_key: Option<&std::path::Path>,
+) -> anyhow::Result<ExitCode> {
+    let alg = parse_alg(alg_str)?;
+    let path = software_key.ok_or_else(|| {
+        anyhow::anyhow!(
+            "hardware registration needs the fido2-client feature; \
+             pass --software-key <file> for a software authenticator"
+        )
+    })?;
+    let b64 = data_encoding::BASE64URL_NOPAD;
+    let (cred_id, priv_key) = if path.exists() {
+        let (existing_alg, cred_id, priv_key) = read_softkey(path)?;
+        if existing_alg != alg {
+            anyhow::bail!(
+                "{} is a {existing_alg:?} key, not {alg_str}",
+                path.display()
+            );
+        }
+        (cred_id, priv_key)
+    } else {
+        // A valid ES256 scalar is almost any 32 bytes; retry the rare reject.
+        // Ed25519 accepts any 32 bytes.
+        let priv_key = loop {
+            let candidate = read_urandom(32)?;
+            if lychgate_core::fido2::public_key(alg, &candidate).is_ok() {
+                break candidate;
+            }
+        };
+        let cred_id = read_urandom(16)?;
+        let body = format!(
+            "{alg_str}\n{}\n{}\n",
+            b64.encode(&cred_id),
+            b64.encode(&priv_key)
+        );
+        std::fs::write(path, &body)
+            .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| anyhow::anyhow!("chmod {}: {e}", path.display()))?;
+        (cred_id, priv_key)
+    };
+    let public =
+        lychgate_core::fido2::public_key(alg, &priv_key).map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("[[approval.authenticator]]");
+    println!("id = \"fido2\"                       # rename as you like");
+    println!("kind = \"fido2\"");
+    println!("alg = \"{alg_str}\"");
+    println!("credential-id = \"{}\"", b64.encode(&cred_id));
+    println!("public-key = \"{}\"", b64.encode(&public));
+    Ok(ExitCode::SUCCESS)
+}
+
+fn fido2_assert(
+    challenge: &str,
+    software_key: Option<&std::path::Path>,
+) -> anyhow::Result<ExitCode> {
+    let path = software_key.ok_or_else(|| {
+        anyhow::anyhow!(
+            "hardware assertions need the fido2-client feature; \
+             pass --software-key <file> for a software authenticator"
+        )
+    })?;
+    let (alg, cred_id, priv_key) = read_softkey(path)?;
+    let token = lychgate_core::fido2::build_assertion(alg, &priv_key, &cred_id, challenge)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("{token}");
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run() -> anyhow::Result<ExitCode> {
     let cli = Cli::parse();
 
-    // A local utility — no daemon connection. Handled before an Op is built.
-    if matches!(cli.command, Command::HashPassword) {
-        return hash_password();
+    // Local utilities — no daemon connection. Handled before an Op is built.
+    match &cli.command {
+        Command::HashPassword => return hash_password(),
+        Command::Fido2Register { alg, software_key } => {
+            return fido2_register(alg, software_key.as_deref())
+        }
+        Command::Fido2Assert {
+            challenge,
+            software_key,
+        } => return fido2_assert(challenge, software_key.as_deref()),
+        _ => {}
     }
 
     let op = match &cli.command {
@@ -150,7 +286,9 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Close { host } => Op::Close { host: host.clone() },
         Command::Status => Op::Status,
         // Handled before this match (local, no daemon).
-        Command::HashPassword => unreachable!("hash-password is handled locally"),
+        Command::HashPassword | Command::Fido2Register { .. } | Command::Fido2Assert { .. } => {
+            unreachable!("local commands are handled before this match")
+        }
     };
 
     let response: Response = transport::roundtrip(&cli.socket, &op)?;
@@ -268,7 +406,11 @@ fn run() -> anyhow::Result<ExitCode> {
             }
         }
         // Returned early before any daemon round trip.
-        (Command::HashPassword, _) => unreachable!("hash-password is handled locally"),
+        (Command::HashPassword, _)
+        | (Command::Fido2Register { .. }, _)
+        | (Command::Fido2Assert { .. }, _) => {
+            unreachable!("local commands are handled before this match")
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

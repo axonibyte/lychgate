@@ -453,6 +453,7 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
+ "data-encoding",
  "lychgate-core",
 ]
 
@@ -479,6 +480,7 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
+ "data-encoding",
  "libc",
  "lychgate-core",
  "serde",

@@ -1470,3 +1470,137 @@ fn a_password_is_reusable_with_no_ledger() {
     );
     assert!(is_open(&d, now));
 }
+
+// --- FIDO2 assertions: verify path, challenge binding, dispatch -------------
+
+// A software authenticator: fixed ES256 private key + credential id, whose
+// derived public key goes in the inventory. build_assertion signs the daemon's
+// actual (per-open) challenge, so these exercise the real challenge binding.
+const FIDO2_PRIV: [u8; 32] = [0x11u8; 32];
+const FIDO2_CRED_ID: [u8; 16] = [0xabu8; 16];
+
+fn fido2_harness(dir: &crate::scratch::Scratch) -> Daemon {
+    let pub_b64 = data_encoding::BASE64URL_NOPAD
+        .encode(&lychgate_core::fido2::public_key(lychgate_core::Alg::Es256, &FIDO2_PRIV).unwrap());
+    let cred_b64 = data_encoding::BASE64URL_NOPAD.encode(&FIDO2_CRED_ID);
+    let inv_text = format!(
+        r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "linux"
+        channels = ["ssh"]
+        [hosts.ssh]
+        agent_user = "root"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+
+        [[approval.authenticator]]
+        id = "key"
+        kind = "fido2"
+        alg = "es256"
+        credential-id = "{cred_b64}"
+        public-key = "{pub_b64}"
+        [[approval.profile]]
+        id = "fido2"
+        threshold = 1
+        factor = [ {{ authenticator = "key", weight = 1 }} ]
+        "#
+    );
+    let inventory = Inventory::parse(&inv_text).unwrap();
+    let model = inventory.approval_model().unwrap().unwrap();
+    Daemon {
+        inventory,
+        store: Store::at(dir.join("grants.json")),
+        journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
+        drivers: Mutex::new(DriverSet::new()),
+        deadman: Mutex::new(Box::new(FakeDeadman {
+            log: Arc::new(Mutex::new(Vec::new())),
+            fail_install: false,
+            fail_remove: false,
+            fired: Arc::new(Mutex::new(false)),
+        })),
+        approval_window: Duration::from_secs(300),
+        approval: Some(model),
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
+    }
+}
+
+/// Open under the fido2 profile and return the daemon's challenge string.
+fn open_fido2(d: &Daemon, now: SystemTime) -> String {
+    let r = d
+        .dispatch(
+            &Op::Open {
+                host: "db-01".into(),
+                ttl: "1h".into(),
+                profile: Some("fido2".into()),
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(r.result, ResponseResult::Ok);
+    r.pending.expect("a pending challenge").challenge
+}
+
+fn approve_fido2(d: &Daemon, token: &str, now: SystemTime) -> ResponseResult {
+    d.dispatch(
+        &Op::Approve {
+            host: "db-01".into(),
+            token: token.to_string(),
+        },
+        now,
+    )
+    .unwrap()
+    .result
+}
+
+#[test]
+fn a_valid_fido2_assertion_opens_a_profile() {
+    let dir = scratch_dir("fido2-open");
+    let d = fido2_harness(&dir);
+    let now = t(1_000);
+    let challenge = open_fido2(&d, now);
+    let token = lychgate_core::fido2::build_assertion(
+        lychgate_core::Alg::Es256,
+        &FIDO2_PRIV,
+        &FIDO2_CRED_ID,
+        &challenge,
+    )
+    .unwrap();
+    assert_eq!(approve_fido2(&d, &token, now), ResponseResult::Ok);
+    assert!(is_open(&d, now), "a valid assertion should open the grant");
+}
+
+#[test]
+fn an_assertion_for_a_different_challenge_is_refused() {
+    // The challenge binding: an assertion signed over some other challenge does
+    // not open a grant whose pending request has a different nonce.
+    let dir = scratch_dir("fido2-challenge");
+    let d = fido2_harness(&dir);
+    let now = t(1_000);
+    let _real = open_fido2(&d, now);
+    let token = lychgate_core::fido2::build_assertion(
+        lychgate_core::Alg::Es256,
+        &FIDO2_PRIV,
+        &FIDO2_CRED_ID,
+        "lg1.req.SOMETHING-ELSE",
+    )
+    .unwrap();
+    assert_eq!(approve_fido2(&d, &token, now), ResponseResult::Refused);
+    assert!(!is_open(&d, now));
+}
+
+#[test]
+fn a_non_fido2_token_does_not_route_to_the_fido2_branch() {
+    // Dispatch: an all-digits token is a TOTP code, not misread as a FIDO2
+    // assertion; with no TOTP authenticator configured it is refused, and the
+    // fido2 profile stays pending.
+    let dir = scratch_dir("fido2-dispatch");
+    let d = fido2_harness(&dir);
+    let now = t(1_000);
+    open_fido2(&d, now);
+    assert_eq!(approve_fido2(&d, "123456", now), ResponseResult::Refused);
+    assert!(!is_open(&d, now));
+}

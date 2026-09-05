@@ -18,3 +18,5 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 lychgate-core = { workspace = true, features = ["fakes"] }
+# base64url for encoding FIDO2 credential material in the test harness.
+data-encoding = { workspace = true }
