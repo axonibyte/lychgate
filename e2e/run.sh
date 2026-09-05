@@ -36,6 +36,16 @@ ensure_cron() {
     command -v crontab >/dev/null 2>&1
 }
 
+# The BMC acceptance's Redfish mock is Python. FreeBSD base has no python3;
+# install it (Ubuntu ships it). Best-effort — the acceptance skips loudly if
+# it is still missing.
+ensure_python() {
+    command -v python3 >/dev/null 2>&1 && return 0
+    if command -v pkg >/dev/null 2>&1; then pkg install -y python3 >/dev/null 2>&1 || true; fi
+    if command -v apt-get >/dev/null 2>&1; then apt-get -qq install -y python3 >/dev/null 2>&1 || true; fi
+    command -v python3 >/dev/null 2>&1
+}
+
 failed=0
 phase() {
     label=$1
@@ -54,6 +64,7 @@ if ! ensure_cron; then
     echo "e2e battery: FAILED (could not provision cron; the dead-man cannot run)"
     exit 1
 fi
+ensure_python || echo "=== python3 unavailable; the bmc acceptance will skip ==="
 
 # Unit suites: run here when a toolchain exists (the FreeBSD guest); on the
 # Ubuntu guest they already ran inside the pinned build container — said
@@ -65,6 +76,8 @@ else
 fi
 
 phase "ssh acceptance" sh e2e/ssh-acceptance.sh
+
+phase "bmc acceptance" sh e2e/bmc-acceptance.sh
 
 # The oracle self-test: with the dead-man sabotaged away, revert-under-kill
 # MUST fail. A harness that passes here detects nothing.
