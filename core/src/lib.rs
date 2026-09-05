@@ -5,6 +5,7 @@
 //! for a lapsed grant to read as expired.
 
 pub mod approval;
+pub mod authority;
 pub mod bmc;
 pub mod channel;
 pub mod deadman;
@@ -20,6 +21,10 @@ pub mod vnc;
 pub use approval::{
     parse_ssh_public_key, AcceptAny, AnyOf, ApprovalError, ApprovalRequest, ApprovalVerifier,
     RefuseAll, SshSigVerifier, APPROVAL_NAMESPACE,
+};
+pub use authority::{
+    ApprovalSpec, AuthKind, Authenticator, AuthenticatorSpec, Authority, AuthorityError,
+    AuthorityModel, AuthoritySpec, Factor, FactorSpec, Missing, Outcome, WeightedFactor,
 };
 pub use channel::{
     apply_channels, reestablish_channels, revert_channels, ApplyOutcome, ChannelDriver,
