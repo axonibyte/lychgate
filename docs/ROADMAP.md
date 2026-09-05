@@ -563,12 +563,45 @@ opens only after both — the real MFA proof — on both guests.
 once and cannot be replayed; a genuine two-factor gate needs both an SSHSIG and a
 code. Verified green on both reaper guests.
 
-### M8a.4 onward — PLANNED
+### M8a.4 — Password authenticator (Argon2id) — DONE (2026-09-05), bumps to v0.8.0
 
-- **M8a.4 password** (a salted-hash verifier from a file — the weakest,
-  replayable factor, documented) and **M8a.5 FIDO2** (CTAP2 assertion;
-  ES256/EdDSA over `authData || challenge_hash`), each a new authenticator kind
-  behind the finished engine, landing green and guest-verified.
+Password joins Ed25519 and TOTP as an authenticator kind — the deliberately
+weakest factor: a reusable shared secret with no challenge binding and **no
+single-use ledger**, meant for composition at low weight, not to stand alone.
+`core/src/password.rs` is pure: `hash(password, salt)` produces an Argon2id PHC
+string over an injected salt (the CLI supplies OS randomness), and `verify`
+parses the hash (requiring a real digest) and runs Argon2's constant-time compare.
+
+Decisions, resolved at milestone start: **Argon2id** (RustCrypto `argon2`), the
+modern password-at-rest KDF, stored as a PHC string in a mode-600 file, never
+inline; **fallback-by-shape dispatch** — `approve` still takes one token, an
+SSHSIG routes to Ed25519, an all-digits token to TOTP, and anything else is a
+password (so a lychgate password factor must not be purely numeric); a
+**`lychgate hash-password`** helper produces the hash file with no external tool.
+
+**Deliverables** — `core/src/password.rs`; the `password` authenticator kind
+(`hash-file`) in `authority.rs`; startup hash loading + the `verify_proof`
+fallback in the daemon; the `lychgate hash-password` subcommand. Adds the
+`argon2` dep. Bumps to **v0.8.0** (additive).
+
+**Tests** — a committed Argon2id PHC vector verifies and refuses a wrong password
+(the KAT + its mutation-checked mismatch arm); a malformed/digest-less hash is
+refused not silently false; the daemon opens a password profile, refuses a wrong
+one, treats a password as **reusable** (a second grant opens with the same
+secret — asserted, so the no-ledger property is intended), and refuses a missing
+hash file at startup; `e2e/password-acceptance.sh` proves `lychgate hash-password`
+end to end, reuse, refusal, and a **password-AND-Ed25519 two-factor open** on
+both guests.
+
+**Acceptance** — met: a profile can require a password factor; the correct
+password opens (repeatedly, by design), a wrong one is refused, and a genuine
+two-factor gate needs both. Verified green on both reaper guests.
+
+### M8a.5 onward — PLANNED
+
+- **M8a.5 FIDO2** (CTAP2 assertion; ES256/EdDSA over `authData ||
+  challenge_hash`) — the last authenticator kind, behind the finished engine,
+  landing green and guest-verified.
 - MCP server exposing `open` (returns pending until approved), `status`,
   `renew`, `close`, and access handles, so a Claude session can request and
   use a grant without shell access to the daemon host.

@@ -40,8 +40,8 @@ approval authority** (EOS/Antelope model): `open --as <profile>` records a
 pending request and returns a challenge, and the grant opens only once the
 profile's threshold is met by weighted factors — operator signatures
 (`ssh-keygen -Y sign`, an Ed25519 key in the allowed-signers set), TOTP codes
-from an authenticator app (RFC 6238, single-use), nested groups, and/or an
-elapsed `wait`, handed back through `lychgate approve`. Proofs accumulate across
+from an authenticator app (RFC 6238, single-use), Argon2id passwords, nested
+groups, and/or an elapsed `wait`, handed back through `lychgate approve`. Proofs accumulate across
 calls and a wait matures on the daemon's own loop, so a profile can demand
 genuine multi-factor approval. The
 daemon holds grant state durably, serves the CLI over
@@ -172,10 +172,10 @@ required outside `--dry-run`; a policy with no profile refuses the daemon's star
 
 ```toml
 # Authenticators are leaf proofs. ed25519 (an SSHSIG signed with
-# `ssh-keygen -Y sign -n lychgate-approval`) and totp (an RFC 6238 code from an
-# authenticator app) are built; password/fido2 parse but are refused at load
-# until their sub-milestone. A public key is inline (the full openssh line, with
-# comment); a secret is always a mode-600 file path, never inline.
+# `ssh-keygen -Y sign -n lychgate-approval`), totp (an RFC 6238 code from an
+# authenticator app), and password (Argon2id) are built; fido2 parses but is
+# refused at load until its sub-milestone. A public key is inline (the full
+# openssh line, with comment); a secret is always a mode-600 file path.
 [[approval.authenticator]]
 id = "oncall-key"
 kind = "ed25519"
@@ -185,6 +185,14 @@ public-key = "ssh-ed25519 AAAA... oncall@phone"
 id = "oncall-totp"
 kind = "totp"
 secret-file = "/usr/local/etc/lychgate/oncall.totp"   # base32, mode 600
+
+[[approval.authenticator]]
+id = "oncall-pw"
+kind = "password"
+# An Argon2id PHC hash: `lychgate hash-password > oncall.pw` (then chmod 600).
+# A password is reusable and the weakest factor — give it low weight. It must
+# not be purely numeric (that would route to the TOTP path).
+hash-file = "/usr/local/etc/lychgate/oncall.pw"
 
 # A group is itself a threshold over weighted factors — here, MFA: an SSHSIG AND
 # a TOTP code from the on-call operator.

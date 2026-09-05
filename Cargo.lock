@@ -443,7 +443,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "lychgate"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "lychgate-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "argon2",
  "data-encoding",
@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "lychgated"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",

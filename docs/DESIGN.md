@@ -73,8 +73,8 @@ Policy decisions, all enforced in core and all tested:
   (the vnc tunnel) that outlived a restart is re-established. All four
   channels are live: a grant flips PermitRootLogin via a verified drop-in,
   installs break-glass keys in the fence, enables a break-glass iDRAC account,
-  and brings up a console tunnel with a rotated password. As of M8a.3 opening is
-  gated on a weighted-threshold approval authority (Ed25519/SSHSIG and TOTP
+  and brings up a console tunnel with a rotated password. As of M8a.4 opening is
+  gated on a weighted-threshold approval authority (Ed25519/SSHSIG, TOTP and password
   factors, with groups and waits). `--dry-run` registers no drivers and accepts any approval token,
   opening grants as pure bookkeeping.
 - **`lychgate`** — the operator CLI, built for FreeBSD, Linux, and Windows
@@ -119,8 +119,8 @@ agree on the signed bytes with no field-order or delimiter ambiguity.
 modelled on EOS/Antelope permissions. An authority is a `threshold` over
 weighted factors; a factor is one of:
 
-- an **authenticator** — a leaf proof identified by id (an Ed25519 SSHSIG or a
-  TOTP code today; password and FIDO2 in later sub-milestones);
+- an **authenticator** — a leaf proof identified by id (an Ed25519 SSHSIG, a
+  TOTP code, or a password today; FIDO2 in a later sub-milestone);
 - a **group** — itself an authority, satisfied when *its* threshold is met, so
   gates nest into a DAG;
 - a **wait** — satisfied once a duration has elapsed since the request.
@@ -158,6 +158,15 @@ weights (a code alone rarely meets a threshold worth guarding). That is *why* th
 gate is weighted, not a reason TOTP is unsafe. The secret is read from a mode-600
 file at startup (fail-closed on absence), never inline in the world-readable
 inventory.
+
+A **password** is weaker still — reusable, with no single-use ledger, so it
+approves repeatedly until rotated. It is the low-weight factor of last resort,
+meant to be paired with a bound one, never to reach a threshold alone. Its
+Argon2id hash lives in a mode-600 file (`lychgate hash-password` produces it), so
+a leaked file is not a trivial recovery; the daemon verifies in constant time and
+routes a proof to it by elimination — an SSHSIG goes to Ed25519, an all-digits
+token to TOTP, anything else is a password, so a password factor must not be
+purely numeric.
 
 A failed approval is journaled (`ApprovalDenied`, with a reason) — a deliberate
 departure from "refusals journal nothing", because a rejected authorization is
@@ -198,4 +207,4 @@ step, is [ROADMAP.md](ROADMAP.md). The sketch below is the shape of it:
    session can request and use a grant without shell access, drill mode
    (scheduled open-and-revert against a canary host, because a revert path never
    observed firing is indistinguishable from one that does not work), and the
-   remaining authenticator kinds (password, FIDO2).
+   remaining authenticator kind (FIDO2).

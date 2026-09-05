@@ -57,9 +57,11 @@ transitions 6, snapshot v3 validation + store readable-set 6, lifecycle
 approve/deny + journal 3), and 22 for M8a.2 (authority engine: threshold and
 wait boundaries + nested-group resolution + the config refusals 12, pending
 accumulator + snapshot v4 + proto v4 6, daemon open-on-wait + the revert race 4),
-and 14 for M8a.3 (TOTP RFC-4226 KAT + skew boundary + code/base32 parse 6, the
+14 for M8a.3 (TOTP RFC-4226 KAT + skew boundary + code/base32 parse 6, the
 single-use ledger: consume/replay/reload/prune/corrupt 5, daemon dispatch +
-missing-secret refusal 3) — ~288 checked to date, 0 surviving now.
+missing-secret refusal 3), and 10 for M8a.4 (Argon2id PHC KAT + mismatch arm +
+malformed/digest-less refusal 5, daemon open/wrong/reusable/missing-hash + the
+password-fallback dispatch 5) — ~298 checked to date, 0 surviving now.
 Across the project, five survivors have
 appeared and each exposed a real gap rather than being waved through:
 redundant guards removed (the proto version arm, the listener cap check,
@@ -72,7 +74,7 @@ completes), and close stays idempotent.
 
 Cross-platform record: the full battery ran green on both reaper guests
 (freebsd-15.1 on pkg rust 1.96, ubuntu-26.04 in the pinned rust:1.97 image)
-at M1–M8a.3 close — the store's rename/lock semantics,
+at M1–M8a.4 close — the store's rename/lock semantics,
 signal handling, unix-socket transport, the SSH drivers, the
 crontab dead-man's revert-under-kill, the vnc tunnel's
 parent-death signal (`PR_SET_PDEATHSIG` on Linux, `PROC_PDEATHSIG_CTL` on
@@ -80,9 +82,10 @@ FreeBSD): the pdeathsig proof, which has no in-process oracle, killed the
 forward with the daemon on both platforms; the real SSHSIG approval path, where
 `ssh-keygen -Y sign` (OpenSSH 10 on both guests) produces a token the daemon
 verifies before a grant opens; the weighted authority model, where accumulation
-and a real elapsed `wait` open a nested-group multi-factor gate; and — new at
-M8a.3 — real RFC 6238 TOTP codes and a genuine two-factor open (an Ed25519
-signature AND a TOTP code). All proven on both deployment
+and a real elapsed `wait` open a nested-group multi-factor gate; real RFC 6238
+TOTP codes and an Ed25519-AND-TOTP two-factor open; and — new at M8a.4 — a
+`lychgate hash-password` Argon2id hash the daemon verifies, and a
+password-AND-Ed25519 two-factor open. All proven on both deployment
 platforms, not assumed from the workstation.
 
 ## Tier 2 — seeded fuzz: EXISTS (M2)
@@ -237,7 +240,7 @@ rotated password's expiry is the reap loop's alone — and if the parent-death
 signal loses a fork/exec race on a hard crash, an orphaned forward is caught on
 the next boot by the fixed-port teardown, not instantly.
 
-## Approval tier: EXISTS (M8a.1–3)
+## Approval tier: EXISTS (M8a.1–4)
 
 Opening a grant requires an operator approval, and the tier proves it from the
 bytes up. The challenge is a canonical, domain-separated, length-prefixed
@@ -281,6 +284,16 @@ profile, a spent code cannot reopen a fresh grant within its window, a wrong cod
 is refused, a digit token with no matching secret is refused cleanly (the
 SSHSIG-vs-code dispatch), and a missing secret file refuses the daemon's start.
 
+Since M8a.4 **password** is a third kind — Argon2id, the deliberately weakest,
+reusable factor. A committed PHC vector verifies against its password and refuses
+a wrong one (the KAT + a mutation-checked mismatch arm); a malformed or
+digest-less hash is refused, not read as a silent mismatch (fail-closed). A
+password names no authenticator, so it is the dispatch fallback (a token that is
+neither an SSHSIG nor all-digits), verified against every configured hash in
+constant time with **no ledger** — and the daemon tier asserts that reuse
+opens a second grant, so "reusable" is an intended property, not an accident;
+a wrong password is refused and a missing hash file refuses the daemon's start.
+
 End to end on both guests: `e2e/approval-acceptance.sh` runs the real binaries
 with a real `ssh-keygen -Y sign` token (a configured key opens; a stranger and a
 lapsed window are refused), and `e2e/authority-acceptance.sh` proves the weighted
@@ -292,18 +305,22 @@ one host) that is now fixed and does not recur. `e2e/totp-acceptance.sh` proves
 the TOTP factor with real RFC 6238 codes (a python3 helper computes them): a code
 opens a single-factor profile, the replay is refused, a wrong code is refused,
 and a **two-factor profile (Ed25519 AND TOTP) opens only after both** — the real
-MFA proof end to end. The whole real-driver battery
+MFA proof end to end. `e2e/password-acceptance.sh` proves the password factor:
+`lychgate hash-password` makes the hash file, the correct password opens (and
+opens *again* — reusable), a wrong one is refused, and a **password-AND-Ed25519
+two-factor profile** opens only after both. The whole real-driver battery
 (ssh/bmc/vnc/revert-under-kill/service-start) runs through the open → sign →
 approve round trip via `e2e/lib.sh`, so every acceptance proof also proves the
 approval gate does not get in the way of a legitimate open.
 
-**What the approval tier does NOT prove:** password (M8a.4) and FIDO2 (M8a.5) —
-those authenticator kinds parse but are refused at load until built. Trust
-reduces to the configured public keys and TOTP secrets; a compromised key/secret
-is out of scope, as is revocation (edit the inventory and reload). A TOTP code
-does not bind to the host/challenge — the single-use ledger, the short window and
-the root-only socket bound the replay, and the weighted model prices it; it is
-not proven safe *standing alone at a weight worth guarding*. The out-of-band
+**What the approval tier does NOT prove:** FIDO2 (M8a.5) — the last kind, which
+parses but is refused at load until built. Trust reduces to the configured public
+keys, TOTP secrets and password hashes; a compromised key/secret is out of scope,
+as is revocation (edit the inventory and reload). Neither a TOTP code nor a
+password binds to the host/challenge — for TOTP the single-use ledger, short
+window and root-only socket bound the replay; a password is reusable outright and
+priced at low weight for exactly that reason. Neither is proven safe *standing
+alone at a weight worth guarding* — the weighted model is the point. The out-of-band
 paste path is exercised by piping the token; a phone/QR round trip is a CLI
 convenience not yet built. `--dry-run` (no model, first proof opens) proves the
 *lifecycle*, deliberately not the *crypto* — the real verifies are proven only by
