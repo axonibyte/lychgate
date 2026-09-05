@@ -7,7 +7,23 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
+
+/// These tests each spawn one or more real daemon processes, SIGKILL them,
+/// and race sockets — cheap individually, but run in parallel by cargo's
+/// test harness they saturate a loaded guest and widen every startup and
+/// connect window until timing-sensitive ones (the second-daemon dance)
+/// flake. They contend on machine load, not shared state (each uses its own
+/// scratch dir), so the fix is to run them one at a time. Every test takes
+/// this guard first; a poisoned lock (a prior test panicked) is recovered so
+/// one failure does not cascade into spurious lock panics.
+fn serial() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
 
 /// A temporary directory that removes itself, however the test ends. (Same
 /// shape as the crate-internal scratch module; integration tests compile as
@@ -101,6 +117,7 @@ fn grants_doc(state_dir: &Path) -> serde_json::Value {
 
 #[test]
 fn a_single_pass_reaps_an_expired_grant_and_journals_it_before_exiting() {
+    let _serial = serial();
     let dir = Scratch::new("reap");
     let inv = write_inventory(&dir);
     // Opened at epoch second 1000, expired at 1600: long past by any real
@@ -142,6 +159,7 @@ fn a_single_pass_reaps_an_expired_grant_and_journals_it_before_exiting() {
 
 #[test]
 fn a_kill_and_restart_observes_the_same_truth() {
+    let _serial = serial();
     let dir = Scratch::new("killrestart");
     let inv = write_inventory(&dir);
     // A legal open interval (2h span, well under the cap) expiring an hour
@@ -198,6 +216,7 @@ fn a_kill_and_restart_observes_the_same_truth() {
 
 #[test]
 fn a_hand_corrupted_store_is_a_refusal_naming_the_file() {
+    let _serial = serial();
     let dir = Scratch::new("corrupt");
     let inv = write_inventory(&dir);
     let state_dir = state_with(&dir, "{ this is not json");
@@ -213,6 +232,7 @@ fn a_hand_corrupted_store_is_a_refusal_naming_the_file() {
 
 #[test]
 fn a_store_from_a_newer_version_is_refused_quoting_both_versions() {
+    let _serial = serial();
     let dir = Scratch::new("newer");
     let inv = write_inventory(&dir);
     let state_dir = state_with(&dir, r#"{"version":99,"grants":{}}"#);
@@ -226,6 +246,7 @@ fn a_store_from_a_newer_version_is_refused_quoting_both_versions() {
 
 #[test]
 fn a_store_naming_a_host_absent_from_the_inventory_is_refused_and_journals_nothing() {
+    let _serial = serial();
     let dir = Scratch::new("unknownhost");
     let inv = write_inventory(&dir);
     let state_dir = state_with(
@@ -244,6 +265,7 @@ fn a_store_naming_a_host_absent_from_the_inventory_is_refused_and_journals_nothi
 
 #[test]
 fn an_absent_store_is_a_fresh_start_not_an_error() {
+    let _serial = serial();
     let dir = Scratch::new("fresh");
     let inv = write_inventory(&dir);
     let state_dir = dir.join("state");
@@ -264,6 +286,7 @@ fn an_absent_store_is_a_fresh_start_not_an_error() {
 
 #[test]
 fn a_zero_interval_is_refused() {
+    let _serial = serial();
     let dir = Scratch::new("zerointerval");
     let inv = write_inventory(&dir);
     let state_dir = dir.join("state");
@@ -285,6 +308,7 @@ fn a_zero_interval_is_refused() {
 
 #[test]
 fn sigterm_ends_the_loop_with_a_daemon_stop_entry() {
+    let _serial = serial();
     let dir = Scratch::new("sigterm");
     let inv = write_inventory(&dir);
     let state_dir = dir.join("state");
@@ -411,6 +435,7 @@ fn cli(socket: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn the_operator_flow_works_end_to_end_through_both_binaries() {
+    let _serial = serial();
     let dir = Scratch::new("operatorflow");
     let inv = write_inventory(&dir);
     let state_dir = dir.join("state");
@@ -486,6 +511,7 @@ fn the_operator_flow_works_end_to_end_through_both_binaries() {
 
 #[test]
 fn a_grant_near_expiry_can_be_renewed_and_the_renewal_is_journaled() {
+    let _serial = serial();
     let dir = Scratch::new("renewflow");
     let inv = write_inventory(&dir);
     let state_dir = dir.join("state");
@@ -517,6 +543,7 @@ fn a_grant_near_expiry_can_be_renewed_and_the_renewal_is_journaled() {
 
 #[test]
 fn a_request_from_a_future_protocol_is_refused_over_the_socket() {
+    let _serial = serial();
     use std::io::{BufRead, BufReader, Write};
     let dir = Scratch::new("futureproto");
     let inv = write_inventory(&dir);
@@ -540,6 +567,7 @@ fn a_request_from_a_future_protocol_is_refused_over_the_socket() {
 
 #[test]
 fn an_oversized_request_is_refused_and_the_daemon_survives_it() {
+    let _serial = serial();
     use std::io::{BufRead, BufReader, Write};
     let dir = Scratch::new("oversized");
     let inv = write_inventory(&dir);
@@ -564,6 +592,7 @@ fn an_oversized_request_is_refused_and_the_daemon_survives_it() {
 
 #[test]
 fn the_control_socket_is_owner_only() {
+    let _serial = serial();
     use std::os::unix::fs::PermissionsExt;
     let dir = Scratch::new("socketperms");
     let inv = write_inventory(&dir);
@@ -582,6 +611,7 @@ fn the_control_socket_is_owner_only() {
 
 #[test]
 fn a_second_daemon_is_refused_while_the_first_listens_and_a_stale_socket_is_not() {
+    let _serial = serial();
     let dir = Scratch::new("singleton");
     let inv = write_inventory(&dir);
     let state_dir = dir.join("state");
@@ -635,6 +665,7 @@ fn a_second_daemon_is_refused_while_the_first_listens_and_a_stale_socket_is_not(
 
 #[test]
 fn the_cli_reports_a_missing_daemon_rather_than_hanging() {
+    let _serial = serial();
     let dir = Scratch::new("nodaemon");
     let socket = dir.join("nothing-listens-here.sock");
     let out = cli(&socket, &["status"]);
@@ -644,6 +675,7 @@ fn the_cli_reports_a_missing_daemon_rather_than_hanging() {
 
 #[test]
 fn the_cli_enforces_ttl_policy_before_touching_the_socket() {
+    let _serial = serial();
     let dir = Scratch::new("clittl");
     // No daemon anywhere near this socket: if the refusal is the cap error
     // and not a connection error, the client checked policy first.
