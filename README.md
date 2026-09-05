@@ -35,9 +35,13 @@ daemon-held SSH tunnel to the VM's RFB port plus a rotated one-time VNC password
 (set through a configurable, platform-agnostic command). All are verified
 against the target's actual state and reverted on close or expiry, with a
 target-side dead-man backstopping the ssh channels and the tunnel dying with the
-daemon it belongs to. The daemon holds grant state durably, serves the CLI over
-an owner-only unix socket, journals every transition (never a credential), and
-re-establishes a console tunnel that outlived a restart. A `--dry-run` mode
+daemon it belongs to. Opening a grant requires an operator approval: `open`
+records a pending request and returns a challenge, and the grant opens only once
+an operator signs that challenge (`ssh-keygen -Y sign`, an Ed25519 key in the
+allowed-signers set) and hands the token back through `lychgate approve`. The
+daemon holds grant state durably, serves the CLI over
+an owner-only unix socket, journals every transition (never a credential or
+token), and re-establishes a console tunnel that outlived a restart. A `--dry-run` mode
 opens grants as pure bookkeeping, touching no host — for validating an inventory
 or rehearsing the lifecycle. See [TESTING.md](TESTING.md) for exactly what is
 and is not proven, [docs/DESIGN.md](docs/DESIGN.md) for the architecture, and
@@ -80,18 +84,27 @@ Validates the inventory and grant state, binds the control socket
 (`<state-dir>/lychgated.sock`, owner-only), reaps expired grants on an
 interval, and journals every transition to `<state-dir>/journal.jsonl`.
 `--once` runs a single pass for cron; a second daemon on the same socket is
-refused. `--dry-run` registers no channel drivers, so grants open and close as
-pure bookkeeping and touch no host — for validating an inventory or rehearsing
-the lifecycle.
+refused. `--approval-window <secs>` bounds how long a pending request waits for
+an operator (default 300, cap 3600); a request not approved in time lapses and
+is reaped. `--dry-run` registers no channel drivers *and* accepts any approval
+token, so grants open and close as pure bookkeeping and touch no host — for
+validating an inventory or rehearsing the lifecycle. Outside `--dry-run`, the
+daemon refuses to start with no `[approval]` approver configured, since a grant
+could then never be opened.
 
 ```sh
-lychgate open  --host db-01 --ttl 4h
+lychgate open  --host db-01 --ttl 4h   # prints a challenge; the grant is pending
+# an operator, on their own device, signs the challenge:
+printf %s '<challenge>' | ssh-keygen -Y sign -n lychgate-approval -f ~/.ssh/id_ed25519
+lychgate approve --host db-01          # paste the signature on stdin, then EOF
 lychgate status
 lychgate renew --host db-01 --ttl 2h   # accepted only within 2h of expiry
 lychgate close --host db-01
 ```
 
-TTLs take the forms `90s`, `15m`, `2h`; a unit is required, and the 24-hour
+The one-time secret for a channel (the BMC or VNC password) is shown once by
+`approve`, where the grant actually opens — not by `open`. TTLs take the forms
+`90s`, `15m`, `2h`; a unit is required, and the 24-hour
 cap is enforced client-side before a connection is attempted and daemon-side
 regardless. Refusals are printed in the daemon's words verbatim and exit
 nonzero. `--socket` overrides the per-OS default socket path.
@@ -138,6 +151,21 @@ target = "vm-guest-01"               # VM id passed to the commands as {target}
 set_password_cmd = "cbsd bhyve-vnc jname={target} vncpasswordfile={password_file} apply=1"
 clear_password_cmd = "cbsd bhyve-vnc jname={target} vncpassword=none apply=1"
 become_cmd = "doas"                  # optional privilege prefix
+```
+
+A top-level `[approval]` table lists the operators who may approve an open. It
+is required outside `--dry-run` — with no approver, no grant can ever open, so
+the daemon refuses to start.
+
+```toml
+# Each approver is an Ed25519 public key that may sign an open challenge with
+# `ssh-keygen -Y sign -n lychgate-approval`. The full openssh public-key line
+# (with comment) is accepted. TOTP and FIDO2 approvers land in later releases
+# behind the same seam.
+[approval]
+[[approval.ed25519]]
+key-id = "oncall"                    # a label for the journal; must be unique
+public-key = "ssh-ed25519 AAAA... oncall@phone"
 ```
 
 The ssh channel needs the host's `sshd_config` to

@@ -49,9 +49,12 @@ loop with a daemon-stop entry. The service installer has its own battery
 
 Mutation record: 35 at scaffold, 49 for M1, 25 for M2, 25 for M3, 25 for
 M4, 17 for M5, 23 for M6 (bmc string logic + inventory 12, bmc driver 11),
-and 29 for M7 (vnc config + template validation 9, the reestablish/suspend/
+29 for M7 (vnc config + template validation 9, the reestablish/suspend/
 secret-label contract 7, the vnc driver + tunnel + dry-run 8, the lifecycle
-re-establishment + serialization 5) — ~228 checked to date, 0 surviving now.
+re-establishment + serialization 5), and 24 for M8a.1 (approval canonical
+encoding + SSHSIG verify + AnyOf fail-closed 9, pending grant/registry
+transitions 6, snapshot v3 validation + store readable-set 6, lifecycle
+approve/deny + journal 3) — ~252 checked to date, 0 surviving now.
 Across the project, five survivors have
 appeared and each exposed a real gap rather than being waved through:
 redundant guards removed (the proto version arm, the listener cap check,
@@ -64,12 +67,14 @@ completes), and close stays idempotent.
 
 Cross-platform record: the full battery ran green on both reaper guests
 (freebsd-15.1 on pkg rust 1.96, ubuntu-26.04 in the pinned rust:1.97 image)
-at M1–M7 close — the store's rename/lock semantics,
+at M1–M8a.1 close — the store's rename/lock semantics,
 signal handling, unix-socket transport, the SSH drivers, the
-crontab dead-man's revert-under-kill, and — new at M7 — the vnc tunnel's
+crontab dead-man's revert-under-kill, the vnc tunnel's
 parent-death signal (`PR_SET_PDEATHSIG` on Linux, `PROC_PDEATHSIG_CTL` on
 FreeBSD): the pdeathsig proof, which has no in-process oracle, killed the
-forward with the daemon on both platforms. All proven on both deployment
+forward with the daemon on both platforms; and — new at M8a.1 — the real SSHSIG
+approval path, where `ssh-keygen -Y sign` (OpenSSH 10 on both guests) produces a
+token the daemon verifies before a grant opens. All proven on both deployment
 platforms, not assumed from the workstation.
 
 ## Tier 2 — seeded fuzz: EXISTS (M2)
@@ -224,6 +229,47 @@ rotated password's expiry is the reap loop's alone — and if the parent-death
 signal loses a fork/exec race on a hard crash, an orphaned forward is caught on
 the next boot by the fixed-port teardown, not instantly.
 
+## Approval tier: EXISTS (M8a.1)
+
+Opening a grant now requires an operator approval, and the tier proves it from
+the bytes up. The challenge is a canonical, domain-separated, length-prefixed
+encoding of `(nonce, host, ttl, requested_at)`; a golden vector pins the exact
+bytes and a framing test shows the length prefixes defeat a delimiter collision,
+so daemon and `ssh-keygen` cannot disagree about what was signed. The SSHSIG
+Ed25519 backend is proven against committed `ssh-keygen -Y sign` fixtures: a good
+signature verifies, and the oracle self-test refuses a signature over the wrong
+bytes, under the wrong namespace, for a different request, and from a signer not
+in the allowed set — the four ways a verify must fail, each asserted, not
+assumed. `AnyOf` composes backends fail-closed (an empty approver set refuses
+rather than opens). The `[approval]` config is Tier-1 validated (a present-but-
+empty table, an empty or duplicate key-id, and a public key that will not parse
+are each refused at load, not at three a.m.). The pending lifecycle is proven at
+the grant/registry/snapshot tiers: a second open while one is pending is refused,
+approval anchors expiry at approve-time not request-time, the approval window
+lapses at its exact deadline and is reaped, and a v3 pending record is validated
+strictly (deadline after request, window within the cap, a 32-byte nonce, no
+channels or open/expiry fields) while a v2 pre-approval file still loads. The
+`Approve` op and the token/challenge decoders join the fuzz seed set.
+
+End to end, `e2e/approval-acceptance.sh` runs the real binaries on a guest with a
+real `ssh-keygen -Y sign` token: `open` returns a pending challenge and no grant,
+a signature from the configured operator key approves it and the grant opens, a
+signature from an unconfigured key is refused with the grant left pending, and an
+approval after `--approval-window` has lapsed is refused. The whole real-driver
+battery (ssh/bmc/vnc/revert-under-kill/service-start) now runs through the same
+open → sign → approve round trip via `e2e/lib.sh`, so every acceptance proof is
+also a proof that the approval gate does not get in the way of a legitimate open.
+Both guests green.
+
+**What the approval tier does NOT prove:** TOTP (M8a.2) and FIDO2 (M8a.3) — only
+the seam is built for those. Trust in the Ed25519 backend reduces to the
+allowed-signers set in `[approval]`; a compromised operator key is out of scope,
+as is revocation (edit the inventory and reload). The out-of-band paste path is
+exercised by piping the token; a phone/QR round trip is a CLI convenience not yet
+built. The `--dry-run` `AcceptAny` verifier that lets the hermetic e2e open
+without a key proves the *lifecycle*, deliberately not the *crypto* — the real
+SSHSIG verify is proven only by the guest acceptance and the fixture tests.
+
 ## Wire contract and operator-flow tiers: EXISTS (M2)
 
 The request/response surface is pinned by a contract table in
@@ -242,9 +288,11 @@ the first listens, a stale socket replaced, a missing daemon failing fast.
   daemon says which mode it is in at startup.
 - The dead-man timer on the target reverts access if the daemon host dies
   (M5), but it depends on cron; a host without cron is refused an open.
-- Authorization is the socket's file mode and nothing else: any process that
-  can reach the owner-only socket can open grants. The operator-approval
-  design is M8; until then, root on the daemon host is the trust boundary.
+- Reaching the owner-only socket lets a process *request* a grant, but since
+  M8a.1 opening it also requires an operator approval (a valid SSHSIG over the
+  daemon's challenge from a configured signer). Root on the daemon host is still
+  the boundary for status/close and for who runs the daemon; the approval gate
+  is what stands between socket access and an open grant.
 - The listener's take() allocation bound (a writer that never sends a
   newline) has no behavioral oracle — the observable is memory — and is
   stated in a comment rather than pretend-tested.

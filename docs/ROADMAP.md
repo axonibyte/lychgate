@@ -413,16 +413,72 @@ rotates the password shown-once and journal-clean; close tears both down.
 Verified green on both reaper guests, including the OS-specific pdeathsig proof
 on FreeBSD and Ubuntu.
 
-## M8 — Operator surface and the long-tail tiers — PLANNED, bumps to v0.5.0
+## M8 — Operator surface and the long-tail tiers
 
-The reason the project exists: "claude go fix this," safely.
+The reason the project exists: "claude go fix this," safely — the human
+authorizes, the agent works inside the grant. M8 is phased: the approval
+lifecycle and its first credential land first (M8a.1, done), TOTP and FIDO2
+follow behind the same seam, then the MCP server, drill mode, operational docs,
+and the remaining test tiers.
 
-**Deliverables**
+### M8a.1 — Approval flow: pending grants + SSHSIG Ed25519 — DONE (2026-09-05), bumps to v0.5.0
 
-- Approval flow: opening a grant requires an operator-held credential; the
-  design principle is that the human authorizes, the agent works inside the
-  grant. Remote authorization (from a phone, away from the workstation) gets
-  designed here — see Open questions.
+Opening no longer opens. `open` records a **pending** grant (write-ahead intent)
+and returns a challenge; no drivers run and no secret is issued. The operator
+signs the challenge on their own device and runs `lychgate approve`, whose token
+the daemon verifies against the pending request before it transitions
+Pending → Opening and runs the existing apply path. So the one-time secret handoff
+moved from `open` to `approve`. A pending request not approved within a bounded
+window (`--approval-window`, default 300s, cap 3600s) lapses and is reaped, fail
+closed.
+
+Design decisions, resolved at milestone start:
+
+- **Out-of-band approval, no new listener.** `open` returns the challenge; the
+  operator approves on their own device and pastes the token back through
+  `lychgate approve` (token on stdin, off the argv). The daemon grows no network
+  surface.
+- **Ed25519 = SSHSIG.** The operator signs with
+  `ssh-keygen -Y sign -n lychgate-approval -f <key>`, reusing existing SSH keys,
+  ssh-agent and hardware `ed25519-sk`; the daemon verifies the SSHSIG envelope
+  (namespace-checked) against the configured allowed-signers set. No bespoke
+  signing tool, no hand-rolled crypto — the `ssh-key` crate does the verify.
+- **One pluggable seam, credentials phased.** `ApprovalVerifier` is a pure core
+  trait; `AnyOf` composes backends fail-closed (empty set → refuse). This
+  milestone ships the lifecycle, the seam and Ed25519; TOTP (M8a.2) and FIDO2
+  (M8a.3) land behind the same trait.
+- **The challenge is a canonical, domain-separated, length-prefixed encoding**
+  of `(nonce, host, ttl, requested_at)`, so daemon and `ssh-keygen` sign exactly
+  the same bytes with no field-order or delimiter ambiguity.
+
+**Deliverables** — the state (`Pending`, observed as `AwaitingApproval` /
+`ApprovalExpired`), the `approve` op and CLI subcommand, the `[approval]`
+inventory table with `[[approval.ed25519]]` allowed signers, `--approval-window`,
+a `--dry-run` `AcceptAny` verifier for the hermetic tests, journal events
+(`Requested`/`Approved`/`RequestExpired`/`RequestCancelled`/`ApprovalDenied` —
+never a token or secret), and store/proto schema v3 (v2 files still load,
+upgraded on the next write).
+
+**Tests** — Tier-1 canonical-encoding golden vector and framing; SSHSIG verify
+against committed `ssh-keygen -Y sign` fixtures with the oracle self-test (a
+signature over the wrong bytes / wrong namespace / unlisted signer is refused);
+pending transitions, exact-deadline expiry, second-open refused, approve-anchors-
+at-approve-time; snapshot v3 strict validation and v2 read-compat; proto v3 +
+`Approve` decode; the fuzz seeds extended to the token/challenge decoders; and
+`e2e/approval-acceptance.sh` proving the real SSHSIG path end to end on both
+guests (a configured key approves and opens; a stranger's key is refused; a
+lapsed window is refused). The whole real-driver battery now runs through the
+approval gate via `e2e/lib.sh`.
+
+**Acceptance** — met: a grant opens only after a valid operator signature over
+the daemon's own challenge; an unconfigured signer and a lapsed window are both
+refused fail-closed; the secret is issued once at approve and never journaled.
+Verified green on both reaper guests.
+
+### M8a.2 onward — PLANNED
+
+- **M8a.2 TOTP** and **M8a.3 FIDO2** behind the `ApprovalVerifier` seam, each
+  landing green and guest-verified.
 - MCP server exposing `open` (returns pending until approved), `status`,
   `renew`, `close`, and access handles, so a Claude session can request and
   use a grant without shell access to the daemon host.
@@ -471,9 +527,10 @@ yet measuring anything.
    daemon host and use the socket (recommendation: yes, and never invent a
    custom authenticated network protocol for a security tool when sshd is
    already trusted), or a TLS listener.
-3. **Approval mechanism** (M8): what the operator-held credential is — a
-   signed token from a phone, a hardware key tap, TOTP. Decide against the
-   real workflow at the time.
+3. **Approval mechanism** (M8): DECIDED (M8a.1) — an out-of-band signed token
+   the operator produces on their own device and pastes back, verified against
+   a pending challenge. All three credential types live behind one seam,
+   phased: Ed25519 (SSHSIG, shipped), then TOTP (M8a.2), then FIDO2 (M8a.3).
 4. **BMC dead-man residual risk** (M6): whether any iDRAC-side scheduled
    disable exists that is worth using, or whether daemon-plus-drill is the
    honest ceiling for the BMC channel.
