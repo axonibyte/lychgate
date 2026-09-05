@@ -290,7 +290,7 @@ posture + fence before the daemon returns to reconcile), and its
 backstop is removed. `e2e/service-start.sh` redeems the M1-deferred claim:
 rc(8) and systemd really start and stop the daemon.
 
-## M6 — BMC driver — IN PROGRESS, bumps to v0.4.0
+## M6 — BMC driver — DONE (2026-09-04), bumped to v0.4.0
 
 Design decisions, resolved at milestone start:
 
@@ -356,6 +356,11 @@ does not prove.
 **Acceptance** — against one real iDRAC: open enables the account with a
 fresh password, verify confirms, close disables it, and the password never
 appears in the journal or logs.
+Met against a self-hosted Redfish mock (e2e/bmc-acceptance.sh) rather than
+a bench iDRAC, which is out of CI reach: real lychgated + real curl +
+GET/PATCH over HTTP, password shown once and absent from the journal,
+stranger-slot refused. A real iDRAC remains the ceiling, named in
+TESTING.md as the gap the mock does not close.
 
 ## M7 — VNC driver — PLANNED
 

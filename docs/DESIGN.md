@@ -95,8 +95,10 @@ step, is [ROADMAP.md](ROADMAP.md). The sketch below is the shape of it:
    close removes it (doing the revert early) and journals whether it had
    already fired. Requires cron on the managed host — a grant is refused
    rather than opened without a working backstop.
-3. **bmc** — iDRAC account enable/disable via Redfish `AccountService`, with
-   racadm-over-SSH and ipmitool fallbacks; generated passwords go to escrow.
+3. **bmc** (done, M6) — iDRAC break-glass account enable/disable via Redfish
+   `AccountService` over curl, fresh password each open (shown once, escrowed,
+   never journaled); racadm/ipmitool named-but-unimplemented. No dead-man (an
+   iDRAC has no shell) — expiry enforcement is the daemon's alone.
 4. **vnc** — brokered console sessions via
    [autovnc](https://github.com/calebpower/autovnc), serialized because bhyve's
    RFB server accepts exactly one client.

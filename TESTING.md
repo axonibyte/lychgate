@@ -48,8 +48,8 @@ loop with a daemon-stop entry. The service installer has its own battery
 (`tools/install-service-test.sh`), run by the gate and CI.
 
 Mutation record: 35 at scaffold, 49 for M1, 25 for M2, 25 for M3, 25 for
-M4, and 17 for M5 (dead-man rendering 8, lifecycle + ExecDeadman wiring 9)
-— ~176 checked to date, 0 surviving now. Across the project, five survivors have
+M4, 17 for M5, and 23 for M6 (bmc string logic + inventory 12, bmc driver
+11) — ~199 checked to date, 0 surviving now. Across the project, five survivors have
 appeared and each exposed a real gap rather than being waved through:
 redundant guards removed (the proto version arm, the listener cap check,
 the empty-needs-revert refusal that turned out to be a legitimate
@@ -61,7 +61,7 @@ completes), and close stays idempotent.
 
 Cross-platform record: the full battery ran green on both reaper guests
 (freebsd-15.1 on pkg rust 1.96, ubuntu-26.04 in the pinned rust:1.97 image)
-at M1–M5 close — the store's rename/lock semantics,
+at M1–M6 close — the store's rename/lock semantics,
 signal handling, unix-socket transport, the SSH drivers, and the
 crontab dead-man's revert-under-kill are proven on both deployment
 platforms, not assumed from the workstation.
@@ -130,9 +130,15 @@ acceptance, service start/stop under rc(8)/systemd, and the headline —
 backstop armed, SIGKILL the daemon, and the target's own crontab dead-man
 reverts posture and keys before the daemon returns to reconcile (journaling
 the expire and a close with deadman_fired true, idempotent on a second
-boot). Its oracle self-test is run.sh's sabotage pass: remove the installed
+boot). The reconcile is driven the way production runs it — repeated passes,
+not a single one — because the daemon retries a revert step left stuck by a
+transient (a dropped ssh connection under load) on the next pass by design;
+the test loops passes until the close lands and fails loudly if it never
+does, so it proves *eventual* closure across passes, not single-pass
+closure. Its oracle self-test is run.sh's sabotage pass: remove the installed
 dead-man and the run MUST fail — a harness that passes with a dead backstop
-measures nothing.
+measures nothing. (The sabotage run still fails: with no dead-man, the close
+never records a firing across the whole pass window.)
 
 **What Tier 4 does NOT prove:** it drives one host over loopback, so a
 network partition *between* the daemon and a remote target mid-apply is
@@ -140,6 +146,30 @@ still the scripted transport's territory, not the live tier's. The dead-man
 depends on cron running on the managed host; the daemon refuses an open
 where it is absent, but a cron daemon that is installed yet not actually
 scheduling is beyond what the acceptance asserts.
+
+## BMC driver tier: EXISTS (M6)
+
+The Redfish AccountService bodies, the account-GET parse (Enabled read-back,
+stranger-slot refusal, empty-slot claim), and break-glass password
+generation are Tier-1 tested and fuzzed (responses arrive from the iDRAC
+over the network). A `Secret` type redacts through Debug/Display so a
+credential cannot leak via a stray format; its one delivery path (the open
+response, shown once by the CLI) and its absence from the journal are proven
+by a lifecycle test with two oracles. The driver is proven over a scripted
+Redfish fake (rotate+verify, escrow-before-enable, stranger-slot and HTTP
+failures, read-back disagreement on apply and revert, non-200 reads), and
+end to end over real HTTP by `e2e/bmc-acceptance.sh`: the real daemon and
+curl transport against a self-hosted Redfish mock (enable+rotate on open,
+password shown once and journal-clean, disable on close, stranger-slot
+refused untouched).
+
+**What the BMC tier does NOT prove:** a real bench iDRAC. The mock speaks
+the AccountService subset lychgate uses; a real controller's quirks
+(password-complexity rejections, slot-management races, vendor Redfish
+deviations) are beyond CI's reach. There is no dead-man for bmc — an iDRAC
+has no shell for the crontab backstop — so if the daemon dies for longer
+than a bmc grant's TTL, the account stays enabled until the daemon returns;
+expiry enforcement for bmc is lychgated's alone.
 
 ## Wire contract and operator-flow tiers: EXISTS (M2)
 

@@ -26,13 +26,15 @@ Grant policy, by design:
 
 ## Status
 
-The control plane is real, and the SSH channels are live: opening a grant
-flips the host's `PermitRootLogin` posture through a verified drop-in and
-installs break-glass keys inside a lychgate-owned fence in authorized_keys —
-both verified against the host's actual state and both reverted on close or
-expiry. The daemon holds grant state durably, serves the CLI over an
-owner-only unix socket, and journals every transition. The `bmc` and `vnc`
-channels remain bookkeeping-only until their drivers exist. See
+The control plane is real, and the `ssh`, `authorized-keys`, and `bmc`
+channels are live: opening a grant flips the host's `PermitRootLogin` posture through a verified
+drop-in, installs break-glass keys inside a lychgate-owned fence in
+authorized_keys, and enables a break-glass iDRAC account over Redfish with a
+fresh one-time password — all verified against the target's actual state and
+all reverted on close or expiry, with a target-side dead-man backstopping the
+ssh channels. The daemon holds grant state durably, serves the CLI over an
+owner-only unix socket, and journals every transition (never a credential).
+The `vnc` channel remains bookkeeping-only until its driver exists. See
 [TESTING.md](TESTING.md) for exactly what is and is not proven,
 [docs/DESIGN.md](docs/DESIGN.md) for the architecture, and
 [docs/ROADMAP.md](docs/ROADMAP.md) for the milestone plan of record.
@@ -105,6 +107,16 @@ root_posture_default = "no"          # what PermitRootLogin must be at rest
 root_posture_emergency = "prohibit-password"
 emergency_keys = ["ssh-ed25519 AAAA... claude-breakglass"]
 become_cmd = "doas"                  # omit if the agent account is root
+
+# Required when the bmc channel is declared.
+[hosts.bmc]
+endpoint = "https://10.0.4.11-idrac"
+method = "redfish"                   # racadm/ipmitool reserved, not yet built
+account_user = "breakglass"          # the break-glass iDRAC account
+account_id = "4"                     # its AccountService slot
+auth_user = "lychgate-svc"
+auth_password_file = "/usr/local/etc/lychgate/db-01.bmc"   # not inline
+tls = { mode = "ca-file", path = "/usr/local/etc/lychgate/idrac-ca.pem" }
 ```
 
 The ssh channel needs the host's `sshd_config` to
