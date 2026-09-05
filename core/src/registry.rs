@@ -192,6 +192,25 @@ impl GrantRegistry {
             .collect()
     }
 
+    /// Hosts observed open right now, with the channels they applied, in name
+    /// order. Used at boot to re-establish daemon-held resources (the vnc
+    /// tunnel) for grants that outlived a daemon restart. Expired grants are
+    /// omitted — the reap loop handles those.
+    pub fn open_channels(&self, now: SystemTime) -> Vec<(String, Vec<Channel>)> {
+        self.grants
+            .iter()
+            .filter_map(|(name, g)| match g.status(now) {
+                GrantStatus::Open { .. } => match g.parts() {
+                    Some(crate::grant::GrantParts::Open { channels, .. }) => {
+                        Some((name.clone(), channels))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Boot-time demotion: a stored Opening means a daemon died mid-apply,
     /// and nobody knows how far it got — every intended channel must be
     /// treated as possibly applied. Only callable when nothing can be

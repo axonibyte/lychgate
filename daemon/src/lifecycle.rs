@@ -21,8 +21,8 @@ use anyhow::Context;
 
 use lychgate_core::proto::{status_lines, Op, Response};
 use lychgate_core::{
-    apply_channels, revert_channels, ApplyOutcome, Channel, DriverSet, GrantRegistry, Host,
-    Inventory, RegistryError, RevertOutcome, Ttl,
+    apply_channels, reestablish_channels, revert_channels, ApplyOutcome, Channel, DriverSet,
+    GrantRegistry, Host, Inventory, ReestablishOutcome, RegistryError, RevertOutcome, Ttl,
 };
 
 use crate::drivers::deadman::DeadmanControl;
@@ -201,19 +201,34 @@ impl Daemon {
                     },
                 )?;
                 // Collect any one-time credential an applied channel produced
-                // (a BMC break-glass password) to hand back in the response.
-                // It is never journaled — the Open event above records the
-                // channels, never the secret.
-                let secret = {
+                // (a BMC break-glass password, a one-time VNC password) to hand
+                // back in the response. It is never journaled — the Open event
+                // above records the channels, never the secret.
+                let produced = {
                     let mut drivers = self.drivers.lock().expect("drivers poisoned");
-                    applied
-                        .iter()
-                        .find_map(|c| drivers.take_secret(*c))
-                        .map(|s| s.reveal().to_string())
+                    applied.iter().find_map(|c| {
+                        drivers
+                            .take_secret(*c)
+                            .map(|s| (*c, s.reveal().to_string()))
+                    })
+                };
+                let (secret, secret_label, outcome) = match produced {
+                    Some((Channel::Vnc, s)) => {
+                        // The non-secret endpoint the operator connects to.
+                        let endpoint = host_cfg
+                            .vnc
+                            .as_ref()
+                            .map(|v| format!("vnc console at 127.0.0.1:{}", v.local_port));
+                        (Some(s), Some("one-time VNC password".to_string()), endpoint)
+                    }
+                    Some((_, s)) => (Some(s), Some("break-glass BMC password".to_string()), None),
+                    None => (None, None, None),
                 };
                 Ok(Response {
                     expires_at: Some(epoch_secs(expires)),
                     secret,
+                    secret_label,
+                    outcome,
                     ..Response::ok()
                 })
             }
@@ -440,10 +455,13 @@ impl Daemon {
         Ok(())
     }
 
-    /// Boot recovery, before the listener starts: a stored `Opening` means a
-    /// daemon died mid-apply, so every intended channel is treated as
-    /// possibly applied and demoted to needs-revert. Nothing can be
-    /// legitimately in flight at this point.
+    /// Boot recovery, before the listener starts, in two steps over disjoint
+    /// states. First a stored `Opening` means a daemon died mid-apply, so every
+    /// intended channel is treated as possibly applied and demoted to
+    /// needs-revert. Then, for grants that are durably `Open` and not yet
+    /// expired, any daemon-held resource (the vnc tunnel, which died with the
+    /// old daemon) is re-established so the grant's window is honored across a
+    /// restart. Nothing can be legitimately in flight at this point.
     pub fn boot_recover(&self, now: SystemTime) -> anyhow::Result<()> {
         let demoted = self.store.mutate(|doc| {
             let mut registry = GrantRegistry::from_parts(&self.inventory, doc)
@@ -464,6 +482,70 @@ impl Daemon {
                 },
             )?;
             println!("lychgated: {host} was mid-open at last shutdown; demoted to needs-revert");
+        }
+        self.reestablish_open(now)?;
+        Ok(())
+    }
+
+    /// Re-establish daemon-held resources for durably-open, unexpired grants
+    /// after a restart. Only channels with a daemon-held resource have anything
+    /// to do (the default `reestablish` just re-reads state); today that is
+    /// vnc's tunnel. A grant whose resources cannot be restored is demoted to
+    /// needs-revert here — reachability we cannot restore is reachability we
+    /// retract, fail-closed. Re-establishment re-asserts reachability only; it
+    /// never re-runs apply, so a credential the operator already holds is not
+    /// rotated out from under them.
+    fn reestablish_open(&self, now: SystemTime) -> anyhow::Result<()> {
+        let open: Vec<(String, Vec<Channel>)> = {
+            let doc = self.store.read()?;
+            let registry = GrantRegistry::from_parts(&self.inventory, &doc)
+                .with_context(|| format!("validating {}", self.store.path().display()))?;
+            registry.open_channels(now)
+        };
+        for (host, channels) in open {
+            let host_cfg = self.host(&host).expect("open_channels names a known host");
+            let outcome = {
+                let mut drivers = self.drivers.lock().expect("drivers poisoned");
+                reestablish_channels(&mut drivers, &host_cfg, &channels)
+            };
+            match outcome {
+                ReestablishOutcome::Restored => {
+                    self.journal(
+                        now,
+                        &Event::Reestablish {
+                            host: host.clone(),
+                            channels: channels.clone(),
+                        },
+                    )?;
+                }
+                ReestablishOutcome::Lost { lost } => {
+                    // Retract: move it to needs-revert so the first pass fully
+                    // reverts (killing any partial resource, clearing the
+                    // password). begin_revert always accepts an Open grant.
+                    self.with_registry(|reg| reg.begin_revert(&host, now))?
+                        .expect("an open grant can always begin revert");
+                    let stuck: Vec<Channel> = lost.iter().map(|(c, _)| *c).collect();
+                    self.journal(
+                        now,
+                        &Event::OpenFailed {
+                            host: host.clone(),
+                            failed: stuck.first().copied().unwrap_or(Channel::Vnc),
+                            stuck,
+                            error: format!(
+                                "daemon restarted; could not re-establish {}",
+                                lost.iter()
+                                    .map(|(c, e)| format!("{c:?}: {e}"))
+                                    .collect::<Vec<_>>()
+                                    .join("; ")
+                            ),
+                        },
+                    )?;
+                    println!(
+                        "lychgated: {host} could not be re-established after restart; \
+                         reverting"
+                    );
+                }
+            }
         }
         Ok(())
     }

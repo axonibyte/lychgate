@@ -220,6 +220,15 @@ fn main() -> anyhow::Result<()> {
         let _ = fs::remove_file(&socket_path);
     }
 
+    // Tear down any daemon-held resource (a vnc tunnel) without reverting: the
+    // grant stays open on disk and its reachability is restored on the next
+    // boot. Belt-and-suspenders alongside the child's parent-death signal.
+    daemon
+        .drivers
+        .lock()
+        .expect("drivers poisoned")
+        .suspend_all();
+
     daemon
         .journal
         .lock()

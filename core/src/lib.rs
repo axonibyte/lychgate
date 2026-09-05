@@ -17,8 +17,8 @@ pub mod ttl;
 pub mod vnc;
 
 pub use channel::{
-    apply_channels, revert_channels, ApplyOutcome, ChannelDriver, ChannelState, DriverError,
-    DriverSet, RevertOutcome,
+    apply_channels, reestablish_channels, revert_channels, ApplyOutcome, ChannelDriver,
+    ChannelState, DriverError, DriverSet, ReestablishOutcome, RevertOutcome,
 };
 pub use grant::{Grant, GrantError, GrantStatus};
 pub use inventory::{

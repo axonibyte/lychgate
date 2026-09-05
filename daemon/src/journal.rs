@@ -84,6 +84,13 @@ pub enum Event {
         opened_at: u64,
         expires_at: u64,
     },
+    /// A durably-open grant's daemon-held resources (the vnc tunnel) were
+    /// re-established after a restart — reachability restored, no host state
+    /// re-applied. Audit parity with open/expire; never a credential.
+    Reestablish {
+        host: String,
+        channels: Vec<Channel>,
+    },
 }
 
 #[derive(Serialize)]

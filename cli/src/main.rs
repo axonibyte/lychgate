@@ -98,10 +98,19 @@ fn run() -> anyhow::Result<ExitCode> {
         (Command::Open { host, .. }, r) => {
             let expires = r.expires_at.unwrap_or(0);
             println!("grant open on {host} until epoch {expires}");
+            // A non-secret endpoint the operator connects to (the vnc console).
+            if let Some(outcome) = &r.outcome {
+                println!("{outcome}");
+            }
             if let Some(secret) = &r.secret {
                 // Shown exactly once — the daemon does not store or journal
-                // it. Copy it now.
-                println!("break-glass BMC password (shown once): {secret}");
+                // it. Copy it now. The label defaults to the BMC wording so a
+                // daemon that sends none prints exactly as before.
+                let label = r
+                    .secret_label
+                    .as_deref()
+                    .unwrap_or("break-glass BMC password");
+                println!("{label} (shown once): {secret}");
             }
         }
         (Command::Renew { host, .. }, r) => {

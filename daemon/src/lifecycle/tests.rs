@@ -717,3 +717,245 @@ fn a_bmc_style_secret_reaches_the_open_response_but_never_the_journal() {
         "the secret leaked into the journal"
     );
 }
+
+// --- M7: vnc re-establishment and console serialization --------------------
+
+const VNC_INVENTORY: &str = r#"
+[[hosts]]
+name = "hv"
+address = "10.0.5.20"
+os = "freebsd"
+channels = ["vnc"]
+
+[hosts.vnc]
+agent_user = "lychgate"
+rfb_port = 5900
+local_port = 5959
+target = "vm"
+set_password_cmd = "set {target} {password_file}"
+clear_password_cmd = "clear {target}"
+"#;
+
+fn dummy_deadman() -> Box<FakeDeadman> {
+    Box::new(FakeDeadman {
+        log: Arc::new(Mutex::new(Vec::new())),
+        fail_install: false,
+        fail_remove: false,
+        fired: Arc::new(Mutex::new(false)),
+    })
+}
+
+fn inject_open(dir: &std::path::Path, host: &str, opened: u64, expires: u64, channels: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        dir.join("grants.json"),
+        format!(
+            r#"{{"version":2,"grants":{{"{host}":{{"state":"open","opened_at":{opened},"expires_at":{expires},"channels":{channels}}}}}}}"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn boot_reestablishes_an_open_vnc_grant_that_outlived_a_restart() {
+    // A durably-open vnc grant plus a resource that survived (already_open →
+    // reestablish reads Open): boot restores it and journals a reestablish,
+    // and the grant stays open.
+    let dir = scratch_dir("vnc-reest");
+    let log: CallLog = Arc::new(Mutex::new(Vec::new()));
+    let mut drivers = DriverSet::new();
+    drivers
+        .register(FakeDriver::already_open(
+            Channel::Vnc,
+            Script::Succeed,
+            Arc::clone(&log),
+        ))
+        .unwrap();
+    inject_open(&dir, "hv", 1000, 80_000, r#"["vnc"]"#);
+    let daemon = Daemon {
+        inventory: Inventory::parse(VNC_INVENTORY).unwrap(),
+        store: Store::at(dir.join("grants.json")),
+        journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
+        drivers: Mutex::new(drivers),
+        deadman: Mutex::new(dummy_deadman()),
+    };
+
+    daemon.boot_recover(t(2000)).unwrap();
+
+    // Still open, and re-establishment was recorded.
+    assert_eq!(daemon.status(t(2000)).unwrap()[0].state, GrantState::Open);
+    let events: Vec<String> = std::fs::read_to_string(dir.join("journal.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["event"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert!(events.contains(&"reestablish".to_string()), "{events:?}");
+    // The default reestablish delegated to verify — a driver call, not a re-apply.
+    let calls = log.lock().unwrap();
+    assert!(calls.contains(&(Channel::Vnc, "verify")), "{calls:?}");
+    assert!(
+        !calls.contains(&(Channel::Vnc, "apply")),
+        "reestablish must not re-apply: {calls:?}"
+    );
+}
+
+#[test]
+fn a_vnc_grant_whose_tunnel_cannot_be_reestablished_is_reverted() {
+    // The resource did not survive (open=false → reestablish reads Closed):
+    // boot demotes the grant to needs-revert rather than leave it half-open.
+    let dir = scratch_dir("vnc-reest-lost");
+    let log: CallLog = Arc::new(Mutex::new(Vec::new()));
+    let mut drivers = DriverSet::new();
+    drivers
+        .register(FakeDriver::new(
+            Channel::Vnc,
+            Script::Succeed,
+            Arc::clone(&log),
+        ))
+        .unwrap();
+    inject_open(&dir, "hv", 1000, 80_000, r#"["vnc"]"#);
+    let daemon = Daemon {
+        inventory: Inventory::parse(VNC_INVENTORY).unwrap(),
+        store: Store::at(dir.join("grants.json")),
+        journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
+        drivers: Mutex::new(drivers),
+        deadman: Mutex::new(dummy_deadman()),
+    };
+
+    daemon.boot_recover(t(2000)).unwrap();
+
+    let line = &daemon.status(t(2000)).unwrap()[0];
+    assert_eq!(line.state, GrantState::NeedsRevert);
+    assert_eq!(line.stuck_channels.as_deref(), Some(&[Channel::Vnc][..]));
+}
+
+#[test]
+fn simultaneous_opens_of_one_console_produce_one_grant_and_one_apply() {
+    // Tier 6, the milestone's headline: N threads race to open the same host.
+    // The store's file lock plus begin_open (which refuses any non-Closed
+    // grant) serialize them, so exactly one apply runs — one tunnel, one
+    // password — and the losers are refused without ever reaching a driver.
+    // The oracles are resource state (one apply) and committed state (one open
+    // grant); response counts are only corroboration.
+    let dir = scratch_dir("vnc-race");
+    let log: CallLog = Arc::new(Mutex::new(Vec::new()));
+    let mut drivers = DriverSet::new();
+    drivers
+        .register(FakeDriver::new(
+            Channel::Vnc,
+            Script::Succeed,
+            Arc::clone(&log),
+        ))
+        .unwrap();
+    let daemon = Arc::new(Daemon {
+        inventory: Inventory::parse(VNC_INVENTORY).unwrap(),
+        // A short lock timeout so a genuine deadlock fails fast rather than
+        // hanging the suite; the fake apply is instant, so 16-way contention
+        // resolves well within it.
+        store: Store::with_timeouts(
+            dir.join("grants.json"),
+            Duration::from_secs(5),
+            Duration::from_secs(120),
+        ),
+        journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
+        drivers: Mutex::new(drivers),
+        deadman: Mutex::new(dummy_deadman()),
+    });
+
+    const N: usize = 16;
+    let barrier = Arc::new(std::sync::Barrier::new(N));
+    let handles: Vec<_> = (0..N)
+        .map(|_| {
+            let d = Arc::clone(&daemon);
+            let b = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                b.wait();
+                d.dispatch(
+                    &Op::Open {
+                        host: "hv".into(),
+                        ttl: "1h".into(),
+                    },
+                    t(1000),
+                )
+                .unwrap()
+            })
+        })
+        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+    // Oracle 1 — resource state: exactly one apply ran (one tunnel, one
+    // password), no matter how many opens raced.
+    let applies = log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(c, op)| *c == Channel::Vnc && *op == "apply")
+        .count();
+    assert_eq!(applies, 1, "exactly one apply may run");
+
+    // Oracle 2 — committed state: one grant, open, holding the vnc channel.
+    let doc = daemon.store.read().unwrap();
+    assert_eq!(doc.grants.len(), 1);
+    assert_eq!(daemon.status(t(1000)).unwrap()[0].state, GrantState::Open);
+
+    // Corroboration only: one open succeeded; the rest were refused as already
+    // open / mid-open, never as a driver failure.
+    let oks = results
+        .iter()
+        .filter(|r| r.result == ResponseResult::Ok)
+        .count();
+    assert_eq!(oks, 1);
+    for r in results
+        .iter()
+        .filter(|r| r.result == ResponseResult::Refused)
+    {
+        let e = r.error.as_deref().unwrap_or("");
+        assert!(
+            e.contains("already open") || e.contains("mid-open"),
+            "loser refused for the wrong reason: {e}"
+        );
+    }
+}
+
+#[test]
+fn a_vnc_open_returns_the_one_time_password_labelled_and_the_console_endpoint() {
+    let dir = scratch_dir("vnc-open-resp");
+    let log: CallLog = Arc::new(Mutex::new(Vec::new()));
+    let mut drivers = DriverSet::new();
+    drivers
+        .register(FakeDriver::with_secret(
+            Channel::Vnc,
+            Arc::clone(&log),
+            "vnc-one-time-pw",
+        ))
+        .unwrap();
+    let daemon = Daemon {
+        inventory: Inventory::parse(VNC_INVENTORY).unwrap(),
+        store: Store::at(dir.join("grants.json")),
+        journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
+        drivers: Mutex::new(drivers),
+        deadman: Mutex::new(dummy_deadman()),
+    };
+    let r = daemon
+        .dispatch(
+            &Op::Open {
+                host: "hv".into(),
+                ttl: "1h".into(),
+            },
+            t(1000),
+        )
+        .unwrap();
+    assert_eq!(r.result, ResponseResult::Ok);
+    // The one-time password, labelled for the CLI, with the console endpoint.
+    assert_eq!(r.secret.as_deref(), Some("vnc-one-time-pw"));
+    assert_eq!(r.secret_label.as_deref(), Some("one-time VNC password"));
+    assert_eq!(r.outcome.as_deref(), Some("vnc console at 127.0.0.1:5959"));
+    // And the password never reaches the journal.
+    let raw = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+    assert!(!raw.contains("vnc-one-time-pw"), "the secret leaked: {raw}");
+}
