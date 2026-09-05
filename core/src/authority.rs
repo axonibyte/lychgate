@@ -68,12 +68,16 @@ pub struct AuthenticatorSpec {
     /// PHC hash (never the plaintext, never inline).
     #[serde(default)]
     pub hash_file: Option<String>,
+    /// Required for `fido2`; the signature algorithm — `es256` or `eddsa`.
+    #[serde(default)]
+    pub alg: Option<String>,
+    /// Required for `fido2`; the credential id (base64url) from registration.
+    #[serde(default)]
+    pub credential_id: Option<String>,
 }
 
-/// The authenticator vocabulary. Only `ed25519` is implemented; the rest parse
-/// (so a full policy can be written and referenced now) but are refused at load
-/// naming the sub-milestone that will build them — the racadm/ipmitool
-/// precedent in `bmc.rs`.
+/// The authenticator vocabulary — all four kinds are implemented: `ed25519`
+/// (SSHSIG), `totp` (RFC 6238), `password` (Argon2id), and `fido2` (WebAuthn).
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum AuthKind {
@@ -130,6 +134,7 @@ pub enum Authenticator {
     Ed25519(PublicKey),
     Totp { secret_file: String },
     Password { hash_file: String },
+    Fido2(crate::fido2::Fido2Credential),
 }
 
 /// A weighted-threshold authority: `weight-sum(satisfied) >= threshold` opens.
@@ -185,6 +190,16 @@ pub enum AuthorityError {
         field: &'static str,
     },
     BadPublicKey {
+        id: String,
+        message: String,
+    },
+    /// A fido2 authenticator's `alg` is not `es256` or `eddsa`.
+    Fido2UnknownAlg {
+        id: String,
+        alg: String,
+    },
+    /// A fido2 credential id or public key is malformed for its algorithm.
+    Fido2BadKey {
         id: String,
         message: String,
     },
@@ -260,6 +275,13 @@ impl fmt::Display for AuthorityError {
             ),
             AuthorityError::BadPublicKey { id, message } => {
                 write!(f, "authenticator {id:?}: public-key does not parse: {message}")
+            }
+            AuthorityError::Fido2UnknownAlg { id, alg } => write!(
+                f,
+                "fido2 authenticator {id:?} has alg {alg:?}; expected \"es256\" or \"eddsa\""
+            ),
+            AuthorityError::Fido2BadKey { id, message } => {
+                write!(f, "fido2 authenticator {id:?}: {message}")
             }
             AuthorityError::ZeroThreshold { kind, id } => write!(
                 f,
@@ -367,12 +389,60 @@ impl AuthorityModel {
                     })?;
                     Authenticator::Password { hash_file }
                 }
-                // Reserve the last kind without pretending it works.
                 AuthKind::Fido2 => {
-                    return Err(AuthorityError::UnimplementedKind {
-                        id: a.id.clone(),
-                        kind: "fido2",
-                        milestone: "M8a.5",
+                    let alg = match a.alg.as_deref() {
+                        Some("es256") => crate::fido2::Alg::Es256,
+                        Some("eddsa") => crate::fido2::Alg::EdDsa,
+                        Some(other) => {
+                            return Err(AuthorityError::Fido2UnknownAlg {
+                                id: a.id.clone(),
+                                alg: other.to_string(),
+                            })
+                        }
+                        None => {
+                            return Err(AuthorityError::MissingMaterial {
+                                id: a.id.clone(),
+                                kind: "fido2",
+                                field: "alg",
+                            })
+                        }
+                    };
+                    let cred_id_b64 =
+                        a.credential_id
+                            .as_deref()
+                            .ok_or(AuthorityError::MissingMaterial {
+                                id: a.id.clone(),
+                                kind: "fido2",
+                                field: "credential-id",
+                            })?;
+                    let pub_b64 =
+                        a.public_key
+                            .as_deref()
+                            .ok_or(AuthorityError::MissingMaterial {
+                                id: a.id.clone(),
+                                kind: "fido2",
+                                field: "public-key",
+                            })?;
+                    let decode = |s: &str, field: &str| {
+                        data_encoding::BASE64URL_NOPAD
+                            .decode(s.trim().as_bytes())
+                            .map_err(|_| AuthorityError::Fido2BadKey {
+                                id: a.id.clone(),
+                                message: format!("{field} is not base64url"),
+                            })
+                    };
+                    let credential_id = decode(cred_id_b64, "credential-id")?;
+                    let public_key = decode(pub_b64, "public-key")?;
+                    crate::fido2::check_public_key(alg, &public_key).map_err(|e| {
+                        AuthorityError::Fido2BadKey {
+                            id: a.id.clone(),
+                            message: e.to_string(),
+                        }
+                    })?;
+                    Authenticator::Fido2(crate::fido2::Fido2Credential {
+                        alg,
+                        credential_id,
+                        public_key,
                     })
                 }
             };
@@ -524,6 +594,18 @@ impl AuthorityModel {
     pub fn password_authenticators(&self) -> impl Iterator<Item = (&str, &str)> {
         self.authenticators.iter().filter_map(|(id, a)| match a {
             Authenticator::Password { hash_file } => Some((id.as_str(), hash_file.as_str())),
+            _ => None,
+        })
+    }
+
+    /// The configured FIDO2 credentials as `(id, credential)` — public, so the
+    /// daemon holds them in the model (no secret file to read) and matches a
+    /// submitted assertion to one by its credential id.
+    pub fn fido2_credentials(
+        &self,
+    ) -> impl Iterator<Item = (&str, &crate::fido2::Fido2Credential)> {
+        self.authenticators.iter().filter_map(|(id, a)| match a {
+            Authenticator::Fido2(cred) => Some((id.as_str(), cred)),
             _ => None,
         })
     }

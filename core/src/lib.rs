@@ -9,6 +9,7 @@ pub mod authority;
 pub mod bmc;
 pub mod channel;
 pub mod deadman;
+pub mod fido2;
 pub mod grant;
 pub mod inventory;
 pub mod password;
@@ -30,6 +31,7 @@ pub use channel::{
     apply_channels, reestablish_channels, revert_channels, ApplyOutcome, ChannelDriver,
     ChannelState, DriverError, DriverSet, ReestablishOutcome, RevertOutcome,
 };
+pub use fido2::{Alg, Fido2Credential, Fido2Error};
 pub use grant::{Grant, GrantError, GrantStatus, PendingView, MAX_APPROVAL_WINDOW_SECS};
 pub use inventory::{
     BmcConfig, BmcMethod, BmcTls, Channel, Host, HostAccess, Inventory, InventoryError, Os,

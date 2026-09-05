@@ -27,3 +27,7 @@ hmac = { workspace = true }
 sha1 = { workspace = true }
 # Password (M8a.4): Argon2id hash + constant-time verify.
 argon2 = { workspace = true }
+# FIDO2 (M8a.5): WebAuthn assertion verify + software authenticator.
+p256 = { workspace = true }
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }

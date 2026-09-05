@@ -261,6 +261,16 @@ fn check(input: &str) {
             "empty password error for {input:?}"
         );
     }
+    // A FIDO2 assertion token is pasted by an operator: hostile input to the
+    // verifier. verify must never panic on junk (a wrong-alg dummy credential).
+    let cred = lychgate_core::Fido2Credential {
+        alg: lychgate_core::Alg::EdDsa,
+        credential_id: vec![0u8; 16],
+        public_key: vec![0u8; 32],
+    };
+    if let Err(e) = lychgate_core::fido2::verify(&cred, input, "lg1.req.x") {
+        assert!(!e.to_string().is_empty(), "empty fido2 error for {input:?}");
+    }
 }
 
 /// A minimal authority model with one ed25519 authenticator, built once, so the
@@ -278,6 +288,8 @@ fn fuzz_model() -> &'static AuthorityModel {
                 ),
                 secret_file: None,
                 hash_file: None,
+                alg: None,
+                credential_id: None,
             }],
             group: vec![],
             profile: vec![AuthoritySpec {

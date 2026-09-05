@@ -362,28 +362,75 @@ fn a_group_cycle_is_refused() {
     ));
 }
 
-#[test]
-fn an_unimplemented_kind_is_refused_naming_its_milestone() {
-    // ed25519, totp and password are built; only fido2 is not yet, so it is the
-    // sole remaining kind that must be refused at load naming its sub-milestone.
-    let toml_text = r#"
+// A registered fido2 credential (es256): the committed SEC1 public key and a
+// credential id, both base64url — as `lychgate fido2-register` would print.
+const FIDO2_ES_PUB: &str =
+    "BAIX5hfwtkQ5KCePlpmeaaI6TywVK99tbN9m5bgCgtTtGUp968uXcS0t2jyoWqh2Wlb0X8dYWZZS8ol8ZTBuV5Q";
+const FIDO2_CRED_ID: &str = "q6urq6urq6urq6urq6urqw";
+
+fn fido2_block(extra: &str) -> String {
+    format!(
+        r#"
         [[authenticator]]
-        id = "x"
+        id = "key"
         kind = "fido2"
+        alg = "es256"
+        credential-id = "{FIDO2_CRED_ID}"
+        public-key = "{FIDO2_ES_PUB}"
+        {extra}
         [[profile]]
         id = "p"
         threshold = 1
-        factor = [ { authenticator = "x", weight = 1 } ]
+        factor = [ {{ authenticator = "key", weight = 1 }} ]
+        "#
+    )
+}
+
+#[test]
+fn a_fido2_authenticator_parses_with_its_credential() {
+    let m = model(&fido2_block("")).expect("a fido2 authenticator parses");
+    let creds: Vec<_> = m.fido2_credentials().map(|(id, _)| id).collect();
+    assert_eq!(creds, ["key"]);
+}
+
+#[test]
+fn a_fido2_authenticator_with_an_unknown_alg_is_refused() {
+    let toml_text = r#"
+        [[authenticator]]
+        id = "key"
+        kind = "fido2"
+        alg = "rs256"
+        credential-id = "q6urq6urq6urq6urq6urqw"
+        public-key = "BAIX"
+        [[profile]]
+        id = "p"
+        threshold = 1
+        factor = [ { authenticator = "key", weight = 1 } ]
     "#;
     match model(toml_text) {
-        Err(AuthorityError::UnimplementedKind {
-            kind, milestone, ..
-        }) => {
-            assert_eq!(kind, "fido2");
-            assert_eq!(milestone, "M8a.5");
-        }
-        other => panic!("wanted UnimplementedKind for fido2, got {other:?}"),
+        Err(AuthorityError::Fido2UnknownAlg { alg, .. }) => assert_eq!(alg, "rs256"),
+        other => panic!("wanted Fido2UnknownAlg, got {other:?}"),
     }
+}
+
+#[test]
+fn a_fido2_authenticator_with_a_bad_public_key_is_refused() {
+    let toml_text = r#"
+        [[authenticator]]
+        id = "key"
+        kind = "fido2"
+        alg = "es256"
+        credential-id = "q6urq6urq6urq6urq6urqw"
+        public-key = "AAAA"
+        [[profile]]
+        id = "p"
+        threshold = 1
+        factor = [ { authenticator = "key", weight = 1 } ]
+    "#;
+    assert!(matches!(
+        model(toml_text),
+        Err(AuthorityError::Fido2BadKey { .. })
+    ));
 }
 
 #[test]
