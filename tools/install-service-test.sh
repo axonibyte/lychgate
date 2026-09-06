@@ -24,8 +24,14 @@ fail() {
 }
 
 mode_of() {
-    # BSD stat and GNU stat disagree on flags; try both.
-    stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+    # BSD stat and GNU stat disagree on flags, and probing by exit code broke
+    # when modern GNU stat started accepting -f (as "file system status")
+    # instead of erroring — the fallback then never ran and this returned a
+    # filesystem dump. Select by platform instead: deterministic, no probing.
+    case "$(uname -s)" in
+        FreeBSD | Darwin | NetBSD | OpenBSD) stat -f '%Lp' "$1" ;;
+        *) stat -c '%a' "$1" ;;
+    esac
 }
 
 # --- FreeBSD staging install -----------------------------------------------

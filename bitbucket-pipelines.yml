@@ -28,7 +28,13 @@ definitions:
         script:
           - export CARGO_HOME="$BITBUCKET_CLONE_DIR/.cargo_cache"
           - rustup component add rustfmt clippy
-          - apt-get -qq update && apt-get -qq install -y shellcheck
+          # shellcheck is pinned like the compiler is (see the image comment
+          # above): Debian's package moves under the unversioned image layers,
+          # and a linter that drifts fails tag builds of history that was clean
+          # when pushed. Same version as the dev workstation.
+          - curl -sSL -o /tmp/shellcheck.txz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          - echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.txz" | sha256sum -c -
+          - tar -xJf /tmp/shellcheck.txz -C /tmp && install -m 755 /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
           - cargo fetch --locked
           # The repository is kept fmt-clean and clippy-clean; the gate is what
           # keeps it that way.

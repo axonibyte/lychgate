@@ -90,7 +90,11 @@ fi
 field() { sed -n "s/^$1 = \"\\(.*\\)\"\$/\\1/p" "${work}/block"; }
 cred="$(field credential-id)"
 pub="$(field public-key)"
-[ -n "${cred}" ] && [ -n "${pub}" ] || { echo "register block missing fields" >&2; cat "${work}/block" >&2; exit 1; }
+if [ -z "${cred}" ] || [ -z "${pub}" ]; then
+    echo "register block missing fields" >&2
+    cat "${work}/block" >&2
+    exit 1
+fi
 note "registered credential-id=${cred}"
 
 # --- a real (vnc) channel so the daemon verifies the proof and drives an open -

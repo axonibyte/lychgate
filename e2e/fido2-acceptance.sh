@@ -87,8 +87,14 @@ es_cred="$(field credential-id < "${work}/es.block")"
 es_pub="$(field public-key < "${work}/es.block")"
 ed_cred="$(field credential-id < "${work}/ed.block")"
 ed_pub="$(field public-key < "${work}/ed.block")"
-[ -n "${es_cred}" ] && [ -n "${es_pub}" ] || { echo "es256 block missing fields" >&2; exit 2; }
-[ -n "${ed_cred}" ] && [ -n "${ed_pub}" ] || { echo "eddsa block missing fields" >&2; exit 2; }
+if [ -z "${es_cred}" ] || [ -z "${es_pub}" ]; then
+    echo "es256 block missing fields" >&2
+    exit 2
+fi
+if [ -z "${ed_cred}" ] || [ -z "${ed_pub}" ]; then
+    echo "eddsa block missing fields" >&2
+    exit 2
+fi
 
 # The break-glass password for the MFA leg (not purely numeric — an all-digit
 # password would be routed to the TOTP path by the daemon's proof dispatch).
