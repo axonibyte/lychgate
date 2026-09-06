@@ -14,7 +14,7 @@ repository.workspace = true
 # the hidapi C dependency. Unix only; needs the system hidapi library at build
 # time (pkg install hidapi / apt install libhidapi-dev). Not exercised by CI —
 # see TESTING.md's simulated tier.
-fido2-client = ["dep:ctap-hid-fido2"]
+fido2-client = ["dep:ctap-hid-fido2", "dep:x509-cert", "dep:sha2", "dep:p256", "dep:ed25519-dalek"]
 # The TPM 2.0 client: probe/register/sign/seal against a real (or swtpm) TPM.
 # Off by default so default builds never pull the C TSS stack. On platforms
 # without tss-esapi's shipped bindings (FreeBSD), use tpm-client-bindgen and set
@@ -32,3 +32,8 @@ data-encoding = { workspace = true }
 ctap-hid-fido2 = { version = "3.6", optional = true }
 # The shared TPM plumbing — only compiled under the tpm-client feature.
 lychgate-tpm = { workspace = true, optional = true }
+# Attestation verification at hardware registration (fido2-client only).
+x509-cert = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+p256 = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }

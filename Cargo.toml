@@ -43,5 +43,7 @@ sha2 = "0.10"
 # TPM 2.0 TSS bindings — used ONLY by the lychgate-tpm crate, which itself is
 # consumed only behind the cli/daemon tpm features; default builds never touch it.
 tss-esapi = "7.7"
+# X.509 leaf-certificate parsing for FIDO2 packed attestation (fido2-client only).
+x509-cert = "0.2"
 lychgate-core = { path = "core" }
 lychgate-tpm = { path = "tpm" }

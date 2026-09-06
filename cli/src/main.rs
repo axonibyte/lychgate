@@ -272,11 +272,21 @@ fn fido2_register(
     pin: Option<&str>,
 ) -> anyhow::Result<ExitCode> {
     let alg = parse_alg(alg_str)?;
-    let (cred_id, public) = match software_key {
-        Some(path) => software_register(alg, alg_str, path)?,
+    let (cred_id, public, provenance) = match software_key {
+        Some(path) => {
+            let (cred_id, public) = software_register(alg, alg_str, path)?;
+            (
+                cred_id,
+                public,
+                vec!["# software authenticator (no attestation to verify)".to_string()],
+            )
+        }
         None => hardware_register(alg, pin)?,
     };
     let b64 = data_encoding::BASE64URL_NOPAD;
+    for line in &provenance {
+        println!("{line}");
+    }
     println!("[[approval.authenticator]]");
     println!("id = \"fido2\"                       # rename as you like");
     println!("kind = \"fido2\"");
@@ -400,7 +410,7 @@ fn tpm_seal(file: &std::path::Path, tcti: &str) -> anyhow::Result<ExitCode> {
 fn hardware_register(
     _alg: lychgate_core::Alg,
     _pin: Option<&str>,
-) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<String>)> {
     anyhow::bail!(
         "this build has no hardware FIDO2 support; rebuild with \
          `--features fido2-client` (unix, needs the system hidapi library), \
@@ -425,7 +435,7 @@ fn hardware_assert(
 fn hardware_register(
     alg: lychgate_core::Alg,
     pin: Option<&str>,
-) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<String>)> {
     hw::register(alg, pin)
 }
 
@@ -462,27 +472,136 @@ mod hw {
             .map_err(|e| anyhow!("no FIDO2 authenticator found over USB-HID: {e}"))
     }
 
+    /// The fixed registration challenge. The crate SHA-256s it into the
+    /// clientDataHash; attestation verification below recomputes exactly that,
+    /// so the two MUST share this constant.
+    const REGISTER_CHALLENGE: &[u8] = b"lychgate-fido2-register";
+
     /// Register: CTAP2 authenticatorMakeCredential with rpId = lychgate, keeping
-    /// the credential id and public key. We do not verify the attestation — we
-    /// trust the key material the user is registering, exactly as the inventory
-    /// does (see DESIGN); a self-check confirms the extracted key parses.
-    pub fn register(alg: Alg, pin: Option<&str>) -> Result<(Vec<u8>, Vec<u8>)> {
+    /// the credential id and public key — and VERIFYING the attestation
+    /// statement before printing anything: a credential whose attestation does
+    /// not even self-verify is refused, and the AAGUID (which device model
+    /// minted this credential) is surfaced for the operator. What is NOT done:
+    /// chaining the attestation certificate to a vendor root — we verify the
+    /// statement and show its provenance; pinning roots is future hardening.
+    pub fn register(alg: Alg, pin: Option<&str>) -> Result<(Vec<u8>, Vec<u8>, Vec<String>)> {
         let dev = open_device()?;
         let key_type = match alg {
             Alg::Es256 => CredentialSupportedKeyType::Ecdsa256,
             Alg::EdDsa => CredentialSupportedKeyType::Ed25519,
         };
-        // The makeCredential clientDataHash is irrelevant to us (we do not check
-        // the attestation), but the call needs one — a fixed, distinctive tag.
         let att = dev
-            .make_credential_with_key_type(RP_ID, b"lychgate-fido2-register", pin, Some(key_type))
+            .make_credential_with_key_type(RP_ID, REGISTER_CHALLENGE, pin, Some(key_type))
             .map_err(|e| anyhow!("makeCredential failed (touch the key? PIN?): {e}"))?;
         let public = extract_public_key(alg, &att.credential_publickey.der)?;
         // Self-check: the bytes we are about to print MUST parse as this alg's
         // public key, or registration would silently record an unusable key.
         lychgate_core::fido2::check_public_key(alg, &public)
             .map_err(|e| anyhow!("the authenticator's public key did not parse: {e}"))?;
-        Ok((att.credential_descriptor.id, public))
+        let report = verify_attestation(&att, &public)?;
+        Ok((att.credential_descriptor.id, public, report))
+    }
+
+    /// Verify the packed attestation statement over
+    /// `authData ‖ SHA-256(registration clientData)` and describe its
+    /// provenance. Fail-closed: an unverifiable statement refuses registration.
+    fn verify_attestation(
+        att: &ctap_hid_fido2::fidokey::make_credential::make_credential_params::Attestation,
+        credential_public: &[u8],
+    ) -> Result<Vec<String>> {
+        use sha2::Digest as _;
+        let mut message = att.auth_data.clone();
+        message.extend_from_slice(&sha2::Sha256::digest(REGISTER_CHALLENGE));
+
+        let aaguid = format_aaguid(&att.aaguid);
+        let mut report = vec![format!("# aaguid: {aaguid}")];
+
+        if att.fmt == "none" {
+            // The authenticator offers no attestation at all: nothing to verify,
+            // said plainly rather than pretended.
+            report.push("# attestation: none (the authenticator attests nothing)".to_string());
+            return Ok(report);
+        }
+        if att.fmt != "packed" {
+            return Err(anyhow!(
+                "attestation format {:?} is not supported (packed or none); refusing to register",
+                att.fmt
+            ));
+        }
+
+        if let Some(leaf) = att.attstmt_x5c.first() {
+            // Full attestation: the statement is signed by an attestation cert.
+            use x509_cert::der::Decode;
+            let cert = x509_cert::Certificate::from_der(leaf)
+                .map_err(|e| anyhow!("attestation certificate did not parse: {e}"))?;
+            let spki = cert
+                .tbs_certificate
+                .subject_public_key_info
+                .subject_public_key
+                .as_bytes()
+                .ok_or_else(|| anyhow!("attestation certificate has no key bits"))?;
+            verify_sig(att.attstmt_alg, spki, &message, &att.attstmt_sig)
+                .map_err(|e| anyhow!("attestation signature did not verify: {e}"))?;
+            report.push(format!(
+                "# attestation: packed, verified against the device certificate \
+                 (subject: {})",
+                cert.tbs_certificate.subject
+            ));
+        } else {
+            // Self-attestation: signed by the credential key itself.
+            verify_sig(
+                att.attstmt_alg,
+                credential_public,
+                &message,
+                &att.attstmt_sig,
+            )
+            .map_err(|e| anyhow!("self-attestation signature did not verify: {e}"))?;
+            report.push("# attestation: packed self-attestation, verified".to_string());
+        }
+        Ok(report)
+    }
+
+    /// Verify a COSE-alg signature (-7 ES256 DER, -8 EdDSA raw) over `message`
+    /// with a raw public key (SEC1 point or 32-byte Ed25519).
+    fn verify_sig(alg: i32, public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<()> {
+        match alg {
+            -7 => {
+                use p256::ecdsa::signature::Verifier;
+                let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(public_key)
+                    .map_err(|e| anyhow!("es256 attestation key: {e}"))?;
+                let sig = p256::ecdsa::Signature::from_der(signature)
+                    .map_err(|e| anyhow!("es256 attestation signature: {e}"))?;
+                vk.verify(message, &sig).map_err(|e| anyhow!("{e}"))
+            }
+            -8 => {
+                use ed25519_dalek::Verifier;
+                let key: [u8; 32] = public_key
+                    .try_into()
+                    .map_err(|_| anyhow!("eddsa attestation key is not 32 bytes"))?;
+                let vk = ed25519_dalek::VerifyingKey::from_bytes(&key)
+                    .map_err(|e| anyhow!("eddsa attestation key: {e}"))?;
+                let sig = ed25519_dalek::Signature::from_slice(signature)
+                    .map_err(|e| anyhow!("eddsa attestation signature: {e}"))?;
+                vk.verify(message, &sig).map_err(|e| anyhow!("{e}"))
+            }
+            other => Err(anyhow!("unsupported attestation algorithm {other}")),
+        }
+    }
+
+    /// AAGUID bytes as the canonical 8-4-4-4-12 UUID string.
+    fn format_aaguid(aaguid: &[u8]) -> String {
+        if aaguid.len() != 16 {
+            return format!("(unexpected {} bytes)", aaguid.len());
+        }
+        let h: Vec<String> = aaguid.iter().map(|b| format!("{b:02x}")).collect();
+        format!(
+            "{}-{}-{}-{}-{}",
+            h[0..4].join(""),
+            h[4..6].join(""),
+            h[6..8].join(""),
+            h[8..10].join(""),
+            h[10..16].join("")
+        )
     }
 
     /// Assert: CTAP2 authenticatorGetAssertion. We hand the authenticator the
