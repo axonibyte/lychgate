@@ -743,7 +743,10 @@ it does not. Verified green on both reaper guests.
 
 ### M8d onward — PLANNED
 
-- Operational docs: runbook for granting Claude emergency access end to end.
+- ~~Operational docs: runbook for granting Claude emergency access end to end.~~
+  **DONE (2026-09-06)** — [docs/RUNBOOK.md](RUNBOOK.md): deploy, an AI-assisted
+  profile, the MCP front door, the open→approve→use→revert flow, drills, and the
+  operational concerns (journal/audit, secrets, fail-closed, restart).
 
 **Crash-restart lock robustness — DONE (2026-09-06, rides v0.11.0).** Surfaced by
 the drill work: a daemon SIGKILLed mid-mutation stranded the `grants.lock` (and

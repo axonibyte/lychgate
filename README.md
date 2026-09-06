@@ -50,8 +50,10 @@ daemon holds grant state durably, serves the CLI over
 an owner-only unix socket, journals every transition (never a credential or
 token), and re-establishes a console tunnel that outlived a restart. A `--dry-run` mode
 opens grants as pure bookkeeping, touching no host — for validating an inventory
-or rehearsing the lifecycle. See [TESTING.md](TESTING.md) for exactly what is
-and is not proven, [docs/DESIGN.md](docs/DESIGN.md) for the architecture, and
+or rehearsing the lifecycle. See [docs/RUNBOOK.md](docs/RUNBOOK.md) for the
+operator's end-to-end procedure (granting a Claude session emergency access),
+[TESTING.md](TESTING.md) for exactly what is and is not proven,
+[docs/DESIGN.md](docs/DESIGN.md) for the architecture, and
 [docs/ROADMAP.md](docs/ROADMAP.md) for the milestone plan of record.
 
 ## Components
