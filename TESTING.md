@@ -566,10 +566,21 @@ rot loudly, failing toward "come look" rather than silently passing.
 ## Running what exists
 
 ```sh
-./tools/check.sh        # fmt, clippy -D warnings, tests, shell lint — runs
-                        # every phase and reports all failures
+./tools/check.sh        # fmt, clippy -D warnings, tests, shell lint, service
+                        # installer, windows client check — runs every phase
+                        # and reports all failures
 cargo test --workspace  # just the tests
 ```
 
 The project is a reaper tenant (`.reaper.toml`): `reaper test` runs the build
 and suite on the FreeBSD and Ubuntu guests.
+
+The **windows client check** (`cargo check -p lychgate --target
+x86_64-pc-windows-gnu`) exists because a unix-only API in the cli once shipped a
+whole milestone unseen — no local gate or guest compiled that target, and CI was
+red for unrelated reasons. It needs the target's rust-std but no linker, so it
+runs wherever that std exists (rustup hosts; the Ubuntu guest's build container
+adds it on every `reaper test`) and skips LOUDLY elsewhere, naming where it does
+run. CI still builds the target fully. Mutation-checked by un-gating the cli's
+`#[cfg(unix)]` chmod: the guest-container check fails with the exact historical
+error (E0433/E0599).

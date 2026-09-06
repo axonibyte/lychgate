@@ -27,13 +27,26 @@ run = { exec = "host" }
 # right-hand side's status. --all-targets builds the binaries too — the
 # host-exec battery runs them out of the target cache.
 [build]
+# The trailing windows-client check runs only where rustup can add the target's
+# rust-std (the Ubuntu build container); the FreeBSD guest's pkg rust cannot, and
+# says so loudly rather than skipping in silence. `cargo check` links nothing, so
+# no mingw is needed — it catches unix-only APIs in the cli (which once shipped a
+# whole milestone unseen because nothing pre-push compiled this target).
 cmd = """
 CARGO_HOME=$REAPER_CACHE_CARGO \
 CARGO_TARGET_DIR=$REAPER_CACHE_TARGET \
 cargo build --locked --workspace --all-targets && \
 CARGO_HOME=$REAPER_CACHE_CARGO \
 CARGO_TARGET_DIR=$REAPER_CACHE_TARGET \
-cargo test --workspace --locked"""
+cargo test --workspace --locked && \
+if command -v rustup >/dev/null 2>&1; then \
+  rustup target add x86_64-pc-windows-gnu && \
+  CARGO_HOME=$REAPER_CACHE_CARGO \
+  CARGO_TARGET_DIR=$REAPER_CACHE_TARGET \
+  cargo check -p lychgate --target x86_64-pc-windows-gnu --locked; \
+else \
+  echo "windows client check: no rustup on this guest; enforced by the Ubuntu container and CI"; \
+fi"""
 cache = ["cargo", "target"]
 
 # The Tier-4 battery: ssh acceptance, revert-under-kill (with its sabotaged

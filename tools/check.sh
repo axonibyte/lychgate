@@ -33,6 +33,26 @@ run "shell lint" ./tools/lint-shell.sh
 
 run "service installer" ./tools/install-service-test.sh
 
+# The Windows client is the one target nothing else here compiles, and a
+# unix-only API in the cli breaks it invisibly (it did once — an ungated chmod
+# shipped an entire milestone before CI surfaced it). `cargo check` needs the
+# target's rust-std but no linker, so it runs wherever that std exists (rustup
+# hosts, the Ubuntu guest's build container) and is skipped LOUDLY elsewhere —
+# the guest battery and CI still enforce it on every run.
+windows_client_check() {
+    sysroot=$(rustc --print sysroot 2>/dev/null)
+    if [ -n "${sysroot}" ] && [ -d "${sysroot}/lib/rustlib/x86_64-pc-windows-gnu" ]; then
+        env CARGO_TARGET_DIR=target/windows-check \
+            cargo check -p lychgate --target x86_64-pc-windows-gnu --locked
+    else
+        echo "    SKIPPED here: no x86_64-pc-windows-gnu rust-std in this toolchain."
+        echo "    The check runs in the Ubuntu guest's build container (reaper test)"
+        echo "    and CI builds the target fully; do not close a cli-touching"
+        echo "    milestone without one of those."
+    fi
+}
+run "windows client check" windows_client_check
+
 if [ "${failed}" -ne 0 ]; then
     echo "gate: FAILED"
     exit 1
