@@ -91,6 +91,8 @@ phase "password acceptance" sh e2e/password-acceptance.sh
 
 phase "fido2 acceptance" sh e2e/fido2-acceptance.sh
 
+phase "mcp acceptance" sh e2e/mcp-acceptance.sh
+
 # The oracle self-test: with the dead-man sabotaged away, revert-under-kill
 # MUST fail. A harness that passes here detects nothing.
 echo ""
