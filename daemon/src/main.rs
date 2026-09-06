@@ -2,6 +2,7 @@ mod drivers;
 mod journal;
 mod lifecycle;
 mod listener;
+mod lockfile;
 mod store;
 mod totp_ledger;
 mod transport;

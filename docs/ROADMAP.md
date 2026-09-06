@@ -744,11 +744,15 @@ it does not. Verified green on both reaper guests.
 ### M8d onward — PLANNED
 
 - Operational docs: runbook for granting Claude emergency access end to end.
-- **Crash-restart lock robustness** — a daemon SIGKILLed mid-mutation strands the
-  `grants.lock` file, and a restart within the 120s stale threshold waits out the
-  10s acquire timeout and fails. Make the lock PID-aware (record the holder; a
-  waiter whose holder is dead steals immediately) so a crashed daemon restarts at
-  once. Surfaced by the drill work; low-frequency, but real.
+
+**Crash-restart lock robustness — DONE (2026-09-06, rides v0.11.0).** Surfaced by
+the drill work: a daemon SIGKILLed mid-mutation stranded the `grants.lock` (and
+TOTP-ledger) lock file, so the next daemon waited out the 10s acquire timeout and
+failed to start (and could not steal it within the 120s stale window). The lock
+is now PID-aware — the holder records its PID, and a waiter whose holder PID is
+dead steals at once — in one shared `daemon/src/lockfile.rs` used by both the
+store and the ledger. Aging by mtime remains the backstop. This also cured the
+intermittent `a_second_daemon` e2e flake.
 - **TPM integration (tail-end)** — a TPM 2.0-backed factor: a signature from a
   key sealed in the platform TPM, verified like Ed25519/FIDO2 but with a
   non-exportable private key, and/or sealing lychgate's own secrets to the TPM.

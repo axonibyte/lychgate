@@ -6,9 +6,11 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use lychgate_core::{StateDoc, STATE_VERSION};
+
+use crate::lockfile;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -195,69 +197,15 @@ impl Store {
         self.path.with_extension("lock")
     }
 
-    fn lock(&self) -> Result<LockGuard> {
+    /// Acquire the grant-store lock. A crashed holder (dead PID) is stolen at
+    /// once, so a daemon SIGKILLed mid-mutation does not wedge the next start;
+    /// see [`crate::lockfile`].
+    fn lock(&self) -> Result<lockfile::LockGuard> {
         let path = self.lock_path();
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir).map_err(|e| StoreError::Io {
-                path: dir.to_path_buf(),
-                source: e,
-            })?;
-        }
-
-        let deadline = SystemTime::now() + self.lock_timeout;
-        loop {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(_) => return Ok(LockGuard { path }),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(e) => {
-                    return Err(StoreError::Io {
-                        path: path.clone(),
-                        source: e,
-                    })
-                }
-            }
-
-            // A lock nobody released is worse than no lock: it wedges every
-            // future run. Age it out rather than requiring a person to know
-            // this file exists.
-            let held_for = fs::metadata(&path)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|m| SystemTime::now().duration_since(m).ok())
-                .unwrap_or_default();
-            if held_for > self.stale_lock_after {
-                // Steal by rename, then retry the create. rename is atomic,
-                // so when two waiters age the same lock out only one wins
-                // the steal — remove-then-create would let both "acquire" it
-                // and reintroduce the lost update the lock exists to
-                // prevent. The deadline check below still runs: a steal that
-                // keeps failing (an unwritable directory) must end in
-                // Locked, not a spin.
-                let stale = path.with_extension(format!("lock.stale.{}", std::process::id()));
-                if fs::rename(&path, &stale).is_ok() {
-                    let _ = fs::remove_file(&stale);
-                }
-            }
-
-            if SystemTime::now() >= deadline {
-                return Err(StoreError::Locked { path, held_for });
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-}
-
-struct LockGuard {
-    path: PathBuf,
-}
-
-impl Drop for LockGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        lockfile::acquire(&path, self.lock_timeout, self.stale_lock_after).map_err(|e| match e {
+            lockfile::LockError::Held { held_for } => StoreError::Locked { path, held_for },
+            lockfile::LockError::Io(source) => StoreError::Io { path, source },
+        })
     }
 }
 

@@ -16,6 +16,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::lockfile;
+
 /// Consumed entries older than this are pruned: a TOTP counter this old is far
 /// outside any live ±skew window, so it could never be accepted again regardless.
 /// Generous against the 30s step and ±1 skew.
@@ -139,43 +141,18 @@ impl TotpLedger {
         fs::rename(&tmp, &self.path)
     }
 
-    fn lock(&self) -> io::Result<LockGuard> {
+    /// Acquire the ledger lock. Shares the grant store's discipline, including
+    /// the dead-holder steal that keeps a SIGKILLed daemon from wedging the next
+    /// start; see [`crate::lockfile`].
+    fn lock(&self) -> io::Result<lockfile::LockGuard> {
         let path = self.path.with_extension("lock");
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let deadline = SystemTime::now() + self.lock_timeout;
-        loop {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(_) => return Ok(LockGuard { path }),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(e),
-            }
-            // Age out a lock nobody released, by atomic rename so only one waiter
-            // wins the steal (mirrors the grant store).
-            let held_for = fs::metadata(&path)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|m| SystemTime::now().duration_since(m).ok())
-                .unwrap_or_default();
-            if held_for > self.stale_lock_after {
-                let stale = path.with_extension(format!("lock.stale.{}", std::process::id()));
-                if fs::rename(&path, &stale).is_ok() {
-                    let _ = fs::remove_file(&stale);
-                }
-            }
-            if SystemTime::now() >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    format!("{}: totp ledger lock held too long", path.display()),
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        lockfile::acquire(&path, self.lock_timeout, self.stale_lock_after).map_err(|e| match e {
+            lockfile::LockError::Held { .. } => io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("{}: totp ledger lock held too long", path.display()),
+            ),
+            lockfile::LockError::Io(e) => e,
+        })
     }
 
     /// Test-only: the ids currently recorded as consumed (for assertions).
@@ -187,16 +164,6 @@ impl TotpLedger {
             .into_iter()
             .map(|e| e.authenticator)
             .collect()
-    }
-}
-
-struct LockGuard {
-    path: PathBuf,
-}
-
-impl Drop for LockGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
     }
 }
 
