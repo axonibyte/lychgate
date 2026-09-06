@@ -49,6 +49,11 @@ pub enum Op {
         ttl: String,
     },
     Status,
+    /// Drill a canary host: open-and-revert it as a standing self-test of the
+    /// revert path. Refused unless the host is a `drill = true` canary.
+    Drill {
+        host: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +164,9 @@ pub fn decode_request(line: &str) -> Result<Op, ProtoError> {
             ttl: ttl("renew")?,
         }),
         "status" => Ok(Op::Status),
+        "drill" => Ok(Op::Drill {
+            host: host("drill")?,
+        }),
         other => Err(ProtoError::UnknownOp(other.to_string())),
     }
 }
@@ -170,6 +178,7 @@ pub fn encode_request(op: &Op) -> String {
         Op::Close { host } => ("close", Some(host), None, None, None),
         Op::Renew { host, ttl } => ("renew", Some(host), Some(ttl), None, None),
         Op::Status => ("status", None, None, None, None),
+        Op::Drill { host } => ("drill", Some(host), None, None, None),
     };
     let mut v = serde_json::json!({ "proto": PROTO_VERSION, "op": op_name });
     if let Some(host) = host {

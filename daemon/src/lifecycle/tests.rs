@@ -1776,3 +1776,130 @@ fn an_mcp_gate_refusal_is_journaled() {
         "the gate refusal should be journaled as mcp-refused; got:\n{raw}"
     );
 }
+
+// --- drill mode: the standing revert oracle (Op::Drill on a canary) ---------
+
+// A canary daemon: one host, optionally drill = true, with a FakeDriver on its
+// ssh channel scripted to succeed or to fail its revert (the sabotage oracle).
+fn drill_daemon(dir: &crate::scratch::Scratch, canary: bool, script: Script) -> Daemon {
+    let inv_text = format!(
+        r#"
+        [[hosts]]
+        name = "canary"
+        address = "127.0.0.1"
+        os = "linux"
+        channels = ["ssh"]
+        drill = {canary}
+        [hosts.ssh]
+        agent_user = "root"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+        "#
+    );
+    let log: CallLog = Arc::new(Mutex::new(Vec::new()));
+    let mut drivers = DriverSet::new();
+    drivers
+        .register(FakeDriver::new(Channel::Ssh, script, Arc::clone(&log)))
+        .unwrap();
+    Daemon {
+        inventory: Inventory::parse(&inv_text).unwrap(),
+        store: Store::at(dir.join("grants.json")),
+        journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
+        drivers: Mutex::new(drivers),
+        deadman: Mutex::new(Box::new(FakeDeadman {
+            log: Arc::new(Mutex::new(Vec::new())),
+            fail_install: false,
+            fail_remove: false,
+            fired: Arc::new(Mutex::new(false)),
+        })),
+        approval_window: Duration::from_secs(300),
+        approval: None,
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
+    }
+}
+
+fn drill(d: &Daemon, now: SystemTime) -> Response {
+    d.dispatch(
+        &Op::Drill {
+            host: "canary".into(),
+        },
+        now,
+    )
+    .unwrap()
+}
+
+fn journal_has(dir: &crate::scratch::Scratch, needle: &str) -> bool {
+    std::fs::read_to_string(dir.join("journal.jsonl"))
+        .unwrap_or_default()
+        .contains(needle)
+}
+
+#[test]
+fn a_drill_on_a_canary_passes_and_leaves_it_closed() {
+    let dir = scratch_dir("drill-pass");
+    let d = drill_daemon(&dir, true, Script::Succeed);
+    let now = t(1_000);
+    let r = drill(&d, now);
+    assert_eq!(r.result, ResponseResult::Ok, "a canary drill should pass");
+    assert!(r.outcome.unwrap_or_default().contains("drill passed"));
+    assert!(journal_has(&dir, "\"event\":\"drill-passed\""));
+    // The canary is idle again — a drill leaves nothing behind.
+    assert!(matches!(
+        d.dispatch(&Op::Status, now)
+            .unwrap()
+            .grants
+            .unwrap()
+            .iter()
+            .find(|g| g.host == "canary")
+            .map(|g| &g.state),
+        Some(lychgate_core::proto::GrantState::Closed)
+    ));
+}
+
+#[test]
+fn a_drill_on_a_non_canary_host_is_refused() {
+    let dir = scratch_dir("drill-noncanary");
+    let d = drill_daemon(&dir, false, Script::Succeed);
+    let now = t(1_000);
+    let r = drill(&d, now);
+    assert_eq!(
+        r.result,
+        ResponseResult::Refused,
+        "only a drill = true host is drillable"
+    );
+    assert!(r.error.unwrap_or_default().contains("not a drill canary"));
+    // Nothing was opened.
+    assert!(matches!(
+        d.dispatch(&Op::Status, now)
+            .unwrap()
+            .grants
+            .unwrap()
+            .iter()
+            .find(|g| g.host == "canary")
+            .map(|g| &g.state),
+        Some(lychgate_core::proto::GrantState::Closed) | None
+    ));
+}
+
+#[test]
+fn a_drill_whose_revert_fails_is_reported_as_failed() {
+    // The sabotage oracle: a driver that applies but cannot revert must make the
+    // drill FAIL — if it passed here, the drill would be measuring nothing.
+    let dir = scratch_dir("drill-sabotage");
+    let d = drill_daemon(&dir, true, Script::FailRevert);
+    let now = t(1_000);
+    let r = drill(&d, now);
+    assert_eq!(
+        r.result,
+        ResponseResult::Refused,
+        "a stuck revert must fail the drill"
+    );
+    assert!(r.error.unwrap_or_default().contains("drill FAILED"));
+    assert!(journal_has(&dir, "\"event\":\"drill-failed\""));
+    // The canary is now needs-revert; a follow-up drill refuses (not idle).
+    let again = drill(&d, now);
+    assert_eq!(again.result, ResponseResult::Refused);
+    assert!(again.error.unwrap_or_default().contains("not idle"));
+}

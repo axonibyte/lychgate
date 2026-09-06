@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 
-use lychgate_core::proto::{status_lines, Op, PendingChallenge, Response};
+use lychgate_core::proto::{status_lines, Op, PendingChallenge, Response, ResponseResult};
 use lychgate_core::{
     apply_channels, reestablish_channels, revert_channels, ApplyOutcome, ApprovalRequest,
     Authority, AuthorityModel, Channel, DriverSet, GrantRegistry, GrantStatus, Host, Inventory,
@@ -77,6 +77,11 @@ pub struct Daemon {
 /// The profile name a `--dry-run` daemon records on a pending grant. Dry-run
 /// evaluates no authority, so the value only has to be stable and recognisable.
 const DRY_RUN_PROFILE: &str = "dry-run";
+
+/// The synthetic profile a drill records on the canary's transient grant. It is
+/// not a configured profile (the drill bypasses approval), so it is never in the
+/// authority model — the pass loop cannot evaluate or reap it.
+const DRILL_PROFILE: &str = "drill";
 
 /// Which socket an op arrived on. The operator socket is the full-privilege
 /// control surface; the MCP socket is the AI front door, gated per profile. The
@@ -166,7 +171,8 @@ impl Daemon {
                     Op::Open { host, .. }
                     | Op::Approve { host, .. }
                     | Op::Renew { host, .. }
-                    | Op::Close { host } => host.clone(),
+                    | Op::Close { host }
+                    | Op::Drill { host } => host.clone(),
                     Op::Status => String::new(),
                 };
                 self.journal(
@@ -188,6 +194,7 @@ impl Daemon {
                 grants: Some(self.status(now)?),
                 ..Response::ok()
             }),
+            Op::Drill { host } => self.drill(host, now),
         }
     }
 
@@ -214,6 +221,13 @@ impl Daemon {
                     return Ok(Some(NEEDS_POLICY.to_string()));
                 }
                 (host.as_str(), self.pending_profile(host, now)?)
+            }
+            // A drill is an operator/cron self-test, never a front-door action.
+            Op::Drill { .. } => {
+                return Ok(Some(
+                    "drill is an operator action, not available over the MCP front door"
+                        .to_string(),
+                ))
             }
             // Not gated: open grants retain no profile; status is a read.
             Op::Renew { .. } | Op::Close { .. } | Op::Status => return Ok(None),
@@ -869,6 +883,107 @@ impl Daemon {
             }
             Err(refusal) => Ok(Response::refused(refusal)),
         }
+    }
+
+    /// Drill a canary: open-and-revert it as a standing self-test of the revert
+    /// path. Scoped to a `drill = true` host — the drill exercises the channel
+    /// apply/revert path, not approval (tested elsewhere), so it opens the canary
+    /// without a proof. Returns Ok with a "drill passed" outcome, or Refused with
+    /// the diagnosis (a failed drill is a loud signal — the CLI exits non-zero).
+    fn drill(&self, host: &str, now: SystemTime) -> anyhow::Result<Response> {
+        let Some(host_cfg) = self.host(host) else {
+            return Ok(Response::refused(RegistryError::UnknownHost(
+                host.to_string(),
+            )));
+        };
+        if !host_cfg.drill {
+            return Ok(Response::refused(format!(
+                "host {host:?} is not a drill canary (set `drill = true` on it to allow drills)"
+            )));
+        }
+        // The canary must be idle: a drill opens and reverts a fresh grant, and
+        // must not disturb (or be confused by) an existing one.
+        let status = {
+            let doc = self.store.read()?;
+            let registry = GrantRegistry::from_parts(&self.inventory, &doc)
+                .with_context(|| format!("validating {}", self.store.path().display()))?;
+            registry.status(host, now)
+        };
+        if !matches!(status, Ok(GrantStatus::Closed)) {
+            return Ok(Response::refused(format!(
+                "canary {host:?} is not idle (a drill needs it closed first)"
+            )));
+        }
+
+        // Open the canary directly: begin a short-lived pending, then open it
+        // with no proof — the scoped bypass — driving the real channels.
+        let ttl = match Ttl::parse("5m") {
+            Ok(t) => t,
+            Err(e) => return self.drill_failed(host, now, e.to_string()),
+        };
+        let deadline = now.checked_add(self.approval_window).unwrap_or(now);
+        let nonce = generate_nonce();
+        match self.with_registry(|reg| {
+            reg.begin_pending(host, now, deadline, ttl, nonce, DRILL_PROFILE.to_string())
+        })? {
+            Ok(()) => {}
+            Err(refusal) => {
+                return self.drill_failed(
+                    host,
+                    now,
+                    format!("could not begin the drill: {refusal}"),
+                )
+            }
+        }
+        let opened = self.open_pending_now(host, &host_cfg, now, now)?;
+        if opened.result != ResponseResult::Ok || opened.expires_at.is_none() {
+            // Apply failed; the grant is NeedsRevert. Try to clean it up, then
+            // report the drill as failed.
+            let _ = self.close(host, now);
+            let reason = opened
+                .error
+                .unwrap_or_else(|| "the canary did not open (channel apply failed)".to_string());
+            return self.drill_failed(host, now, reason);
+        }
+
+        // Revert it. close() reports Ok only when every channel is verifiably
+        // reverted; a stuck revert is Refused — exactly a failed drill.
+        let closed = self.close(host, now)?;
+        if closed.result != ResponseResult::Ok {
+            let reason = closed
+                .error
+                .unwrap_or_else(|| "the revert did not complete".to_string());
+            return self.drill_failed(host, now, reason);
+        }
+
+        self.journal(
+            now,
+            &Event::DrillPassed {
+                host: host.to_string(),
+            },
+        )?;
+        Ok(Response {
+            outcome: Some(format!("drill passed: {host} opened and fully reverted")),
+            ..Response::ok()
+        })
+    }
+
+    fn drill_failed(
+        &self,
+        host: &str,
+        now: SystemTime,
+        reason: String,
+    ) -> anyhow::Result<Response> {
+        self.journal(
+            now,
+            &Event::DrillFailed {
+                host: host.to_string(),
+                reason: reason.clone(),
+            },
+        )?;
+        Ok(Response::refused(format!(
+            "drill FAILED on {host:?}: {reason}"
+        )))
     }
 
     fn close(&self, host: &str, now: SystemTime) -> anyhow::Result<Response> {

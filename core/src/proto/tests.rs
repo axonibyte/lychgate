@@ -72,6 +72,12 @@ fn every_wire_op_decodes_to_its_variant() {
             },
         ),
         (r#"{"proto":4,"op":"status"}"#, Op::Status),
+        (
+            r#"{"proto":4,"op":"drill","host":"canary"}"#,
+            Op::Drill {
+                host: "canary".into(),
+            },
+        ),
     ];
     for (line, want) in cases {
         assert_eq!(decode_request(line).unwrap(), want, "{line}");
@@ -94,6 +100,9 @@ fn encoded_requests_decode_back_to_the_same_op() {
             ttl: "1h".into(),
         },
         Op::Status,
+        Op::Drill {
+            host: "canary".into(),
+        },
     ] {
         assert_eq!(decode_request(&encode_request(&op)).unwrap(), op);
     }

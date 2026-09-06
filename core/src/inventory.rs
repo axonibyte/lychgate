@@ -60,6 +60,12 @@ pub struct Host {
     /// authority. Meaningful only when [approval] is configured.
     #[serde(default)]
     pub access: Option<HostAccess>,
+    /// Whether this host is a drill **canary**: a designated throwaway host that
+    /// `lychgate drill` may open-and-revert as a standing self-test, bypassing
+    /// the approval gate. Default false — only a canary is drillable, and a real
+    /// host never is. See the daemon's drill path and TESTING.md.
+    #[serde(default)]
+    pub drill: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

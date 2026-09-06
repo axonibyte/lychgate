@@ -64,6 +64,13 @@ enum Command {
     },
     /// Report the state of every grant
     Status,
+    /// Drill a canary host: open-and-revert it as a standing self-test of the
+    /// revert path. Refused unless the host is a `drill = true` canary. Exits
+    /// non-zero on a failed drill — schedule it in cron and alert on failure.
+    Drill {
+        #[arg(long)]
+        host: String,
+    },
     /// Hash a password (read from stdin) into an Argon2id PHC string for a
     /// `[[approval.authenticator]] kind="password"` hash-file. Local — talks to
     /// no daemon. Redirect the output into a mode-600 file.
@@ -466,6 +473,7 @@ fn run() -> anyhow::Result<ExitCode> {
         }
         Command::Close { host } => Op::Close { host: host.clone() },
         Command::Status => Op::Status,
+        Command::Drill { host } => Op::Drill { host: host.clone() },
         // Handled before this match (local, no daemon).
         Command::HashPassword | Command::Fido2Register { .. } | Command::Fido2Assert { .. } => {
             unreachable!("local commands are handled before this match")
@@ -585,6 +593,9 @@ fn run() -> anyhow::Result<ExitCode> {
                     ),
                 }
             }
+        }
+        (Command::Drill { .. }, r) => {
+            println!("{}", r.outcome.as_deref().unwrap_or("drill passed"));
         }
         // Returned early before any daemon round trip.
         (Command::HashPassword, _)

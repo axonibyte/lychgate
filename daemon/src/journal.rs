@@ -135,6 +135,16 @@ pub enum Event {
         host: String,
         reason: String,
     },
+    /// A drill opened and fully reverted a canary — the revert path works.
+    DrillPassed {
+        host: String,
+    },
+    /// A drill could not open, or could not fully revert, a canary. The standing
+    /// oracle bit: the revert path (or apply) is broken and needs attention.
+    DrillFailed {
+        host: String,
+        reason: String,
+    },
 }
 
 #[derive(Serialize)]

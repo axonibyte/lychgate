@@ -52,6 +52,7 @@ fn a_single_host_with_its_fields_parses_intact() {
                 password_file: None,
             }),
             access: None,
+            drill: false,
         }]
     );
 }
@@ -944,4 +945,31 @@ fn an_unrecognized_approval_field_is_rejected() {
         Inventory::parse(&toml),
         Err(InventoryError::Toml(_))
     ));
+}
+
+#[test]
+fn a_host_is_not_a_drill_canary_by_default() {
+    let inv = Inventory::parse(&ssh_host("")).unwrap();
+    assert!(
+        !inv.hosts[0].drill,
+        "drill must default false (only a canary is drillable)"
+    );
+}
+
+#[test]
+fn a_host_can_be_marked_a_drill_canary() {
+    let text = r#"
+        [[hosts]]
+        name = "canary"
+        address = "10.0.4.99"
+        os = "linux"
+        channels = ["ssh"]
+        drill = true
+        [hosts.ssh]
+        agent_user = "lychgate"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+    "#;
+    let inv = Inventory::parse(text).unwrap();
+    assert!(inv.hosts[0].drill, "drill = true must parse as a canary");
 }
