@@ -213,9 +213,15 @@ fn software_register(
         );
         std::fs::write(path, &body)
             .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| anyhow::anyhow!("chmod {}: {e}", path.display()))?;
+        // The software key is a secret: owner-only where the platform has unix
+        // modes. The Windows client build has no mode_t (this was its one
+        // compile error); NTFS ACL tightening is out of scope for the client.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| anyhow::anyhow!("chmod {}: {e}", path.display()))?;
+        }
         (cred_id, priv_key)
     };
     let public =
