@@ -764,6 +764,7 @@ dependencies = [
  "lychgate-core",
  "serde",
  "serde_json",
+ "ssh-key",
 ]
 
 [[package]]

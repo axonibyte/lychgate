@@ -434,6 +434,42 @@ the approval tier's job); and the canary is a throwaway, so the drill says
 nothing about a *real* host's revert beyond that the drivers and revert logic
 work against that canary's channels.
 
+## Simulated-users tier: EXISTS (M8d)
+
+The §15 capstone (`daemon/src/sim.rs`): seeded actors drive the real in-process
+`Daemon` through adversarial sequences — opens, **real SSHSIG approvals** signed
+in-process by two configured actors and one stranger, renews, closes, time
+advances, and reap passes — while a pure **shadow model** predicts every
+observation and a **checker** compares them after every action. The shadow
+*deliberately duplicates* the policy semantics (threshold arithmetic, the closed
+deadline/expiry boundaries, the renewal window, pass's wait-only opening) — the
+duplication is the check. House fuzz idiom throughout: SplitMix64, committed
+`FIXED_SEEDS`, the seed printed before use, `LYCHGATE_SIM_SEED` replays one seed
+and `LYCHGATE_SIM_ACTIONS` scales the walk.
+
+The **checker came first and is self-tested**: fed the observations and responses
+a *broken* daemon would produce, it must complain — a grant open below threshold,
+a grant outliving its expiry, wrong remaining-TTL arithmetic, a refused valid
+live proof (the observable of the real approve-vs-pass bug), an accepted stale
+proof. The **nemesis** moves live in the action space (a stale-challenge replay,
+the stranger's signature, double submits, act-on-expired approve/renew,
+abandonment past the window), plus two committed deterministic walks that
+traverse all of them. On a failure the **shrinker** (ddmin over the action log,
+each candidate replayed on a fresh daemon) minimizes to a locally minimal
+reproducer before panicking with the seed; its reduction loop is itself
+self-tested against a synthetic failing predicate.
+
+The harness has been *observed biting*, per the §15 acceptance: three seeded
+mutations were each caught and shrunk — approve opening below threshold (a
+120-action walk shrank to a 2-action reproducer), the pending reap skipped, and
+the renewal window dropped. The two historical *thread-interleaving* defects
+(approve-vs-pass, close-vs-pass) are rediscovered by the Tier-6 threaded
+harnesses, which is where they belong — this tier is sequential by construction
+(that is what makes a seed replayable) and catches their *observables* through
+the checker instead. **What it does not cover:** thread interleavings,
+cross-process contention, factor kinds beyond ed25519 (each has its own KAT/e2e
+tier), and failing drivers (the channel and drill tiers own those).
+
 ## Wire contract and operator-flow tiers: EXISTS (M2)
 
 The request/response surface is pinned by a contract table in
@@ -489,11 +525,12 @@ have their own sections above. What remains:
 
 5. **Source-as-data** — once there are seams that can rot (driver registry,
    channel vocabulary, CLI/daemon flag parity).
-7. **Simulated users** — last, and the oracle self-test gets written first: an
-   invariant that has never fired is indistinguishable from a passing suite.
+7. ~~**Simulated users**~~ — landed at M8d (its own section above), with the
+   invariant self-test written first and the §15 acceptance demonstrated by
+   mutation (three reverted defects, each rediscovered and shrunk).
 
-The acceptance test for the whole exercise, when these arrive: revert known
-fixed defects and confirm the harness rediscovers them.
+The acceptance test for the whole exercise, when source-as-data arrives: revert
+known fixed defects and confirm the harness rediscovers them.
 
 ## Running what exists
 

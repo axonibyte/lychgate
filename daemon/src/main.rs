@@ -9,6 +9,8 @@ mod transport;
 
 #[cfg(test)]
 mod scratch;
+#[cfg(test)]
+mod sim;
 
 use std::fs;
 use std::path::PathBuf;

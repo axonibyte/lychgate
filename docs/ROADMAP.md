@@ -778,10 +778,16 @@ proof-met grants), with a threaded race harness racing two opens on one pending
 grant and asserting neither is spuriously refused and it opens once. This cured
 the intermittent `authority-acceptance` flake (8/8 clean on the guest after).
 Renew races resolve fail-closed (a grant reaped at its expiry boundary refuses a
-renew, never extends an expired grant). Still ahead: **simulated users**
-— actors, shadow model, checker, nemesis (stale approval, act-on-expired,
-double submit, abandonment), shrinker — with the invariant self-test written
-*first*, fed the responses a broken daemon would send.
+renew, never extends an expired grant). **~~Simulated users~~ DONE (2026-09-06,
+rides v0.11.0)** — `daemon/src/sim.rs`: seeded actors drive the real in-process
+daemon (real SSHSIG proofs) against a pure shadow model, a self-tested-first
+checker, the nemesis moves (stale replay, stranger, double submit,
+act-on-expired, abandonment), and a ddmin shrinker that minimizes any failing
+walk to a reproducer. The §15 acceptance was demonstrated by mutation: three
+reverted defects (open below threshold, skipped reap, dropped renewal window)
+each rediscovered and shrunk; the historical thread races are rediscovered by
+the Tier-6 threaded harnesses, whose job they are. See TESTING.md's
+"Simulated-users tier". Still ahead: **source-as-data**.
 
 **Acceptance** — the §15 acceptance test for the whole exercise: revert
 defects already found and fixed by hand along the way and confirm the harness
