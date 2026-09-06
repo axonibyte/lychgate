@@ -703,13 +703,52 @@ sysadmin + AI; the AI front door reaches only `mcp = true` profiles, enforced by
 the daemon; a Claude session opens and observes a grant over MCP without shell
 access. Verified green on both reaper guests.
 
-### M8c onward — PLANNED
+### M8c — Drill mode (the standing revert oracle) — DONE (2026-09-06), bumps to v0.11.0
 
-- Drill mode: a scheduled open-and-revert against a designated canary host,
-  journaled, with a loud failure when the revert path does not fire. A revert
-  path never observed firing is indistinguishable from one that does not
-  work; the drill is the standing oracle self-test.
+A revert path never observed firing is indistinguishable from one that does not
+work. Drill mode brings the `revert-under-kill` oracle into **production**:
+`lychgate drill --host <canary>` sends a new `Op::Drill` to the running daemon,
+which opens-and-reverts a designated **canary** host and confirms the revert
+fired — journalling the result and failing **loudly** (a non-zero CLI exit) when
+it does not, so cron can schedule it and monitoring can alert.
+
+Decisions, resolved with the owner: the drill is triggered by the CLI against the
+running daemon (single authority, no second process racing the store); it opens
+the canary via a **daemon-internal bypass scoped to a `drill = true` host** (the
+drill exercises the channel apply/revert path, not approval — tested elsewhere).
+A host gains a `drill` flag (default false, fail-closed): only a throwaway canary
+is drillable, never a real host.
+
+**Deliverables** — `Host.drill` in the inventory; `Op::Drill` in the protocol;
+the daemon's `drill()` (gate `drill = true` + idle, then `begin_pending →
+open_pending_now → close`, reusing the hardened lifecycle and reading the verdict
+from `close()`, which reports success only when every channel is verifiably
+reverted); `DrillPassed`/`DrillFailed` journal events; `lychgate drill --host`
+(exits non-zero on a failed drill; refused over the MCP front door). Bumps to
+**v0.11.0**.
+
+**Tests** — a canary drill passes and leaves the canary idle; a non-canary is
+refused (mutation-checked by forcing the gate open); the **sabotage oracle** — a
+driver that applies but cannot revert makes the drill fail, and a follow-up drill
+is refused as not-idle. `Op::Drill` round-trips the wire; the `drill` flag
+defaults false. `e2e/drill-acceptance.sh` proves it on both guests over the real
+vnc channel: a healthy drill passes (exit 0, a set then a clear in the witness),
+and a **sabotaged** clear command makes the drill exit non-zero with
+`DrillFailed` — the oracle proven to bite, as `revert-under-kill --sabotage`
+guards its harness.
+
+**Acceptance** — met: a scheduled drill opens-and-reverts a canary and passes
+when the revert path works, and fails loudly (non-zero exit + `DrillFailed`) when
+it does not. Verified green on both reaper guests.
+
+### M8d onward — PLANNED
+
 - Operational docs: runbook for granting Claude emergency access end to end.
+- **Crash-restart lock robustness** — a daemon SIGKILLed mid-mutation strands the
+  `grants.lock` file, and a restart within the 120s stale threshold waits out the
+  10s acquire timeout and fails. Make the lock PID-aware (record the holder; a
+  waiter whose holder is dead steals immediately) so a crashed daemon restarts at
+  once. Surfaced by the drill work; low-frequency, but real.
 - **TPM integration (tail-end)** — a TPM 2.0-backed factor: a signature from a
   key sealed in the platform TPM, verified like Ed25519/FIDO2 but with a
   non-exportable private key, and/or sealing lychgate's own secrets to the TPM.

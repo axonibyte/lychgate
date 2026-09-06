@@ -410,6 +410,30 @@ the MCP socket, like the operator socket, is the authorization boundary (a
 process that can open it is trusted) — the `mcp` flag bounds *which profiles* it
 reaches, not *who* may connect.
 
+## Drill tier: EXISTS (M8c)
+
+Drill mode is the standing revert oracle, so its own tests are oracle-shaped. In
+the daemon, a drill on a `drill = true` canary passes and leaves the canary idle
+(`DrillPassed` journaled); a drill on a non-canary host is refused (mutation
+-checked by forcing the canary gate open — the refusal test then fails); and **the
+sabotage self-test**: a fake driver that applies but cannot revert makes the
+drill report `DrillFailed`, and a follow-up drill is refused as not-idle. A drill
+that passed with a broken revert would be measuring nothing, so this arm is the
+point of the tier. `Op::Drill` round-trips the wire and the `drill` flag defaults
+false.
+
+End to end on both guests, `e2e/drill-acceptance.sh` drives `lychgate drill
+--host canary` over the real vnc channel: a healthy drill passes (exit 0, and the
+witness log shows a set then a clear — the channel really was applied and
+reverted), then the canary's clear command is **sabotaged** (made to fail) and
+the drill must exit non-zero with `DrillFailed` — mirroring how
+`revert-under-kill --sabotage` proves that harness can still catch a dead
+backstop. **What it does not prove:** a drill exercises the channel apply/revert
+path, not the approval gate (it bypasses approval for the canary — approval is
+the approval tier's job); and the canary is a throwaway, so the drill says
+nothing about a *real* host's revert beyond that the drivers and revert logic
+work against that canary's channels.
+
 ## Wire contract and operator-flow tiers: EXISTS (M2)
 
 The request/response surface is pinned by a contract table in

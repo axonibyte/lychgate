@@ -225,9 +225,8 @@ step, is [ROADMAP.md](ROADMAP.md). The sketch below is the shape of it:
 5. **Operator surface** — the weighted-threshold approval gate (M8a.1–2, done;
    see [Approval](#approval)) leads; the **MCP front door** (M8b, done; see
    [MCP front door](#mcp-front-door)) lets a Claude session request and use a
-   grant without shell access. Still ahead is drill mode (scheduled
-   open-and-revert against a canary host, because a revert path never observed
-   firing is indistinguishable from one that does not work). All four
+   grant without shell access. **Drill mode** (M8c, done; see
+   [Drill mode](#drill-mode)) is the standing revert oracle. All four
    authenticator kinds (Ed25519, TOTP, password, FIDO2) are done.
 
 ## MCP front door
@@ -254,3 +253,26 @@ expose a general `approve` (the daemon returns a challenge only from `open`, so
 the AI can only sign a grant it initiated), and one-time-secret delivery to the
 AI is deferred (the "shown once, never persisted" invariant is not yet
 revisited).
+
+## Drill mode
+
+A revert path never observed firing is indistinguishable from one that does not
+work. `revert-under-kill` proves the revert path in CI; **drill mode** proves it
+in *production*, on a schedule. `lychgate drill --host <canary>` sends `Op::Drill`
+to the running daemon, which opens-and-reverts a designated canary and confirms
+the revert fired — journalling `DrillPassed`/`DrillFailed` and exiting non-zero
+(via the CLI) on failure, so cron schedules it and monitoring alerts.
+
+The canary is a host flagged `drill = true` in the inventory — a designated
+throwaway; a host without the flag is never drillable. The drill is a
+daemon-internal self-test: it opens the canary through the exact hardened
+lifecycle (`begin_pending → open_pending_now → close`) but **bypasses the
+approval gate**, because it exercises the channel apply/revert path, not approval
+(which the approval tier tests). The bypass is bounded to the canary flag and is
+an operator/cron action — a drill is refused over the MCP front door. The verdict
+needs no new oracle: `close()` already commits `Closed` only when every channel
+is verifiably reverted (each driver's `verify()` confirms actual state) and
+reports a stuck revert otherwise, so a drill passes exactly when the open applied
+and the close fully reverted. A crash mid-drill is safe — the write-ahead
+`Opening`/`NeedsRevert` states let `boot_recover` and the pass loop finish the
+revert on the throwaway canary.

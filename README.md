@@ -118,6 +118,16 @@ lychgate close --host db-01
 
 `--as` may be omitted when the host permits exactly one profile.
 
+Drill mode is the standing revert oracle: `lychgate drill --host canary`
+open-and-reverts a designated canary (a host marked `drill = true`) and exits
+non-zero if the revert path does not fire. Schedule it and alert on failure — a
+revert path never observed firing is indistinguishable from one that does not
+work:
+
+```cron
+*/30 * * * * lychgate drill --host canary || notify "lychgate drill failed"
+```
+
 The one-time secret for a channel (the BMC or VNC password) is shown once by
 `approve`, where the grant actually opens — not by `open`. TTLs take the forms
 `90s`, `15m`, `2h`; a unit is required, and the 24-hour
