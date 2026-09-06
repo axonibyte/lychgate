@@ -1903,3 +1903,66 @@ fn a_drill_whose_revert_fails_is_reported_as_failed() {
     assert_eq!(again.result, ResponseResult::Refused);
     assert!(again.error.unwrap_or_default().contains("not idle"));
 }
+
+// --- concurrency hardening: approve/pass racing to open a pending grant -----
+
+// Two actors can both find a pending grant at threshold — the operator's approve
+// and a reap-loop pass. The atomic Pending->Opening claim lets exactly one win;
+// the loser must treat "already opening/open" as success, never a spurious
+// refusal. This races two opens on the same pending grant many times and asserts
+// the invariant holds every interleaving.
+#[test]
+fn racing_opens_claim_once_and_neither_is_spuriously_refused() {
+    use std::sync::Arc;
+    for _ in 0..50 {
+        let dir = scratch_dir("race-open");
+        let d = Arc::new(mcp_harness(&dir));
+        let now = t(1_000);
+        // A pending grant to race the open on.
+        assert_eq!(
+            d.dispatch(&open_op("ai-open"), now).unwrap().result,
+            ResponseResult::Ok
+        );
+        let cfg = d.host("db-01").unwrap();
+
+        let (d1, c1) = (Arc::clone(&d), cfg.clone());
+        let (d2, c2) = (Arc::clone(&d), cfg.clone());
+        let h1 = std::thread::spawn(move || d1.open_pending_now("db-01", &c1, now, now).unwrap());
+        let h2 = std::thread::spawn(move || d2.open_pending_now("db-01", &c2, now, now).unwrap());
+        let r1 = h1.join().unwrap();
+        let r2 = h2.join().unwrap();
+
+        assert_eq!(r1.result, ResponseResult::Ok, "opener 1 spuriously refused");
+        assert_eq!(r2.result, ResponseResult::Ok, "opener 2 spuriously refused");
+        assert!(is_open(&d, now), "the grant must be open after the race");
+    }
+}
+
+// pass leaves a proof-met grant for the operator's approve: it opens only grants
+// where the wait is load-bearing. Otherwise a pass could win a secret-bearing
+// open and the operator would never receive the one-time secret.
+#[test]
+fn a_pass_leaves_a_proof_met_grant_for_approve() {
+    let dir = scratch_dir("pass-defers");
+    let d = mcp_harness(&dir);
+    let now = t(1_000);
+    assert_eq!(
+        d.dispatch(&open_op("ai-open"), now).unwrap().result,
+        ResponseResult::Ok
+    );
+    // Record the sole factor as satisfied — the grant is now met by proof alone
+    // (no wait involved), exactly the case pass must defer.
+    d.with_registry(|reg| reg.add_satisfied("db-01", now, "phone".to_string()))
+        .unwrap()
+        .unwrap();
+
+    d.pass(now).unwrap();
+
+    let status = d.dispatch(&Op::Status, now).unwrap().grants.unwrap();
+    let db01 = status.iter().find(|g| g.host == "db-01").unwrap();
+    assert_eq!(
+        db01.state,
+        lychgate_core::proto::GrantState::AwaitingApproval,
+        "pass must leave a proof-met grant pending for approve, not open it"
+    );
+}

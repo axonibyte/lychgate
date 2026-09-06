@@ -466,9 +466,15 @@ the first listens, a stale socket replaced, a missing daemon failing fast.
 - Journal durability is fsync-per-line by construction, not by test; the
   residual power-loss windows (a lost line detectable as a pid/seq gap; a
   duplicated observation) are documented in the journal module, not tested.
-- Concurrency: the M7 Tier-6 harness now races sixteen same-process threads
-  for one console (see the VNC console tier); cross-*process* racing beyond
-  what the store's file lock gives is still not exercised.
+- Concurrency: the M7 Tier-6 harness races sixteen same-process threads for one
+  console (see the VNC console tier), and the **approve-vs-pass open race** is
+  hardened (M8d) — a threaded harness races two opens on one pending grant fifty
+  times and asserts neither is spuriously refused and it opens exactly once, and
+  `pass` is proven to defer proof-met grants to `approve` (mutation-checked both
+  ways). This cured the intermittent `authority-acceptance` flake. The
+  close-vs-pass revert race was hardened at M8a.2; cross-*process* racing beyond
+  what the store's file lock (now PID-aware) gives is still not exercised — the
+  simulated-users tier is where that lands.
 - The service files stage correctly; whether rc(8)/systemd actually start the
   daemon from them belongs to M5's full-stack tier on the reaper guests.
 

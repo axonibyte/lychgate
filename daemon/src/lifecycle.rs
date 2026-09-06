@@ -656,6 +656,35 @@ impl Daemon {
     /// The pending->open tail, shared by an approval that meets the threshold, a
     /// dry-run approval, and a wait that matures on a pass: drivable channels,
     /// Pending->Opening under the lock, journal Approved, then drive the open.
+    /// The response for a caller that lost the atomic `Pending -> Opening` claim
+    /// to a concurrent actor: the grant is already opening or open, which is a
+    /// success (the proof was accepted). The winner drives the channels and
+    /// returns any one-time secret; this response reports the open grant only.
+    /// A grant that is no longer open to approval (lapsed/closed in the gap) is a
+    /// genuine refusal.
+    fn already_opening_response(&self, host: &str, now: SystemTime) -> anyhow::Result<Response> {
+        let status = {
+            let doc = self.store.read()?;
+            let registry = GrantRegistry::from_parts(&self.inventory, &doc)
+                .with_context(|| format!("validating {}", self.store.path().display()))?;
+            registry.status(host, now)
+        };
+        match status {
+            Ok(GrantStatus::Open { remaining }) => Ok(Response {
+                expires_at: Some(epoch_secs(now) + remaining.as_secs()),
+                ..Response::ok()
+            }),
+            // Mid-drive by the concurrent opener; it will land Open or NeedsRevert.
+            Ok(GrantStatus::Opening) => Ok(Response {
+                outcome: Some("opening".to_string()),
+                ..Response::ok()
+            }),
+            _ => Ok(Response::refused(
+                "the request is no longer awaiting approval".to_string(),
+            )),
+        }
+    }
+
     fn open_pending_now(
         &self,
         host: &str,
@@ -670,10 +699,18 @@ impl Daemon {
             .expect("drivers poisoned")
             .drivable(&declared);
         // Pending -> Opening under the lock: re-checks the state, closing the
-        // gap with the reads above (a concurrent close or a lapse refuses).
+        // gap with the reads above. The transition is the atomic claim — exactly
+        // one caller wins it. A concurrent actor (a pass, or a second proof)
+        // that already claimed the open leaves this one seeing NotPending; that
+        // is success, not a refusal (the operator's proof was accepted and the
+        // grant is open), so report the open grant. A genuine lapse/close falls
+        // through to the refusal.
         let expires =
             match self.with_registry(|reg| reg.approve_to_opening(host, now, to_apply.clone()))? {
                 Ok(e) => e,
+                Err(RegistryError::Grant(lychgate_core::GrantError::NotPending)) => {
+                    return self.already_opening_response(host, now);
+                }
                 Err(refusal) => return Ok(Response::refused(refusal)),
             };
         self.journal(
@@ -1200,10 +1237,19 @@ impl Daemon {
                     // simply lapses at its deadline.
                     Err(_) => continue,
                 };
-                if model
+                // pass opens a grant only when the wait is load-bearing — met now
+                // but NOT met with no elapsed time. A grant met without time is
+                // proof-met: the operator's `approve` that added the last proof
+                // opens it (and receives any one-time secret), so pass leaves it
+                // alone rather than racing that open. Only a wait-matured grant
+                // has no approve coming for it.
+                let met_now = model
                     .evaluate(&authority, &view.satisfied, view.elapsed)
-                    .met
-                {
+                    .met;
+                let met_without_time = model
+                    .evaluate(&authority, &view.satisfied, Duration::ZERO)
+                    .met;
+                if met_now && !met_without_time {
                     self.open_pending_now(&host, &host_cfg, view.requested_at, now)?;
                 }
             }

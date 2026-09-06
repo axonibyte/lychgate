@@ -771,8 +771,15 @@ intermittent `a_second_daemon` e2e flake.
 vocabulary appears in inventory schema, driver registry, CLI help, and docs —
 parse the source and assert the sets agree, duplicating the mapping in the
 test deliberately; exclude the checked content from the searched corpus);
-**concurrency** hardened across open/close/renew races; **simulated users**
-last — actors, shadow model, checker, nemesis (stale approval, act-on-expired,
+**~~concurrency hardened across open/close/renew races~~ DONE (2026-09-06, rides
+v0.11.0)** — the close-vs-pass revert race was hardened at M8a.2; the
+approve-vs-pass **open** race is now fixed (idempotent open + pass defers
+proof-met grants), with a threaded race harness racing two opens on one pending
+grant and asserting neither is spuriously refused and it opens once. This cured
+the intermittent `authority-acceptance` flake (8/8 clean on the guest after).
+Renew races resolve fail-closed (a grant reaped at its expiry boundary refuses a
+renew, never extends an expired grant). Still ahead: **simulated users**
+— actors, shadow model, checker, nemesis (stale approval, act-on-expired,
 double submit, abandonment), shrinker — with the invariant self-test written
 *first*, fed the responses a broken daemon would send.
 
