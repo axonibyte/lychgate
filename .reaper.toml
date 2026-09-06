@@ -43,9 +43,14 @@ if command -v rustup >/dev/null 2>&1; then \
   rustup target add x86_64-pc-windows-gnu && \
   CARGO_HOME=$REAPER_CACHE_CARGO \
   CARGO_TARGET_DIR=$REAPER_CACHE_TARGET \
-  cargo check -p lychgate --target x86_64-pc-windows-gnu --locked; \
+  cargo check -p lychgate --target x86_64-pc-windows-gnu --locked && \
+  apt-get -qq update && apt-get -qq install -y libtss2-dev && \
+  CARGO_HOME=$REAPER_CACHE_CARGO \
+  CARGO_TARGET_DIR=$REAPER_CACHE_TARGET \
+  cargo build --locked -p lychgate -p lychgated \
+    --features lychgate/tpm-client,lychgated/tpm-seal; \
 else \
-  echo "windows client check: no rustup on this guest; enforced by the Ubuntu container and CI"; \
+  echo "windows client check + tpm feature build: no rustup on this guest; the Ubuntu container covers them"; \
 fi"""
 cache = ["cargo", "target"]
 

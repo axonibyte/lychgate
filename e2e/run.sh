@@ -46,6 +46,16 @@ ensure_python() {
     command -v python3 >/dev/null 2>&1
 }
 
+# The Ubuntu container build produces tpm-feature binaries (linking libtss2),
+# so the host needs the runtime libs and swtpm for the tpm acceptance. Best
+# effort where apt exists; the FreeBSD guest runs default binaries and the tpm
+# phase skips there instead.
+ensure_tpm() {
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get -qq install -y libtss2-dev swtpm >/dev/null 2>&1 || true
+    fi
+}
+
 failed=0
 phase() {
     label=$1
@@ -60,11 +70,33 @@ phase() {
     fi
 }
 
+# A phase whose script may legitimately not apply on this guest: exit 2 means
+# SKIPPED (the script says why, loudly) and does not fail the battery; any
+# other nonzero is a real failure. Tri-state on purpose — a skip must never
+# be mistakable for a pass, nor punish a guest that cannot run the phase.
+phase_skippable() {
+    label=$1
+    shift
+    echo ""
+    echo "=== ${label} ==="
+    "$@"
+    rc=$?
+    if [ "${rc}" -eq 0 ]; then
+        echo "=== ${label}: ok ==="
+    elif [ "${rc}" -eq 2 ]; then
+        echo "=== ${label}: SKIPPED on this guest (see above) ==="
+    else
+        echo "=== ${label}: FAILED ==="
+        failed=1
+    fi
+}
+
 if ! ensure_cron; then
     echo "e2e battery: FAILED (could not provision cron; the dead-man cannot run)"
     exit 1
 fi
 ensure_python || echo "=== python3 unavailable; the bmc acceptance will skip ==="
+ensure_tpm
 
 # Unit suites: run here when a toolchain exists (the FreeBSD guest); on the
 # Ubuntu guest they already ran inside the pinned build container — said
@@ -94,6 +126,8 @@ phase "fido2 acceptance" sh e2e/fido2-acceptance.sh
 phase "mcp acceptance" sh e2e/mcp-acceptance.sh
 
 phase "drill acceptance" sh e2e/drill-acceptance.sh
+
+phase_skippable "tpm acceptance" sh e2e/tpm-acceptance.sh
 
 # The oracle self-test: with the dead-man sabotaged away, revert-under-kill
 # MUST fail. A harness that passes here detects nothing.
