@@ -21,7 +21,7 @@ use std::time::UNIX_EPOCH;
 
 use lychgate_core::approval::{parse_ssh_public_key, ApprovalRequest};
 use lychgate_core::authority::{
-    ApprovalSpec, AuthKind, AuthenticatorSpec, AuthorityModel, AuthoritySpec, FactorSpec,
+    ApprovalSpec, AuthKind, AuthenticatorSpec, AuthorityModel, FactorSpec, ProfileSpec,
 };
 use lychgate_core::bmc::parse_account;
 use lychgate_core::proto::decode_request;
@@ -292,7 +292,7 @@ fn fuzz_model() -> &'static AuthorityModel {
                 credential_id: None,
             }],
             group: vec![],
-            profile: vec![AuthoritySpec {
+            profile: vec![ProfileSpec {
                 id: "p".into(),
                 threshold: 1,
                 factor: vec![FactorSpec {
@@ -301,6 +301,7 @@ fn fuzz_model() -> &'static AuthorityModel {
                     group: None,
                     wait: None,
                 }],
+                mcp: false,
             }],
         };
         AuthorityModel::from_spec(&spec).expect("a valid fuzz model")

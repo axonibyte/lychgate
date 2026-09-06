@@ -46,7 +46,7 @@ pub struct ApprovalSpec {
     #[serde(default)]
     pub group: Vec<AuthoritySpec>,
     #[serde(default)]
-    pub profile: Vec<AuthoritySpec>,
+    pub profile: Vec<ProfileSpec>,
 }
 
 /// One configured authenticator: an id, a kind, and the material that kind
@@ -97,14 +97,29 @@ pub struct AuthorityBody {
     pub factor: Vec<FactorSpec>,
 }
 
-/// A named authority (a group or a profile share the same shape): a threshold
-/// over weighted factors.
+/// A named authority (a group shares this shape): a threshold over weighted
+/// factors. Profiles use [`ProfileSpec`], which adds the `mcp` gate.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AuthoritySpec {
     pub id: String,
     pub threshold: u32,
     pub factor: Vec<FactorSpec>,
+}
+
+/// A profile: an authority body plus an id and the `mcp` gate — whether this
+/// profile may be opened/approved through the MCP front door. `mcp` defaults
+/// **false**: fail-closed, a profile is not MCP-reachable unless it opts in. The
+/// gate is only meaningful for profiles (a grant opens under a profile, never a
+/// group), which is why groups keep the plain [`AuthoritySpec`].
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileSpec {
+    pub id: String,
+    pub threshold: u32,
+    pub factor: Vec<FactorSpec>,
+    #[serde(default)]
+    pub mcp: bool,
 }
 
 /// One weighted factor. Exactly one of `authenticator` / `group` / `wait` must
@@ -165,6 +180,9 @@ pub struct AuthorityModel {
     authenticators: BTreeMap<String, Authenticator>,
     groups: BTreeMap<String, Authority>,
     profiles: BTreeMap<String, Authority>,
+    /// The ids of profiles reachable via the MCP front door (`mcp = true`). The
+    /// daemon gates MCP-origin ops on this set; the operator socket ignores it.
+    mcp_profiles: BTreeSet<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -460,10 +478,14 @@ impl AuthorityModel {
             }
         }
         let mut profiles = BTreeMap::new();
+        let mut mcp_profiles = BTreeSet::new();
         for p in &spec.profile {
             let authority = build_authority("profile", &p.id, p.threshold, &p.factor)?;
             if profiles.insert(p.id.clone(), authority).is_some() {
                 return Err(AuthorityError::DuplicateProfile(p.id.clone()));
+            }
+            if p.mcp {
+                mcp_profiles.insert(p.id.clone());
             }
         }
         if profiles.is_empty() {
@@ -474,6 +496,7 @@ impl AuthorityModel {
             authenticators,
             groups,
             profiles,
+            mcp_profiles,
         };
 
         // 3. Resolve references: every authenticator/group a factor names exists.
@@ -572,6 +595,14 @@ impl AuthorityModel {
 
     pub fn profile(&self, id: &str) -> Option<&Authority> {
         self.profiles.get(id)
+    }
+
+    /// Whether `profile` may be opened or approved through the MCP front door.
+    /// Fail-closed: `false` for an unknown profile or one that did not set
+    /// `mcp = true`. The daemon enforces this only for MCP-origin ops; the
+    /// operator socket is never gated by it.
+    pub fn mcp_allowed(&self, profile: &str) -> bool {
+        self.mcp_profiles.contains(profile)
     }
 
     pub fn profile_ids(&self) -> impl Iterator<Item = &str> {

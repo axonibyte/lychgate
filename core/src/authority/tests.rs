@@ -647,3 +647,52 @@ fn a_malformed_token_is_a_clean_error() {
         Err(ApprovalError::Malformed(_))
     ));
 }
+
+// --- the MCP front-door gate (mcp = true on a profile) ----------------------
+
+// A minimal policy with two profiles: one that opts into MCP, one that does not.
+fn mcp_model() -> AuthorityModel {
+    let toml_text = format!(
+        r#"
+        [[authenticator]]
+        id = "ai"
+        kind = "ed25519"
+        public-key = "{k}"
+
+        [[profile]]
+        id = "ai-assisted"
+        threshold = 1
+        mcp = true
+        factor = [ {{ authenticator = "ai", weight = 1 }} ]
+
+        [[profile]]
+        id = "humans-only"
+        threshold = 1
+        factor = [ {{ authenticator = "ai", weight = 1 }} ]
+        "#,
+        k = ALLOWED_PUBKEY,
+    );
+    model(&toml_text).expect("policy is valid")
+}
+
+#[test]
+fn a_profile_defaults_to_not_mcp_reachable() {
+    // Fail-closed: a profile that does not say `mcp = true` is not reachable via
+    // the MCP front door.
+    let m = mcp_model();
+    assert!(!m.mcp_allowed("humans-only"));
+}
+
+#[test]
+fn a_profile_can_opt_into_mcp() {
+    let m = mcp_model();
+    assert!(m.mcp_allowed("ai-assisted"));
+}
+
+#[test]
+fn mcp_allowed_is_false_for_an_unknown_profile() {
+    // An op naming a profile that does not exist must not be MCP-allowed by
+    // default — fail-closed on the lookup, not just on the flag.
+    let m = mcp_model();
+    assert!(!m.mcp_allowed("no-such-profile"));
+}

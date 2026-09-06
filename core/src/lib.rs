@@ -25,7 +25,7 @@ pub use approval::{parse_ssh_public_key, ApprovalError, ApprovalRequest, APPROVA
 pub use authority::{
     ApprovalSpec, AuthKind, Authenticator, AuthenticatorSpec, Authority, AuthorityBody,
     AuthorityError, AuthorityModel, AuthoritySpec, Factor, FactorSpec, Missing, Outcome,
-    WeightedFactor,
+    ProfileSpec, WeightedFactor,
 };
 pub use channel::{
     apply_channels, reestablish_channels, revert_channels, ApplyOutcome, ChannelDriver,
