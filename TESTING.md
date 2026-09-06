@@ -240,7 +240,7 @@ rotated password's expiry is the reap loop's alone — and if the parent-death
 signal loses a fork/exec race on a hard crash, an orphaned forward is caught on
 the next boot by the fixed-port teardown, not instantly.
 
-## Approval tier: EXISTS (M8a.1–4)
+## Approval tier: EXISTS (M8a.1–5)
 
 Opening a grant requires an operator approval, and the tier proves it from the
 bytes up. The challenge is a canonical, domain-separated, length-prefixed
@@ -294,6 +294,19 @@ constant time with **no ledger** — and the daemon tier asserts that reuse
 opens a second grant, so "reusable" is an intended property, not an accident;
 a wrong password is refused and a missing hash file refuses the daemon's start.
 
+Since M8a.5 **FIDO2** is the fourth and last kind — the strongest, a
+challenge-bound WebAuthn assertion. Committed ES256 and EdDSA assertion vectors
+verify against their credential, and the oracle self-tests refuse a tampered
+signature, a wrong challenge, a wrong rpIdHash, a cleared user-present flag, an
+unknown credentialId, and a wrong-alg key — nine mutation-checked arms in all,
+each observed failing when the check it guards is inverted. `build_assertion`
+(the deterministic software authenticator) round-trips through `verify` for both
+algs and its output is byte-pinned by the committed vectors, so the software
+path, the CLI and the hardware client all speak bytes the KAT proves. The daemon
+tier opens a fido2 profile on a valid assertion, refuses one built for a
+different challenge (the challenge binding, mutation-checked by pinning the
+daemon's challenge to a constant), and does not misroute a non-fido2 token.
+
 End to end on both guests: `e2e/approval-acceptance.sh` runs the real binaries
 with a real `ssh-keygen -Y sign` token (a configured key opens; a stranger and a
 lapsed window are refused), and `e2e/authority-acceptance.sh` proves the weighted
@@ -308,13 +321,23 @@ and a **two-factor profile (Ed25519 AND TOTP) opens only after both** — the re
 MFA proof end to end. `e2e/password-acceptance.sh` proves the password factor:
 `lychgate hash-password` makes the hash file, the correct password opens (and
 opens *again* — reusable), a wrong one is refused, and a **password-AND-Ed25519
-two-factor profile** opens only after both. The whole real-driver battery
+two-factor profile** opens only after both. `e2e/fido2-acceptance.sh` proves the
+FIDO2 factor with the default-build software authenticator (`lychgate
+fido2-register` / `fido2-assert --software-key`): single-factor ES256 and EdDSA
+assertions open, an assertion made for a different challenge and a byte-corrupted
+token are refused (then the pristine one still opens, so it is the corruption the
+daemon rejected), and a **fido2-AND-password two-factor profile** opens only
+after both. The whole real-driver battery
 (ssh/bmc/vnc/revert-under-kill/service-start) runs through the open → sign →
 approve round trip via `e2e/lib.sh`, so every acceptance proof also proves the
 approval gate does not get in the way of a legitimate open.
 
-**What the approval tier does NOT prove:** FIDO2 (M8a.5) — the last kind, which
-parses but is refused at load until built. Trust reduces to the configured public
+**What the approval tier does NOT prove:** the FIDO2 **hardware** client in the
+default CI — there is no key on the build hosts, so the `fido2-client` feature is
+not compiled or run by the gate (it is exercised by the simulated tier below and
+a one-time manual ceremony on a physical key). FIDO2 attestation is not verified
+and the signature counter is not tracked (both documented simplifications — we
+trust the registered public key). Trust reduces to the configured public
 keys, TOTP secrets and password hashes; a compromised key/secret is out of scope,
 as is revocation (edit the inventory and reload). Neither a TOTP code nor a
 password binds to the host/challenge — for TOTP the single-use ledger, short
@@ -327,6 +350,38 @@ convenience not yet built. `--dry-run` (no model, first proof opens) proves the
 the guest acceptances and the fixture/KAT tests.
 Cross-*profile* identity binding (requiring the same operator across two factors)
 is not modelled: factors are independent.
+
+## FIDO2 hardware tier — simulated + manual (M8a.5)
+
+The one path with no default-CI oracle: the `fido2-client` CTAP2 client driving
+a key over USB-HID. There is no FIDO2 hardware on the build guests, so the
+feature is not part of the gate. Its correctness reduces to the assertion format
+— which the software authenticator and the verify KAT pin exactly — plus the
+CTAP2 ceremony, which is exercised two ways, both manual and both using
+`e2e/fido2-hardware.sh` (register → a stale-challenge assertion refused → the
+genuine assertion accepted, over the real vnc channel so the daemon actually
+verifies; it skips loudly with exit 2 when the feature is not built or no key is
+attached):
+
+1. **Against a physical key** — a one-time ceremony per key model. Build with
+   `cargo build -p lychgate --features fido2-client` (unix; needs the system
+   hidapi library) and `cargo build -p lychgated`, then run the script as root
+   with a key inserted.
+2. **Against a virtual authenticator (simulated)** — makes the path runnable
+   with no hardware, and is how it was verified for M8a.5. On a Linux host:
+   load `vhci-hcd`; build [virtual-fido](https://github.com/bulwarkid/virtual-fido)'s
+   `demo`; run `yes | demo start --vault v.json --passphrase p` (it exports a
+   CTAP2 device over USB/IP loopback and self-attaches via `usbip attach`, and
+   `yes` auto-approves each user-presence prompt); a FIDO `/dev/hidraw*` appears.
+   Then `LYCHGATE_BIN_DIR=… sh e2e/fido2-hardware.sh` runs the full ceremony
+   against it. This was observed green on the Ubuntu guest: the daemon verified a
+   real hardware assertion and refused a stale-challenge one. The stale test is
+   itself the oracle — under `--dry-run` (no verification) it opens; under real
+   verification it must refuse, and does.
+
+This tier is deliberately not wired into `e2e/run.sh`: the default battery builds
+without the feature, so the script would only ever skip there. It is run by hand,
+and its green run is recorded here rather than by CI.
 
 ## Wire contract and operator-flow tiers: EXISTS (M2)
 

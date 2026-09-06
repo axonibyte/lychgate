@@ -73,9 +73,9 @@ Policy decisions, all enforced in core and all tested:
   (the vnc tunnel) that outlived a restart is re-established. All four
   channels are live: a grant flips PermitRootLogin via a verified drop-in,
   installs break-glass keys in the fence, enables a break-glass iDRAC account,
-  and brings up a console tunnel with a rotated password. As of M8a.4 opening is
-  gated on a weighted-threshold approval authority (Ed25519/SSHSIG, TOTP and password
-  factors, with groups and waits). `--dry-run` registers no drivers and accepts any approval token,
+  and brings up a console tunnel with a rotated password. As of M8a.5 opening is
+  gated on a weighted-threshold approval authority (Ed25519/SSHSIG, TOTP, password
+  and FIDO2 factors, with groups and waits). `--dry-run` registers no drivers and accepts any approval token,
   opening grants as pure bookkeeping.
 - **`lychgate`** — the operator CLI, built for FreeBSD, Linux, and Windows
   (an operator's workstation may be anything; the daemon's host may not).
@@ -120,7 +120,7 @@ modelled on EOS/Antelope permissions. An authority is a `threshold` over
 weighted factors; a factor is one of:
 
 - an **authenticator** — a leaf proof identified by id (an Ed25519 SSHSIG, a
-  TOTP code, or a password today; FIDO2 in a later sub-milestone);
+  TOTP code, a password, or a FIDO2 assertion — all four kinds now implemented);
 - a **group** — itself an authority, satisfied when *its* threshold is met, so
   gates nest into a DAG;
 - a **wait** — satisfied once a duration has elapsed since the request.
@@ -130,8 +130,8 @@ threshold. Authorities attach to named **profiles**; a host's `[hosts.access]`
 lists which profiles it permits and may override a profile's authority (the
 host × profile matrix). Evaluation is pure — `from_spec` validates the whole
 policy at load (references resolve, groups are acyclic, every threshold is
-satisfiable, unimplemented authenticator kinds are refused naming their
-sub-milestone), and `evaluate` sums weights against the set of verified
+satisfiable, and a credential that cannot be built — a bad key, an unknown
+alg — is refused at load, not at 03:00), and `evaluate` sums weights against the set of verified
 authenticator ids and the elapsed time. **Fail-closed throughout**: a policy with
 no profile is refused, an unsatisfiable threshold is refused, and a `[approval]`
 absent outside `--dry-run` refuses the daemon's start.
@@ -167,6 +167,26 @@ a leaked file is not a trivial recovery; the daemon verifies in constant time an
 routes a proof to it by elimination — an SSHSIG goes to Ed25519, an all-digits
 token to TOTP, anything else is a password, so a password factor must not be
 purely numeric.
+
+A **FIDO2** assertion is the strongest factor: like an SSHSIG it **binds to the
+challenge**, so it is phishing- and replay-resistant. A token prefixed
+`lgfido2.` carries a WebAuthn assertion (credentialId, authenticatorData,
+clientDataJSON, signature); `verify` checks the challenge inside clientDataJSON,
+the relying party (authData's rpIdHash must be `SHA-256("lychgate")`, so an
+assertion made for another site cannot be replayed here), the user-present flag,
+and the signature — ES256 (ECDSA-P256) or EdDSA (Ed25519) over
+`authenticatorData ‖ SHA-256(clientDataJSON)` — against the credential's
+registered public key. That key is public and lives inline in the inventory (a
+SEC1 point for ES256, the raw key for EdDSA); we trust the registered key, not
+an attestation chain (a documented simplification), and the signature counter is
+not tracked (many keys hold it at zero). No ledger is needed: the per-request
+nonce inside the challenge is itself the anti-replay. Producing an assertion is
+either the deterministic **software authenticator** (`lychgate fido2-assert
+--software-key`, used by the tests and the e2e) or a real hardware key over
+USB-HID — the **CTAP2 client** behind the `fido2-client` cargo feature, off by
+default so the daemon, the guests and the Windows cross-build never pull the
+hidapi C dependency. Both emit the exact bytes `verify` accepts, from one shared
+wire format in `core::fido2`.
 
 A failed approval is journaled (`ApprovalDenied`, with a reason) — a deliberate
 departure from "refusals journal nothing", because a rejected authorization is
@@ -204,7 +224,7 @@ step, is [ROADMAP.md](ROADMAP.md). The sketch below is the shape of it:
    backstop, and the password's expiry is the reap loop's alone.
 5. **Operator surface** — the weighted-threshold approval gate (M8a.1–2, done;
    see [Approval](#approval)) leads; still ahead are the MCP server so a Claude
-   session can request and use a grant without shell access, drill mode
+   session can request and use a grant without shell access, and drill mode
    (scheduled open-and-revert against a canary host, because a revert path never
-   observed firing is indistinguishable from one that does not work), and the
-   remaining authenticator kind (FIDO2).
+   observed firing is indistinguishable from one that does not work). All four
+   authenticator kinds (Ed25519, TOTP, password, FIDO2) are now done.

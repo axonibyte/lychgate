@@ -597,11 +597,70 @@ both guests.
 password opens (repeatedly, by design), a wrong one is refused, and a genuine
 two-factor gate needs both. Verified green on both reaper guests.
 
-### M8a.5 onward — PLANNED
+### M8a.5 — FIDO2 authenticator (WebAuthn assertion) + CTAP2 client — DONE (2026-09-06), bumps to v0.9.0
 
-- **M8a.5 FIDO2** (CTAP2 assertion; ES256/EdDSA over `authData ||
-  challenge_hash`) — the last authenticator kind, behind the finished engine,
-  landing green and guest-verified.
+FIDO2 is the fourth and last authenticator kind, and the strongest: like an
+SSHSIG a hardware assertion **binds to the challenge**, so it cannot be phished
+or replayed for another request. With it, all four factors and the whole
+weighted-threshold engine are complete. Two deliberately separated parts:
+
+**Verify + software authenticator (core + daemon).** `core/src/fido2.rs` is
+pure: `verify(cred, token, challenge)` checks a WebAuthn assertion — ES256
+(ECDSA-P256) or EdDSA (Ed25519) over `authenticatorData ‖ SHA-256(clientDataJSON)`
+— with the challenge read from clientDataJSON and the assertion bound to the
+relying party `lychgate` (authData's rpIdHash) and the user-present flag.
+`build_assertion` is a deterministic software authenticator (RFC 6979 / Ed25519,
+so no randomness and stable KAT vectors) used by the tests, the CLI's
+`--software-key` mode, and the e2e — so all speak the exact bytes `verify`
+accepts. The credential's public key is stored inline in the inventory (a SEC1
+point for ES256, the raw key for EdDSA — it is public); no CBOR, no attestation
+chain (we trust the registered key, as documented). The daemon's `verify_proof`
+routes an `lgfido2.` token to fido2, matched to a configured credential by its
+id and bound to the request's own nonce — no ledger, since a distinct challenge
+per request is itself the anti-replay.
+
+**Hardware CTAP2 client (`fido2-client` cargo feature, off by default).**
+`lychgate fido2-register` / `fido2-assert` drive a real key over USB-HID
+(`ctap-hid-fido2`). The feature is off by default so the daemon, both guests and
+the Windows cross-build never pull the hidapi C dependency; an operator opts in
+on unix with the system hidapi present. The client and the software authenticator
+share one wire format (`client_data_json` / `assemble_token` in core), so the
+hardware assertion is exactly what the KAT-pinned verifier accepts.
+
+Decisions, resolved at milestone start: **ES256 + EdDSA**; the credential public
+key stored as a **SEC1 point / raw key, base64url, inline**; a **bundled CTAP2
+client** rather than verify-only; and, added mid-milestone, **TPM integration
+noted as a tail-end factor** (below).
+
+**Deliverables** — `core/src/fido2.rs` (verify + software authenticator + the
+shared wire helpers); the `fido2` authenticator kind (`alg`, `credential-id`,
+`public-key`) in `authority.rs`; the `verify_proof` fido2 branch in the daemon;
+`lychgate fido2-register` / `fido2-assert` (software in the default build, a
+hardware CTAP2 backend under `fido2-client`). Adds `p256`, `ed25519-dalek`,
+`sha2`; the CTAP/HID dep is confined to the feature. Bumps to **v0.9.0**.
+
+**Tests** — committed ES256 and EdDSA assertion vectors verify, and the oracle
+self-tests refuse a tampered signature, a wrong challenge, a wrong rpIdHash, a
+cleared user-present flag, an unknown credential, and a wrong-alg key;
+`build_assertion`→`verify` round-trips both algs (deterministically, so the KAT
+is stable). The daemon opens a fido2 profile on a valid software assertion,
+refuses one made for a different challenge, and does not misroute a non-fido2
+token. `e2e/fido2-acceptance.sh` proves register + assert, single-factor ES256
+and EdDSA opens, a stale-challenge and a byte-corrupted token refused, and a
+**fido2-AND-password two-factor open** — green on both guests. The hardware
+client is the one path with no default-CI oracle (no key on the guests):
+`e2e/fido2-hardware.sh` runs the full ceremony against any attached authenticator
+and was run **green against a virtual CTAP2 authenticator (virtual-fido over
+USB/IP)** — the daemon verified a real hardware assertion and refused a
+stale-challenge one (see TESTING §12a).
+
+**Acceptance** — met: a profile can require a FIDO2 factor; a challenge-bound
+assertion (software or hardware) opens it, a stale or tampered one is refused,
+and a genuine two-factor gate needs both. Verified green on both reaper guests,
+and the hardware client verified against a simulated authenticator.
+
+### M8a.6 onward — PLANNED
+
 - MCP server exposing `open` (returns pending until approved), `status`,
   `renew`, `close`, and access handles, so a Claude session can request and
   use a grant without shell access to the daemon host.
@@ -610,6 +669,16 @@ two-factor gate needs both. Verified green on both reaper guests.
   path never observed firing is indistinguishable from one that does not
   work; the drill is the standing oracle self-test.
 - Operational docs: runbook for granting Claude emergency access end to end.
+- **TPM integration (tail-end)** — a TPM 2.0-backed factor: a signature from a
+  key sealed in the platform TPM, verified like Ed25519/FIDO2 but with a
+  non-exportable private key, and/or sealing lychgate's own secrets to the TPM.
+  It slots behind the same authenticator seam as a later kind, after the
+  operator surface and the remaining test tiers; noted now so the engine keeps
+  room for it.
+- **FIDO2 hardening (future)** — signature-counter clone detection and
+  attestation-chain verification (today we trust the registered public key, not
+  an attestation), and a bundled hardware register/assert ceremony validated on
+  physical keys beyond the virtual-authenticator simulation.
 
 **Tests** — the remaining tiers, in §15 order: **source-as-data** (channel
 vocabulary appears in inventory schema, driver registry, CLI help, and docs —

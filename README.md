@@ -40,7 +40,9 @@ approval authority** (EOS/Antelope model): `open --as <profile>` records a
 pending request and returns a challenge, and the grant opens only once the
 profile's threshold is met by weighted factors — operator signatures
 (`ssh-keygen -Y sign`, an Ed25519 key in the allowed-signers set), TOTP codes
-from an authenticator app (RFC 6238, single-use), Argon2id passwords, nested
+from an authenticator app (RFC 6238, single-use), Argon2id passwords,
+challenge-bound FIDO2 assertions (ES256/EdDSA — a software key, or a hardware
+key over USB-HID with the `fido2-client` build), nested
 groups, and/or an elapsed `wait`, handed back through `lychgate approve`. Proofs accumulate across
 calls and a wait matures on the daemon's own loop, so a profile can demand
 genuine multi-factor approval. The
@@ -171,11 +173,12 @@ threshold — where a factor is an authenticator, a group, or a `wait`. It is
 required outside `--dry-run`; a policy with no profile refuses the daemon's start.
 
 ```toml
-# Authenticators are leaf proofs. ed25519 (an SSHSIG signed with
-# `ssh-keygen -Y sign -n lychgate-approval`), totp (an RFC 6238 code from an
-# authenticator app), and password (Argon2id) are built; fido2 parses but is
-# refused at load until its sub-milestone. A public key is inline (the full
-# openssh line, with comment); a secret is always a mode-600 file path.
+# Authenticators are leaf proofs. All four kinds are built: ed25519 (an SSHSIG
+# signed with `ssh-keygen -Y sign -n lychgate-approval`), totp (an RFC 6238 code
+# from an authenticator app), password (Argon2id), and fido2 (a challenge-bound
+# WebAuthn assertion). A public key is inline (the full openssh line, with
+# comment; for fido2 a base64url key from `lychgate fido2-register`); a secret is
+# always a mode-600 file path.
 [[approval.authenticator]]
 id = "oncall-key"
 kind = "ed25519"
@@ -193,6 +196,17 @@ kind = "password"
 # A password is reusable and the weakest factor — give it low weight. It must
 # not be purely numeric (that would route to the TOTP path).
 hash-file = "/usr/local/etc/lychgate/oncall.pw"
+
+[[approval.authenticator]]
+id = "oncall-fido2"
+kind = "fido2"
+# `lychgate fido2-register` prints this block. alg is es256 or eddsa; the public
+# key and credential-id are base64url and public (inline). The strongest factor:
+# the assertion binds to the challenge. Produce one at approve time with
+# `lychgate fido2-assert` (a hardware key needs the `fido2-client` build).
+alg = "es256"
+credential-id = "…base64url…"
+public-key = "…base64url SEC1 point…"
 
 # A group is itself a threshold over weighted factors — here, MFA: an SSHSIG AND
 # a TOTP code from the on-call operator.
