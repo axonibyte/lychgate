@@ -8,6 +8,13 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[features]
+# Treat configured secret files as TPM-sealed blobs, unsealed at startup via
+# --tpm-unseal. Off by default so default builds never pull the C TSS stack.
+# FreeBSD needs tpm-seal-bindgen (libclang via LIBCLANG_PATH).
+tpm-seal = ["dep:lychgate-tpm", "lychgate-tpm/tss"]
+tpm-seal-bindgen = ["tpm-seal", "lychgate-tpm/bindgen"]
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -17,6 +24,8 @@ lychgate-core = { workspace = true }
 data-encoding = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The shared TPM plumbing — only compiled under the tpm-seal feature.
+lychgate-tpm = { workspace = true, optional = true }
 
 [dev-dependencies]
 lychgate-core = { workspace = true, features = ["fakes"] }

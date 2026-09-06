@@ -911,3 +911,30 @@ fn a_missing_password_hash_file_refuses_startup() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn a_default_build_refuses_tpm_unseal_rather_than_reading_plaintext() {
+    // Fail-closed both ways: the operator asked for TPM-sealed secrets, and a
+    // build without the tpm-seal feature must REFUSE — silently falling back to
+    // reading the files as plaintext would betray exactly what sealing is for.
+    // (This binary is the default build: the feature is off here.)
+    let _serial = serial();
+    let dir = Scratch::new("tpmunseal");
+    let inv = write_inventory(&dir);
+    let state_dir = dir.join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_lychgated"))
+        .args(["--dry-run", "--inventory"])
+        .arg(&inv)
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .args(["--interval", "600", "--tpm-unseal", "device:/dev/tpm0"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "must refuse, not start");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("tpm-seal feature"),
+        "the refusal names the missing feature; got: {stderr}"
+    );
+}

@@ -71,6 +71,56 @@ struct Cli {
     /// fail-closed. Zero is refused; capped at the approval-window ceiling.
     #[arg(long, default_value_t = 300)]
     approval_window: u64,
+
+    /// Treat every configured secret file (TOTP secrets, password hashes) as a
+    /// TPM-sealed blob (made by `lychgate tpm-seal`) and unseal it via this
+    /// TCTI at startup, e.g. device:/dev/tpm0. Requires a `tpm-seal` feature
+    /// build and a working TPM 2.0 — fail-closed: configured but unusable
+    /// refuses the start. Run `lychgate tpm-probe` first.
+    #[arg(long, value_name = "TCTI")]
+    tpm_unseal: Option<String>,
+}
+
+/// How startup secret files are read: plaintext, or unsealed through the TPM.
+/// One seam so the TOTP and password loaders cannot diverge.
+enum SecretReader {
+    Plain,
+    #[cfg(feature = "tpm-seal")]
+    TpmUnseal(lychgate_tpm::Context),
+}
+
+impl SecretReader {
+    /// Build from --tpm-unseal. Fail-closed both ways: the flag without the
+    /// feature is a refusal (not silently plaintext), and the flag with an
+    /// unreachable TPM refuses the start naming the TCTI problem.
+    fn new(tpm_unseal: Option<&str>) -> anyhow::Result<SecretReader> {
+        match tpm_unseal {
+            None => Ok(SecretReader::Plain),
+            #[cfg(feature = "tpm-seal")]
+            Some(tcti) => Ok(SecretReader::TpmUnseal(lychgate_tpm::context(tcti)?)),
+            #[cfg(not(feature = "tpm-seal"))]
+            Some(_) => anyhow::bail!(
+                "--tpm-unseal requires a build with the tpm-seal feature \
+                 (or tpm-seal-bindgen on FreeBSD); this build has no TPM support"
+            ),
+        }
+    }
+
+    fn read(&mut self, path: &str, what: &str) -> anyhow::Result<String> {
+        let text = fs::read_to_string(path).with_context(|| format!("reading {what} {path}"))?;
+        match self {
+            SecretReader::Plain => Ok(text),
+            #[cfg(feature = "tpm-seal")]
+            SecretReader::TpmUnseal(ctx) => {
+                let blob = lychgate_tpm::blob_from_str(&text)
+                    .with_context(|| format!("{path} is not a sealed blob ({what})"))?;
+                let bytes = lychgate_tpm::unseal(ctx, &blob)
+                    .with_context(|| format!("unsealing {what} {path}"))?;
+                String::from_utf8(bytes)
+                    .map_err(|_| anyhow::anyhow!("{what} {path} unsealed to non-UTF-8 bytes"))
+            }
+        }
+    }
 }
 
 /// Set by the signal handler, read by the loops. SIGKILL-safety is not this
@@ -205,13 +255,16 @@ fn main() -> anyhow::Result<()> {
 
     // Read each TOTP authenticator's base32 secret from its mode-600 file at
     // startup — fail-closed, like a bad ed25519 key: a missing/unreadable/
-    // malformed secret refuses the daemon rather than surfacing at 03:00.
+    // malformed secret refuses the daemon rather than surfacing at 03:00. With
+    // --tpm-unseal the files are TPM-sealed blobs and are unsealed here; the
+    // plaintext exists only in this process's memory.
+    let mut secret_reader = SecretReader::new(cli.tpm_unseal.as_deref())?;
     let mut totp_secrets = std::collections::BTreeMap::new();
     if let Some(model) = &approval {
         for (id, secret_file) in model.totp_authenticators() {
-            let text = fs::read_to_string(secret_file).with_context(|| {
-                format!("reading TOTP secret for authenticator {id:?} from {secret_file}")
-            })?;
+            let text = secret_reader
+                .read(secret_file, "TOTP secret")
+                .with_context(|| format!("TOTP secret for authenticator {id:?}"))?;
             let secret = lychgate_core::TotpSecret::from_base32(&text)
                 .map_err(|e| anyhow::anyhow!("TOTP secret for authenticator {id:?}: {e}"))?;
             totp_secrets.insert(id.to_string(), secret);
@@ -225,10 +278,9 @@ fn main() -> anyhow::Result<()> {
     let mut password_hashes = std::collections::BTreeMap::new();
     if let Some(model) = &approval {
         for (id, hash_file) in model.password_authenticators() {
-            let phc = fs::read_to_string(hash_file)
-                .with_context(|| {
-                    format!("reading password hash for authenticator {id:?} from {hash_file}")
-                })?
+            let phc = secret_reader
+                .read(hash_file, "password hash")
+                .with_context(|| format!("password hash for authenticator {id:?}"))?
                 .trim()
                 .to_string();
             lychgate_core::password::validate_hash(&phc)

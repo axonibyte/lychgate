@@ -931,6 +931,7 @@ dependencies = [
  "data-encoding",
  "libc",
  "lychgate-core",
+ "lychgate-tpm",
  "serde",
  "serde_json",
  "ssh-key",

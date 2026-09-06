@@ -17,7 +17,7 @@ use tss_esapi::structures::{
 use tss_esapi::tcti_ldr::TctiNameConf;
 use tss_esapi::traits::{Marshall, UnMarshall};
 use tss_esapi::tss2_esys::TPMT_TK_HASHCHECK;
-use tss_esapi::Context;
+pub use tss_esapi::Context;
 
 /// Open a TPM context from a TCTI string (`device:/dev/tpm0`,
 /// `swtpm:host=127.0.0.1,port=2321`, `mssim:`, or empty for the default).
