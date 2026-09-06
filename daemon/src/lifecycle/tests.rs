@@ -1604,3 +1604,175 @@ fn a_non_fido2_token_does_not_route_to_the_fido2_branch() {
     assert_eq!(approve_fido2(&d, "123456", now), ResponseResult::Refused);
     assert!(!is_open(&d, now));
 }
+
+// --- the MCP front-door gate (Origin::Mcp + the per-profile `mcp` flag) -----
+
+// A host permitting two profiles: `ai-open` opts into MCP, `humans` does not.
+// Both are threshold-1 over one authenticator; the gate refuses before any
+// verification, so the authenticator never has to produce a real proof here.
+fn mcp_harness(dir: &crate::scratch::Scratch) -> Daemon {
+    let inv_text = r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "linux"
+        channels = ["ssh"]
+        [hosts.ssh]
+        agent_user = "root"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+
+        [[approval.authenticator]]
+        id = "phone"
+        kind = "totp"
+        secret-file = "/unused-in-unit-test"
+        [[approval.profile]]
+        id = "ai-open"
+        threshold = 1
+        mcp = true
+        factor = [ { authenticator = "phone", weight = 1 } ]
+        [[approval.profile]]
+        id = "humans"
+        threshold = 1
+        factor = [ { authenticator = "phone", weight = 1 } ]
+    "#;
+    let inventory = Inventory::parse(inv_text).unwrap();
+    let model = inventory.approval_model().unwrap().unwrap();
+    Daemon {
+        inventory,
+        store: Store::at(dir.join("grants.json")),
+        journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
+        drivers: Mutex::new(DriverSet::new()),
+        deadman: Mutex::new(Box::new(FakeDeadman {
+            log: Arc::new(Mutex::new(Vec::new())),
+            fail_install: false,
+            fail_remove: false,
+            fired: Arc::new(Mutex::new(false)),
+        })),
+        approval_window: Duration::from_secs(300),
+        approval: Some(model),
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
+    }
+}
+
+fn open_op(profile: &str) -> Op {
+    Op::Open {
+        host: "db-01".into(),
+        ttl: "1h".into(),
+        profile: Some(profile.into()),
+    }
+}
+
+fn is_pending(d: &Daemon, now: SystemTime) -> bool {
+    matches!(
+        d.dispatch(&Op::Status, now)
+            .unwrap()
+            .grants
+            .unwrap()
+            .iter()
+            .find(|g| g.host == "db-01")
+            .map(|g| &g.state),
+        Some(lychgate_core::proto::GrantState::AwaitingApproval)
+    )
+}
+
+#[test]
+fn an_mcp_open_on_a_non_mcp_profile_is_refused() {
+    let dir = scratch_dir("mcp-open-refused");
+    let d = mcp_harness(&dir);
+    let now = t(1_000);
+    let r = d
+        .dispatch_from(&open_op("humans"), now, Origin::Mcp)
+        .unwrap();
+    assert_eq!(
+        r.result,
+        ResponseResult::Refused,
+        "a non-mcp profile must be refused over MCP"
+    );
+    assert!(
+        !is_pending(&d, now),
+        "nothing should be pending after a gated refusal"
+    );
+}
+
+#[test]
+fn an_mcp_open_on_an_mcp_profile_is_allowed() {
+    let dir = scratch_dir("mcp-open-allowed");
+    let d = mcp_harness(&dir);
+    let now = t(1_000);
+    let r = d
+        .dispatch_from(&open_op("ai-open"), now, Origin::Mcp)
+        .unwrap();
+    assert_eq!(
+        r.result,
+        ResponseResult::Ok,
+        "an mcp=true profile must be openable over MCP"
+    );
+    assert!(
+        r.pending.is_some(),
+        "the open should return a pending challenge"
+    );
+}
+
+#[test]
+fn the_operator_socket_is_not_gated_by_the_mcp_flag() {
+    // The second oracle: the gate is origin-scoped. The same non-mcp profile that
+    // MCP is refused opens fine for a human on the operator socket.
+    let dir = scratch_dir("mcp-operator-ungated");
+    let d = mcp_harness(&dir);
+    let now = t(1_000);
+    let r = d.dispatch(&open_op("humans"), now).unwrap();
+    assert_eq!(
+        r.result,
+        ResponseResult::Ok,
+        "the operator socket must open a non-mcp profile"
+    );
+    assert!(r.pending.is_some());
+}
+
+#[test]
+fn an_mcp_approve_on_a_non_mcp_profile_is_refused() {
+    // A human opens a non-mcp grant on the operator socket; MCP must not be able
+    // to inject its factor into it. The gate refuses before any verification.
+    let dir = scratch_dir("mcp-approve-refused");
+    let d = mcp_harness(&dir);
+    let now = t(1_000);
+    assert_eq!(
+        d.dispatch(&open_op("humans"), now).unwrap().result,
+        ResponseResult::Ok
+    );
+    let r = d
+        .dispatch_from(
+            &Op::Approve {
+                host: "db-01".into(),
+                token: "irrelevant".into(),
+            },
+            now,
+            Origin::Mcp,
+        )
+        .unwrap();
+    assert_eq!(
+        r.result,
+        ResponseResult::Refused,
+        "MCP approve of a non-mcp grant must be refused"
+    );
+    assert!(!is_open(&d, now));
+}
+
+#[test]
+fn an_mcp_gate_refusal_is_journaled() {
+    // The audit oracle: a refused MCP op leaves an `mcp-refused` record.
+    let dir = scratch_dir("mcp-journaled");
+    let d = mcp_harness(&dir);
+    let now = t(1_000);
+    let _ = d
+        .dispatch_from(&open_op("humans"), now, Origin::Mcp)
+        .unwrap();
+    let raw = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+    assert!(
+        raw.contains("\"event\":\"mcp-refused\"") && raw.contains("db-01"),
+        "the gate refusal should be journaled as mcp-refused; got:\n{raw}"
+    );
+}

@@ -78,6 +78,16 @@ pub struct Daemon {
 /// evaluates no authority, so the value only has to be stable and recognisable.
 const DRY_RUN_PROFILE: &str = "dry-run";
 
+/// Which socket an op arrived on. The operator socket is the full-privilege
+/// control surface; the MCP socket is the AI front door, gated per profile. The
+/// distinction is OS-enforced by the socket path, not carried in the wire
+/// protocol (which a client could forge).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    Operator,
+    Mcp,
+}
+
 /// The backstop rides the SSH transport, so only ssh-configured hosts get
 /// one; it exists to revert what the ssh-borne channels applied.
 fn wants_deadman(host: &Host, applied: &[Channel]) -> bool {
@@ -133,7 +143,42 @@ impl Daemon {
 
     /// Dispatches one wire op. Returns the response; the outer Err is a
     /// daemon-fatal failure (store I/O, journal write).
+    /// Dispatch an op from the operator socket (ungated). The CLI and the tests
+    /// come through here.
     pub fn dispatch(&self, op: &Op, now: SystemTime) -> anyhow::Result<Response> {
+        self.dispatch_from(op, now, Origin::Operator)
+    }
+
+    /// Dispatch an op, tagged with the socket it arrived on. An `Origin::Mcp` op
+    /// is gated by the MCP front-door rule: `open`/`approve` are refused unless
+    /// the target profile is `mcp = true`. `renew`/`close` act on already-open
+    /// grants (which retain no profile — the profile lives only while pending),
+    /// and `status` is readable from either socket, so those are not gated.
+    pub fn dispatch_from(
+        &self,
+        op: &Op,
+        now: SystemTime,
+        origin: Origin,
+    ) -> anyhow::Result<Response> {
+        if origin == Origin::Mcp {
+            if let Some(reason) = self.mcp_gate(op, now)? {
+                let host = match op {
+                    Op::Open { host, .. }
+                    | Op::Approve { host, .. }
+                    | Op::Renew { host, .. }
+                    | Op::Close { host } => host.clone(),
+                    Op::Status => String::new(),
+                };
+                self.journal(
+                    now,
+                    &Event::McpRefused {
+                        host,
+                        reason: reason.clone(),
+                    },
+                )?;
+                return Ok(Response::refused(reason));
+            }
+        }
         match op {
             Op::Open { host, ttl, profile } => self.open(host, ttl, profile.as_deref(), now),
             Op::Approve { host, token } => self.approve(host, token, now),
@@ -144,6 +189,74 @@ impl Daemon {
                 ..Response::ok()
             }),
         }
+    }
+
+    /// The MCP front-door gate. Returns `Some(reason)` to refuse an MCP-origin
+    /// op, `None` to let it proceed. Fail-closed: a dry-run daemon (no policy)
+    /// refuses MCP `open`/`approve`; a resolvable profile that is not `mcp = true`
+    /// is refused; an unresolvable profile (unknown host, ambiguous auto-pick, no
+    /// pending) falls through so the op produces its own specific refusal.
+    fn mcp_gate(&self, op: &Op, now: SystemTime) -> anyhow::Result<Option<String>> {
+        const NEEDS_POLICY: &str =
+            "the MCP front door requires an approval policy; this daemon runs --dry-run (no policy)";
+        let (host, profile) = match op {
+            Op::Open { host, profile, .. } => {
+                if self.approval.is_none() {
+                    return Ok(Some(NEEDS_POLICY.to_string()));
+                }
+                (
+                    host.as_str(),
+                    self.resolve_open_profile(host, profile.as_deref()),
+                )
+            }
+            Op::Approve { host, .. } => {
+                if self.approval.is_none() {
+                    return Ok(Some(NEEDS_POLICY.to_string()));
+                }
+                (host.as_str(), self.pending_profile(host, now)?)
+            }
+            // Not gated: open grants retain no profile; status is a read.
+            Op::Renew { .. } | Op::Close { .. } | Op::Status => return Ok(None),
+        };
+        let Some(profile) = profile else {
+            return Ok(None); // unresolvable — let the op refuse on its own terms
+        };
+        let model = self
+            .approval
+            .as_ref()
+            .expect("approval present in this arm");
+        if model.mcp_allowed(&profile) {
+            Ok(None)
+        } else {
+            Ok(Some(format!(
+                "profile {profile:?} on host {host:?} is not reachable via the MCP front door \
+                 (set `mcp = true` on the profile to allow it)"
+            )))
+        }
+    }
+
+    /// The profile an `open` would choose: the explicit `--as`, or the sole
+    /// permitted profile when the host permits exactly one. `None` when it cannot
+    /// be resolved (no policy, unknown host, or an ambiguous auto-pick) — the gate
+    /// then defers to `open`'s own refusal.
+    fn resolve_open_profile(&self, host: &str, profile: Option<&str>) -> Option<String> {
+        let model = self.approval.as_ref()?;
+        let host_cfg = self.host(host)?;
+        match profile {
+            Some(p) => Some(p.to_string()),
+            None => match self.permitted_profiles(model, &host_cfg).as_slice() {
+                [only] => Some(only.clone()),
+                _ => None,
+            },
+        }
+    }
+
+    /// The profile of a host's pending request, or `None` if it has none.
+    fn pending_profile(&self, host: &str, now: SystemTime) -> anyhow::Result<Option<String>> {
+        let doc = self.store.read()?;
+        let registry = GrantRegistry::from_parts(&self.inventory, &doc)
+            .with_context(|| format!("validating {}", self.store.path().display()))?;
+        Ok(registry.pending_view(host, now).ok().map(|v| v.profile))
     }
 
     fn status(&self, now: SystemTime) -> anyhow::Result<Vec<lychgate_core::proto::GrantLine>> {

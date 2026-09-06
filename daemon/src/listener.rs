@@ -16,7 +16,7 @@ use anyhow::Context;
 
 use lychgate_core::proto::{self, Response};
 
-use crate::lifecycle::Daemon;
+use crate::lifecycle::{Daemon, Origin};
 
 /// Claims the socket path. A live listener there means another daemon is
 /// running — a refusal, not a takeover. A dead one (connect refused) is
@@ -63,13 +63,14 @@ pub fn serve(
     listener: &UnixListener,
     daemon: &Daemon,
     shutdown: &AtomicBool,
+    origin: Origin,
 ) -> anyhow::Result<()> {
     loop {
         if shutdown.load(Ordering::SeqCst) {
             return Ok(());
         }
         match listener.accept() {
-            Ok((stream, _)) => handle(stream, daemon)?,
+            Ok((stream, _)) => handle(stream, daemon, origin)?,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -81,7 +82,7 @@ pub fn serve(
     }
 }
 
-fn handle(stream: UnixStream, daemon: &Daemon) -> anyhow::Result<()> {
+fn handle(stream: UnixStream, daemon: &Daemon, origin: Origin) -> anyhow::Result<()> {
     // Blocking I/O with a deadline on this one connection; the listener's
     // non-blocking flag must not leak onto the stream.
     stream.set_nonblocking(false).ok();
@@ -103,7 +104,11 @@ fn handle(stream: UnixStream, daemon: &Daemon) -> anyhow::Result<()> {
 
     let response = match proto::decode_request(line.trim_end_matches('\n')) {
         Err(e) => Response::refused(e),
-        Ok(op) => daemon.dispatch(&op, SystemTime::now())?,
+        // The operator socket is the ungated entry; the MCP socket is gated.
+        Ok(op) => match origin {
+            Origin::Operator => daemon.dispatch(&op, SystemTime::now())?,
+            Origin::Mcp => daemon.dispatch_from(&op, SystemTime::now(), Origin::Mcp)?,
+        },
     };
 
     let mut out = response.encode();

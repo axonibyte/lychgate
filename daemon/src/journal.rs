@@ -128,6 +128,13 @@ pub enum Event {
         host: String,
         reason: String,
     },
+    /// An op arriving on the MCP socket was refused by the front-door gate
+    /// (a profile that is not `mcp = true`, or a dry-run daemon with no policy).
+    /// An audit record that the AI front door was told "no".
+    McpRefused {
+        host: String,
+        reason: String,
+    },
 }
 
 #[derive(Serialize)]

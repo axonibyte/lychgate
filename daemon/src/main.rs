@@ -39,6 +39,13 @@ struct Cli {
     #[arg(long)]
     socket: Option<PathBuf>,
 
+    /// The MCP front-door socket. When set, the daemon binds a SECOND socket for
+    /// the lychgate-mcp server; ops arriving there are gated per profile (only
+    /// `mcp = true` profiles may be opened/approved). Off by default — no MCP
+    /// surface exists unless this is given (fail-closed).
+    #[arg(long)]
+    mcp_socket: Option<PathBuf>,
+
     /// Seconds between passes. Zero is refused: a zero interval is a spin.
     #[arg(long, default_value_t = 10)]
     interval: u64,
@@ -125,6 +132,12 @@ fn main() -> anyhow::Result<()> {
         None
     } else {
         Some(listener::bind(&socket_path)?)
+    };
+    // The MCP front-door socket, when configured. --once serves no requests, so
+    // it binds neither socket.
+    let mcp_listener = match (&cli.mcp_socket, cli.once) {
+        (Some(path), false) => Some(listener::bind(path)?),
+        _ => None,
     };
 
     let mut journal = Journal::open(cli.state_dir.join("journal.jsonl"))?;
@@ -254,7 +267,15 @@ fn main() -> anyhow::Result<()> {
 
     let listener_thread = listener.map(|listener| {
         let daemon = Arc::clone(&daemon);
-        std::thread::spawn(move || listener::serve(&listener, &daemon, &SHUTDOWN))
+        std::thread::spawn(move || {
+            listener::serve(&listener, &daemon, &SHUTDOWN, lifecycle::Origin::Operator)
+        })
+    });
+    let mcp_thread = mcp_listener.map(|listener| {
+        let daemon = Arc::clone(&daemon);
+        std::thread::spawn(move || {
+            listener::serve(&listener, &daemon, &SHUTDOWN, lifecycle::Origin::Mcp)
+        })
     });
 
     let mut fatal: Option<anyhow::Error> = None;
@@ -273,7 +294,9 @@ fn main() -> anyhow::Result<()> {
             }
             // A listener that stopped without a shutdown request hit the
             // fatal path: stop the daemon with it.
-            if listener_thread.as_ref().is_some_and(|h| h.is_finished()) {
+            if listener_thread.as_ref().is_some_and(|h| h.is_finished())
+                || mcp_thread.as_ref().is_some_and(|h| h.is_finished())
+            {
                 SHUTDOWN.store(true, Ordering::SeqCst);
                 break;
             }
@@ -284,14 +307,26 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    if let Some(handle) = listener_thread {
+    if listener_thread.is_some() || mcp_thread.is_some() {
         SHUTDOWN.store(true, Ordering::SeqCst);
+    }
+    if let Some(handle) = listener_thread {
         match handle.join() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => fatal = Some(e),
             Err(_) => fatal = Some(anyhow::anyhow!("listener thread panicked")),
         }
         let _ = fs::remove_file(&socket_path);
+    }
+    if let Some(handle) = mcp_thread {
+        match handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => fatal = fatal.or(Some(e)),
+            Err(_) => fatal = fatal.or(Some(anyhow::anyhow!("mcp listener thread panicked"))),
+        }
+        if let Some(path) = &cli.mcp_socket {
+            let _ = fs::remove_file(path);
+        }
     }
 
     // Tear down any daemon-held resource (a vnc tunnel) without reverting: the
