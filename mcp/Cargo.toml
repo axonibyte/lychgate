@@ -1,0 +1,25 @@
+[package]
+name = "lychgate-mcp"
+description = "MCP front door for lychgate — the AI as a first-class approval factor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The AI principal signs the challenge as an ordinary Ed25519 SSHSIG, exactly
+# like a human operator's `ssh-keygen -Y sign` — verified by the daemon against
+# the AI's configured public key.
+ssh-key = { workspace = true }
+lychgate-core = { workspace = true }
+
+[dev-dependencies]
+# Building an AuthorityModel from a TOML policy in tests, to verify the AI's
+# signature through the daemon's own ed25519 path.
+toml = { workspace = true }
