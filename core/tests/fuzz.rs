@@ -271,6 +271,12 @@ fn check(input: &str) {
     if let Err(e) = lychgate_core::fido2::verify(&cred, input, "lg1.req.x") {
         assert!(!e.to_string().is_empty(), "empty fido2 error for {input:?}");
     }
+    // A TPM token is likewise operator-pasted: hostile input to the verifier.
+    // A structurally valid (identity-point-free) P-256 key from a fixed scalar.
+    let tpm_pk = lychgate_core::tpm::public_key(&[0x44u8; 32]).expect("fixed scalar is valid");
+    if let Err(e) = lychgate_core::tpm::verify(&tpm_pk, input, "lg1.req.x") {
+        assert!(!e.to_string().is_empty(), "empty tpm error for {input:?}");
+    }
 }
 
 /// A minimal authority model with one ed25519 authenticator, built once, so the

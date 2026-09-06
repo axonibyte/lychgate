@@ -18,6 +18,7 @@ pub mod registry;
 pub mod snapshot;
 pub mod ssh;
 pub mod totp;
+pub mod tpm;
 pub mod ttl;
 pub mod vnc;
 
@@ -41,4 +42,5 @@ pub use password::PasswordError;
 pub use registry::{ExpiredGrant, ExpiredPending, GrantRegistry, RegistryError};
 pub use snapshot::{GrantRecord, SnapshotError, StateDoc, STATE_VERSION};
 pub use totp::{TotpError, TotpSecret};
+pub use tpm::TpmError;
 pub use ttl::{Ttl, TtlError, MAX_TTL_SECS, RENEWAL_WINDOW_SECS};

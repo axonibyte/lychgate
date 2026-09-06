@@ -189,10 +189,10 @@ threshold — where a factor is an authenticator, a group, or a `wait`. It is
 required outside `--dry-run`; a policy with no profile refuses the daemon's start.
 
 ```toml
-# Authenticators are leaf proofs. All four kinds are built: ed25519 (an SSHSIG
+# Authenticators are leaf proofs. All five kinds are built: ed25519 (an SSHSIG
 # signed with `ssh-keygen -Y sign -n lychgate-approval`), totp (an RFC 6238 code
-# from an authenticator app), password (Argon2id), and fido2 (a challenge-bound
-# WebAuthn assertion). A public key is inline (the full openssh line, with
+# from an authenticator app), password (Argon2id), fido2 (a challenge-bound
+# WebAuthn assertion), and tpm (a P-256 signature from a TPM-resident key). A public key is inline (the full openssh line, with
 # comment; for fido2 a base64url key from `lychgate fido2-register`); a secret is
 # always a mode-600 file path.
 [[approval.authenticator]]
@@ -212,6 +212,14 @@ kind = "password"
 # A password is reusable and the weakest factor — give it low weight. It must
 # not be purely numeric (that would route to the TOTP path).
 hash-file = "/usr/local/etc/lychgate/oncall.pw"
+
+[[approval.authenticator]]
+id = "host-tpm"
+kind = "tpm"
+# A P-256 key created non-exportable inside a TPM 2.0 (`lychgate tpm-register`,
+# a `tpm-client` feature build). The proof is a signature over the challenge,
+# produced by `lychgate tpm-sign`; the private key cannot leave the chip.
+public-key = "…base64url SEC1 P-256 point…"
 
 [[approval.authenticator]]
 id = "oncall-fido2"

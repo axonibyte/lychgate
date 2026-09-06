@@ -696,3 +696,64 @@ fn mcp_allowed_is_false_for_an_unknown_profile() {
     let m = mcp_model();
     assert!(!m.mcp_allowed("no-such-profile"));
 }
+
+// --- the tpm kind ------------------------------------------------------------
+
+// The committed tpm KAT public key (see tpm/tests.rs).
+const TPM_PUB: &str =
+    "BFs2iQ2svXyalrt0oe4os9LXW3LgmiDvJc-Ob9ip8DUNDhS-2NRoKjTYNTi9_1uW6JpmZuwNtXRdAvoSEAct91o";
+
+#[test]
+fn a_tpm_authenticator_parses_with_its_public_key() {
+    let toml_text = format!(
+        r#"
+        [[authenticator]]
+        id = "host-tpm"
+        kind = "tpm"
+        public-key = "{TPM_PUB}"
+        [[profile]]
+        id = "p"
+        threshold = 1
+        factor = [ {{ authenticator = "host-tpm", weight = 1 }} ]
+        "#
+    );
+    let m = model(&toml_text).expect("a tpm authenticator should build");
+    let creds: Vec<_> = m.tpm_credentials().collect();
+    assert_eq!(creds.len(), 1);
+    assert_eq!(creds[0].0, "host-tpm");
+}
+
+#[test]
+fn a_tpm_authenticator_without_a_key_is_refused() {
+    let toml_text = r#"
+        [[authenticator]]
+        id = "host-tpm"
+        kind = "tpm"
+        [[profile]]
+        id = "p"
+        threshold = 1
+        factor = [ { authenticator = "host-tpm", weight = 1 } ]
+    "#;
+    assert!(matches!(
+        model(toml_text),
+        Err(AuthorityError::MissingMaterial { kind: "tpm", .. })
+    ));
+}
+
+#[test]
+fn a_tpm_authenticator_with_a_bad_key_is_refused() {
+    let toml_text = r#"
+        [[authenticator]]
+        id = "host-tpm"
+        kind = "tpm"
+        public-key = "AAAA"
+        [[profile]]
+        id = "p"
+        threshold = 1
+        factor = [ { authenticator = "host-tpm", weight = 1 } ]
+    "#;
+    assert!(matches!(
+        model(toml_text),
+        Err(AuthorityError::BadPublicKey { .. })
+    ));
+}

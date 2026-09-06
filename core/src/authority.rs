@@ -57,7 +57,8 @@ pub struct ApprovalSpec {
 pub struct AuthenticatorSpec {
     pub id: String,
     pub kind: AuthKind,
-    /// Required for `ed25519`; an OpenSSH public-key line.
+    /// Required for `ed25519` (an OpenSSH public-key line), `fido2` and `tpm`
+    /// (base64url key material).
     #[serde(default)]
     pub public_key: Option<String>,
     /// Required for `totp`; a path to a mode-600 file holding the base32 secret
@@ -76,8 +77,9 @@ pub struct AuthenticatorSpec {
     pub credential_id: Option<String>,
 }
 
-/// The authenticator vocabulary — all four kinds are implemented: `ed25519`
-/// (SSHSIG), `totp` (RFC 6238), `password` (Argon2id), and `fido2` (WebAuthn).
+/// The authenticator vocabulary — all five kinds are implemented: `ed25519`
+/// (SSHSIG), `totp` (RFC 6238), `password` (Argon2id), `fido2` (WebAuthn), and
+/// `tpm` (a P-256 signature from a TPM-resident key).
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum AuthKind {
@@ -85,6 +87,7 @@ pub enum AuthKind {
     Totp,
     Password,
     Fido2,
+    Tpm,
 }
 
 /// An authority's body: the threshold and factors, without an id. A group or
@@ -147,9 +150,17 @@ pub struct FactorSpec {
 #[derive(Debug, Clone)]
 pub enum Authenticator {
     Ed25519(PublicKey),
-    Totp { secret_file: String },
-    Password { hash_file: String },
+    Totp {
+        secret_file: String,
+    },
+    Password {
+        hash_file: String,
+    },
     Fido2(crate::fido2::Fido2Credential),
+    /// A TPM-resident P-256 key; the stored SEC1 public half verifies lgtpm tokens.
+    Tpm {
+        public_key: Vec<u8>,
+    },
 }
 
 /// A weighted-threshold authority: `weight-sum(satisfied) >= threshold` opens.
@@ -463,6 +474,29 @@ impl AuthorityModel {
                         public_key,
                     })
                 }
+                AuthKind::Tpm => {
+                    let pub_b64 =
+                        a.public_key
+                            .as_deref()
+                            .ok_or(AuthorityError::MissingMaterial {
+                                id: a.id.clone(),
+                                kind: "tpm",
+                                field: "public-key",
+                            })?;
+                    let public_key = data_encoding::BASE64URL_NOPAD
+                        .decode(pub_b64.trim().as_bytes())
+                        .map_err(|_| AuthorityError::BadPublicKey {
+                            id: a.id.clone(),
+                            message: "public-key is not base64url".to_string(),
+                        })?;
+                    crate::tpm::check_public_key(&public_key).map_err(|e| {
+                        AuthorityError::BadPublicKey {
+                            id: a.id.clone(),
+                            message: e.to_string(),
+                        }
+                    })?;
+                    Authenticator::Tpm { public_key }
+                }
             };
             if authenticators.insert(a.id.clone(), auth).is_some() {
                 return Err(AuthorityError::DuplicateAuthenticator(a.id.clone()));
@@ -637,6 +671,15 @@ impl AuthorityModel {
     ) -> impl Iterator<Item = (&str, &crate::fido2::Fido2Credential)> {
         self.authenticators.iter().filter_map(|(id, a)| match a {
             Authenticator::Fido2(cred) => Some((id.as_str(), cred)),
+            _ => None,
+        })
+    }
+
+    /// The configured tpm authenticators' `(id, SEC1 public key)` — the daemon
+    /// tries an `lgtpm.` token against each, like the fido2 credential walk.
+    pub fn tpm_credentials(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        self.authenticators.iter().filter_map(|(id, a)| match a {
+            Authenticator::Tpm { public_key } => Some((id.as_str(), public_key.as_slice())),
             _ => None,
         })
     }
