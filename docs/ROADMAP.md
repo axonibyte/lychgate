@@ -767,10 +767,14 @@ intermittent `a_second_daemon` e2e flake.
   an attestation), and a bundled hardware register/assert ceremony validated on
   physical keys beyond the virtual-authenticator simulation.
 
-**Tests** — the remaining tiers, in §15 order: **source-as-data** (channel
-vocabulary appears in inventory schema, driver registry, CLI help, and docs —
-parse the source and assert the sets agree, duplicating the mapping in the
-test deliberately; exclude the checked content from the searched corpus);
+**Tests** — the remaining tiers, in §15 order: **~~source-as-data~~ DONE
+(2026-09-06, rides v0.11.0)** — `daemon/tests/source_as_data.rs` parses the
+source and asserts the cross-artifact vocabularies agree (channels vs the driver
+registry and README; wire ops vs the CLI and README; authenticator kinds; the
+RUNBOOK's alertable journal events; the MCP tool set listed-vs-dispatched; every
+acceptance script wired into the battery), duplicating each mapping in the test
+deliberately and excluding the checked content from the searched corpus; all
+five parser mechanisms mutation-checked. With this, **every §15 tier exists**.
 **~~concurrency hardened across open/close/renew races~~ DONE (2026-09-06, rides
 v0.11.0)** — the close-vs-pass revert race was hardened at M8a.2; the
 approve-vs-pass **open** race is now fixed (idempotent open + pass defers

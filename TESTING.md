@@ -523,14 +523,45 @@ In adoption order (return on effort, per methodology §15). Tier 4 (full stack,
 hostile — revert-under-kill) landed at M5 and Tier 6 (concurrency) at M7; both
 have their own sections above. What remains:
 
-5. **Source-as-data** — once there are seams that can rot (driver registry,
-   channel vocabulary, CLI/daemon flag parity).
+5. ~~**Source-as-data**~~ — landed at M8d (its own section below).
 7. ~~**Simulated users**~~ — landed at M8d (its own section above), with the
    invariant self-test written first and the §15 acceptance demonstrated by
    mutation (three reverted defects, each rediscovered and shrunk).
 
-The acceptance test for the whole exercise, when source-as-data arrives: revert
-known fixed defects and confirm the harness rediscovers them.
+Every §15 tier now exists. The standing acceptance discipline remains: when a
+defect is fixed by hand, revert it once and confirm a harness rediscovers it.
+
+## Source-as-data tier: EXISTS (M8d)
+
+`daemon/tests/source_as_data.rs` parses the source and asserts that vocabularies
+appearing in more than one artifact agree — the seams nothing but convention
+keeps aligned. Each test hard-codes the expected vocabulary and any case
+conversion (**the mapping is duplicated deliberately** — a check derived from
+the structure it checks would agree with itself no matter what), and the
+expected set never comes from the file being scanned (**the checked content is
+excluded from the searched corpus**). The seams:
+
+- the **channel vocabulary** — the `Channel` enum, the daemon's production
+  driver registrations (a channel with no registered driver would open as
+  bookkeeping), and the README;
+- the **op vocabulary** — `decode_request`'s wire arms, the CLI `Command` enum
+  (ops + a stated list of local-only commands: the CLI/daemon parity check),
+  and the README usage lines;
+- the **authenticator kinds** — the `AuthKind` enum and the README's
+  `kind = "…"` examples;
+- the **RUNBOOK's alertable journal events** — each event the runbook tells
+  operators to alert on must exist as a journal `Event` variant, or the runbook
+  promises an alert the daemon never writes;
+- the **MCP tool set** — every tool both listed by `tools/list` and dispatched
+  by `tools/call`, and nothing extra dispatched;
+- the **e2e battery** — every `*-acceptance.sh` wired into `run.sh`, with the
+  deliberately-manual exception (`fido2-hardware.sh`) stated by hand: a suite
+  that silently stops running is exactly this tier's rot.
+
+All five parser mechanisms were mutation-checked (an unwired battery phase, a
+drifted wire arm, a dropped MCP dispatch arm, a renamed runbook event, a phantom
+enum variant — each caught). The parsers are textual on purpose: dumb parsers
+rot loudly, failing toward "come look" rather than silently passing.
 
 ## Running what exists
 
