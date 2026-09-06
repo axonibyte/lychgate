@@ -223,8 +223,34 @@ step, is [ROADMAP.md](ROADMAP.md). The sketch below is the shape of it:
    any VNC client. No dead-man — the tunnel dying with the daemon is the
    backstop, and the password's expiry is the reap loop's alone.
 5. **Operator surface** — the weighted-threshold approval gate (M8a.1–2, done;
-   see [Approval](#approval)) leads; still ahead are the MCP server so a Claude
-   session can request and use a grant without shell access, and drill mode
-   (scheduled open-and-revert against a canary host, because a revert path never
-   observed firing is indistinguishable from one that does not work). All four
-   authenticator kinds (Ed25519, TOTP, password, FIDO2) are now done.
+   see [Approval](#approval)) leads; the **MCP front door** (M8b, done; see
+   [MCP front door](#mcp-front-door)) lets a Claude session request and use a
+   grant without shell access. Still ahead is drill mode (scheduled
+   open-and-revert against a canary host, because a revert path never observed
+   firing is indistinguishable from one that does not work). All four
+   authenticator kinds (Ed25519, TOTP, password, FIDO2) are done.
+
+## MCP front door
+
+`lychgate-mcp` is a separate, low-privilege binary that lets a Claude session
+request and use a grant over MCP (JSON-RPC 2.0 on stdio) without shell access to
+the daemon host. It is a **client** of the daemon — it holds no drivers and no
+secrets — and it makes the **AI a first-class approval factor**, not merely a
+requester: the server holds an Ed25519 key whose public half is an ordinary
+`ed25519` authenticator in the policy, so a profile can compose the AI with
+humans (`threshold 2 over { sysadmin, ai }`). When the AI opens a grant it signs
+the challenge with that key, contributing its factor exactly as a human's
+`ssh-keygen -Y sign` would; the daemon verifies it through the same path. The AI
+alone opens only what the policy's thresholds permit.
+
+Which grants the front door may reach is a per-profile `mcp` flag, and it is the
+daemon that enforces it — via a **dedicated MCP socket**. The daemon binds a
+second unix socket for `lychgate-mcp`; an op's origin is identified by which
+socket it arrived on (OS-enforced, not a forgeable wire field), and an
+MCP-origin `open`/`approve` is refused unless the target profile is `mcp = true`
+(fail-closed, and journaled). The operator socket is never gated. The MCP server
+exposes open/status/renew/close plus a non-secret `access_handle`; it does not
+expose a general `approve` (the daemon returns a challenge only from `open`, so
+the AI can only sign a grant it initiated), and one-time-secret delivery to the
+AI is deferred (the "shown once, never persisted" invariant is not yet
+revisited).

@@ -383,6 +383,33 @@ This tier is deliberately not wired into `e2e/run.sh`: the default battery build
 without the feature, so the script would only ever skip there. It is run by hand,
 and its green run is recorded here rather than by CI.
 
+## MCP front-door tier: EXISTS (M8b)
+
+The MCP front door makes the AI a factor, so it is tested from the flag up. In
+core, a profile's `mcp` flag defaults false and `mcp_allowed` reflects it, the
+spec→model wiring mutation-checked (skipping the insert fails the opt-in test).
+In the daemon, an MCP-origin `open`/`approve` on a non-`mcp` profile is refused
+and journaled `mcp-refused`, while the **operator** socket opens the same profile
+fine — two oracles for one claim (the gate is origin-scoped, not global), and the
+gate is mutation-checked by forcing it to always-allow. In `lychgate-mcp`, the
+AI's produced token verifies through the daemon's own `verify_ed25519` against
+the configured `ai` key — the signing oracle — self-tested by signing a
+*different* challenge and asserting the verifier refuses it; the JSON-RPC framing
+round-trips (`initialize`/`tools/list`), a notification draws no reply, a
+malformed line is a clean `-32700` not a panic, and `open_grant` signs the exact
+challenge `open` returned (checked by verifying the recorded Approve token).
+
+End to end on both guests, `e2e/mcp-acceptance.sh` drives the real `lychgate-mcp`
+over stdio against a daemon serving an operator socket AND a dedicated MCP socket:
+over MCP a non-`mcp` profile is refused by the front-door gate; the AI factor is
+contributed to an `ai-assisted` (threshold 2) grant, which does **not** open on
+the AI alone; and a human signing the same challenge on the operator socket opens
+it — the genuine sysadmin+AI gate — after which MCP `grant_status` reports it
+open. **What it does not prove:** one-time-secret delivery to the AI (deferred);
+the MCP socket, like the operator socket, is the authorization boundary (a
+process that can open it is trusted) — the `mcp` flag bounds *which profiles* it
+reaches, not *who* may connect.
+
 ## Wire contract and operator-flow tiers: EXISTS (M2)
 
 The request/response surface is pinned by a contract table in

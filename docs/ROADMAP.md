@@ -659,11 +659,52 @@ assertion (software or hardware) opens it, a stale or tampered one is refused,
 and a genuine two-factor gate needs both. Verified green on both reaper guests,
 and the hardware client verified against a simulated authenticator.
 
-### M8a.6 onward — PLANNED
+### M8b — MCP front door + AI-as-a-factor — DONE (2026-09-06), bumps to v0.10.0
 
-- MCP server exposing `open` (returns pending until approved), `status`,
-  `renew`, `close`, and access handles, so a Claude session can request and
-  use a grant without shell access to the daemon host.
+The AI becomes a **first-class authorization principal** — a factor in the
+existing weighted-threshold engine, not merely a requester. A profile can
+compose it with humans: `threshold 2 over { sysadmin, ai }` ("sysadmin + AI"),
+or `sysadmin + leadership`. A new crate `lychgate-mcp` is the AI's front door: a
+stdio MCP server (hand-rolled JSON-RPC 2.0, no async runtime, no new deps) that a
+Claude session speaks to, translating tool calls to the daemon's ops.
+
+Mechanism, decided with the owner: the AI signs with its own **Ed25519 key**,
+listed in the policy as an ordinary `ed25519` authenticator — so the daemon
+verifies its factor through the same path as any operator, **no authority-engine
+change**. Control over which grants are reachable that way is a **daemon-side
+per-profile `mcp` flag**, made enforceable by a **dedicated MCP socket**: the
+daemon binds a second unix socket, and the origin of an op is OS-identified by
+which socket it arrived on (not a forgeable wire field). An MCP-origin
+`open`/`approve` is refused unless the target profile is `mcp = true`
+(fail-closed); the operator socket is never gated. `lychgate-mcp` **auto-signs
+the AI factor when it opens**, so a "sysadmin + AI" grant just waits for the
+human's factor out of band. Access handles are non-secret (state, remaining, the
+vnc endpoint); one-time-secret delivery to the AI is deferred.
+
+**Deliverables** — `core::authority` profile `mcp` flag + `mcp_allowed`; the
+daemon's second socket, origin-tagged dispatch, and `mcp`-profile enforcement
+(refusals journaled `mcp-refused`); the `lychgate-mcp` crate (JSON-RPC/stdio
+server, Ed25519 AI signing via `ssh-key`, tools open/status/renew/close +
+access_handle); `e2e/mcp-acceptance.sh`. Bumps to **v0.10.0**.
+
+**Tests** — the profile flag defaults false and gates as expected (mutation
+-checked); the daemon refuses an MCP-origin op on a non-`mcp` profile while the
+operator socket opens it fine (origin-scoped, two oracles), journalling the
+refusal; the AI's token verifies through the daemon's own `verify_ed25519` (the
+signing oracle, self-tested against a wrong challenge); the JSON-RPC framing
+round-trips and a malformed line is a clean error, not a panic.
+`e2e/mcp-acceptance.sh` proves it end to end on both guests: over MCP a non-`mcp`
+profile is refused, the AI factor is contributed to an ai-assisted grant
+(weight 1/2) but never opens it alone, and a human signing the same challenge on
+the operator socket opens it.
+
+**Acceptance** — met: the AI is a composable factor; a profile can require
+sysadmin + AI; the AI front door reaches only `mcp = true` profiles, enforced by
+the daemon; a Claude session opens and observes a grant over MCP without shell
+access. Verified green on both reaper guests.
+
+### M8c onward — PLANNED
+
 - Drill mode: a scheduled open-and-revert against a designated canary host,
   journaled, with a loud failure when the revert path does not fire. A revert
   path never observed firing is indistinguishable from one that does not

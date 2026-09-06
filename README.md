@@ -60,7 +60,11 @@ and is not proven, [docs/DESIGN.md](docs/DESIGN.md) for the architecture, and
 - `lychgated` — the control-plane daemon. FreeBSD and Linux only. Holds
   grant state, drives the channels, reverts on close and expiry, retries
   stuck reverts, and journals everything.
-- `lychgate-core` — the grant/TTL/inventory library both binaries share.
+- `lychgate-mcp` — the MCP front door (FreeBSD and Linux). A stdio MCP server
+  that lets a Claude session request and use a grant, with the AI as a
+  first-class approval factor. A low-privilege client of the daemon's dedicated
+  MCP socket; see DESIGN.md's "MCP front door".
+- `lychgate-core` — the grant/TTL/inventory library the binaries share.
 
 ## Installation
 
@@ -225,6 +229,19 @@ threshold = 3
 factor = [
   { group = "SYSADMIN", weight = 2 },   # a full MFA grant from a sysadmin
   { wait  = "1h",        weight = 1 },   # ...plus an hour's cool-off
+]
+
+# The AI as a factor. lychgate-mcp signs with an ed25519 key configured like any
+# other authenticator; `mcp = true` lets this profile be opened through the MCP
+# front door (default false — a profile is not MCP-reachable unless it opts in,
+# and the daemon enforces this on its dedicated MCP socket).
+[[approval.profile]]
+id = "ai-assisted"
+threshold = 2
+mcp = true
+factor = [
+  { authenticator = "sysadmin-key", weight = 1 },   # a human still signs
+  { authenticator = "ai",           weight = 1 },   # the AI contributes over MCP
 ]
 ```
 
