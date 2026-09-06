@@ -1,4 +1,5 @@
 mod drivers;
+mod fido2_counters;
 mod journal;
 mod lifecycle;
 mod listener;
@@ -249,6 +250,9 @@ fn main() -> anyhow::Result<()> {
         totp_secrets,
         totp_ledger,
         password_hashes,
+        fido2_counters: fido2_counters::Fido2Counters::at(
+            cli.state_dir.join("fido2-counters.json"),
+        ),
     });
 
     // Recover from a crash mid-open before serving anything.

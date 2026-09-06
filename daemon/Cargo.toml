@@ -13,12 +13,12 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 libc = { workspace = true }
 lychgate-core = { workspace = true }
+# base64url ledger keys for the FIDO2 counter ledger.
+data-encoding = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 lychgate-core = { workspace = true, features = ["fakes"] }
-# base64url for encoding FIDO2 credential material in the test harness.
-data-encoding = { workspace = true }
 # The simulated-users tier signs real SSHSIG proofs in-process.
 ssh-key = { workspace = true }

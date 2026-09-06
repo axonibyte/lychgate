@@ -299,21 +299,60 @@ pub fn check_public_key(alg: Alg, public_key: &[u8]) -> Result<(), Fido2Error> {
     }
 }
 
+/// The signature counter carried in an assertion token's authenticatorData
+/// (bytes 33..37, big-endian). The daemon reads it AFTER `verify` accepts the
+/// same token, to feed its per-credential counter ledger (clone detection): a
+/// counter that goes backwards means two devices are signing with one
+/// credential. Zero means the authenticator does not implement counters.
+pub fn token_counter(token: &str) -> Result<u32, Fido2Error> {
+    let payload = token
+        .strip_prefix(TOKEN_PREFIX)
+        .ok_or_else(|| Fido2Error::Malformed("not an lgfido2 token".to_string()))?;
+    let raw = unb64(payload, "token")?;
+    let tok: AssertionToken = serde_json::from_slice(&raw)
+        .map_err(|e| Fido2Error::Malformed(format!("token json: {e}")))?;
+    let auth_data = unb64(&tok.authenticator_data, "authenticatorData")?;
+    if auth_data.len() < 37 {
+        return Err(Fido2Error::Malformed(
+            "authenticatorData too short".to_string(),
+        ));
+    }
+    Ok(u32::from_be_bytes([
+        auth_data[33],
+        auth_data[34],
+        auth_data[35],
+        auth_data[36],
+    ]))
+}
+
 /// The software authenticator: construct a valid assertion token from a private
 /// key. Used by the CLI's `--software-key` mode and by the tests, so both speak
-/// the exact bytes `verify` accepts. Deterministic — no randomness.
+/// the exact bytes `verify` accepts. Deterministic — no randomness. The counter
+/// is 0 (no counter support), like most software credentials.
 pub fn build_assertion(
     alg: Alg,
     private_key: &[u8],
     credential_id: &[u8],
     challenge: &str,
 ) -> Result<String, Fido2Error> {
+    build_assertion_with_counter(alg, private_key, credential_id, challenge, 0)
+}
+
+/// `build_assertion` with an explicit signature counter — for the daemon tier's
+/// counter-ledger tests, which need assertions whose counters they control.
+pub fn build_assertion_with_counter(
+    alg: Alg,
+    private_key: &[u8],
+    credential_id: &[u8],
+    challenge: &str,
+    counter: u32,
+) -> Result<String, Fido2Error> {
     let client_data = client_data_json(challenge);
 
     let mut auth_data = Vec::with_capacity(37);
     auth_data.extend_from_slice(&rp_id_hash());
     auth_data.push(FLAG_UP);
-    auth_data.extend_from_slice(&[0u8; 4]); // signature counter 0
+    auth_data.extend_from_slice(&counter.to_be_bytes());
 
     let mut signed = auth_data.clone();
     signed.extend_from_slice(&Sha256::digest(&client_data));

@@ -72,6 +72,9 @@ pub struct Daemon {
     /// non-digit token) is verified against all of these — no ledger, since a
     /// password is reusable by design.
     pub password_hashes: std::collections::BTreeMap<String, String>,
+    /// The FIDO2 signature-counter ledger: a counter that goes backwards means
+    /// a cloned credential, and the assertion is refused.
+    pub fido2_counters: crate::fido2_counters::Fido2Counters,
 }
 
 /// The profile name a `--dry-run` daemon records on a pending grant. Dry-run
@@ -560,7 +563,26 @@ impl Daemon {
             let mut matched_err = None;
             for (id, cred) in model.fido2_credentials() {
                 match lychgate_core::fido2::verify(cred, trimmed, &challenge) {
-                    Ok(()) => return Ok(Ok(id.to_string())),
+                    Ok(()) => {
+                        // The signature verified; now the counter ledger judges
+                        // it. A regression (a counter at or below the recorded
+                        // high-water mark, from a device that used to count) is
+                        // the clone signal — refused and journaled like any
+                        // denial. A ledger I/O failure is daemon-fatal: without
+                        // the record we cannot promise clone detection.
+                        let counter = lychgate_core::fido2::token_counter(trimmed)
+                            .map_err(|e| anyhow::anyhow!("counter of a verified token: {e}"))?;
+                        return match self
+                            .fido2_counters
+                            .observe(&cred.credential_id, counter)
+                            .context("fido2 counter ledger")?
+                        {
+                            crate::fido2_counters::CounterVerdict::Ok => Ok(Ok(id.to_string())),
+                            crate::fido2_counters::CounterVerdict::Regressed => {
+                                Ok(Err(ApprovalError::CloneSuspected))
+                            }
+                        };
+                    }
                     Err(lychgate_core::Fido2Error::WrongCredential) => continue,
                     Err(e) => matched_err = Some(e),
                 }
@@ -571,6 +593,30 @@ impl Daemon {
                 None => ApprovalError::UnknownApprover(
                     "no configured FIDO2 credential matches this assertion".to_string(),
                 ),
+            }));
+        }
+        if trimmed.starts_with(lychgate_core::tpm::TOKEN_PREFIX) {
+            // A TPM challenge signature. Like an SSHSIG it binds to the request's
+            // own nonce (no ledger needed); the token names no key, so try each
+            // configured tpm authenticator — a wrong key is just BadSignature,
+            // and the first key that verifies wins.
+            let challenge = request.challenge_string();
+            let mut any = false;
+            let mut malformed = None;
+            for (id, pk) in model.tpm_credentials() {
+                any = true;
+                match lychgate_core::tpm::verify(pk, trimmed, &challenge) {
+                    Ok(()) => return Ok(Ok(id.to_string())),
+                    Err(lychgate_core::TpmError::Malformed(m)) => malformed = Some(m),
+                    Err(_) => {}
+                }
+            }
+            return Ok(Err(match (any, malformed) {
+                (_, Some(m)) => ApprovalError::Malformed(m),
+                (true, None) => ApprovalError::BadSignature,
+                (false, None) => {
+                    ApprovalError::UnknownApprover("no TPM authenticator is configured".to_string())
+                }
             }));
         }
         if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) {

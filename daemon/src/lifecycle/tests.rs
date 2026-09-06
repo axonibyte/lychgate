@@ -117,6 +117,9 @@ impl Harness {
             totp_secrets: std::collections::BTreeMap::new(),
             totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
             password_hashes: std::collections::BTreeMap::new(),
+            fido2_counters: crate::fido2_counters::Fido2Counters::at(
+                dir.join("fido2-counters.json"),
+            ),
         };
         Harness {
             daemon,
@@ -320,6 +323,7 @@ fn a_stuck_revert_is_retried_by_the_pass_until_it_clears() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
 
     // Open is requested, then approved — and the apply fails (ssh apply fails,
@@ -462,6 +466,7 @@ fn boot_recovery_demotes_a_stored_opening_to_needs_revert() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
     daemon.boot_recover(t(10)).unwrap();
     // Demoted: every intended channel is now awaiting revert.
@@ -757,6 +762,7 @@ fn a_bmc_style_secret_reaches_the_open_response_but_never_the_journal() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
     daemon
         .dispatch(
@@ -857,6 +863,7 @@ fn boot_reestablishes_an_open_vnc_grant_that_outlived_a_restart() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
 
     daemon.boot_recover(t(2000)).unwrap();
@@ -909,6 +916,7 @@ fn a_vnc_grant_whose_tunnel_cannot_be_reestablished_is_reverted() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
 
     daemon.boot_recover(t(2000)).unwrap();
@@ -955,6 +963,7 @@ fn simultaneous_opens_of_one_console_produce_one_grant_and_one_apply() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     });
 
     const N: usize = 16;
@@ -1062,6 +1071,7 @@ fn a_vnc_open_returns_the_one_time_password_labelled_and_the_console_endpoint() 
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
     daemon
         .dispatch(
@@ -1140,6 +1150,7 @@ fn a_wait_only_profile_opens_on_the_pass_once_the_wait_matures() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
 
     // Open under the wait-only profile: pending, nothing applied.
@@ -1239,6 +1250,7 @@ fn totp_harness(dir: &crate::scratch::Scratch) -> Daemon {
         totp_secrets,
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     }
 }
 
@@ -1395,6 +1407,7 @@ fn password_harness(dir: &crate::scratch::Scratch, password: &str) -> Daemon {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes,
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     }
 }
 
@@ -1525,6 +1538,7 @@ fn fido2_harness(dir: &crate::scratch::Scratch) -> Daemon {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     }
 }
 
@@ -1654,6 +1668,7 @@ fn mcp_harness(dir: &crate::scratch::Scratch) -> Daemon {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     }
 }
 
@@ -1817,6 +1832,7 @@ fn drill_daemon(dir: &crate::scratch::Scratch, canary: bool, script: Script) -> 
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     }
 }
 
@@ -1965,4 +1981,216 @@ fn a_pass_leaves_a_proof_met_grant_for_approve() {
         lychgate_core::proto::GrantState::AwaitingApproval,
         "pass must leave a proof-met grant pending for approve, not open it"
     );
+}
+
+// --- tpm factor + fido2 counter ledger (M9) ---------------------------------
+
+fn tpm_harness(dir: &crate::scratch::Scratch) -> Daemon {
+    let pub_b64 = data_encoding::BASE64URL_NOPAD
+        .encode(&lychgate_core::tpm::public_key(&[0x44u8; 32]).unwrap());
+    let inv_text = format!(
+        r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "linux"
+        channels = ["ssh"]
+        [hosts.ssh]
+        agent_user = "root"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+
+        [[approval.authenticator]]
+        id = "host-tpm"
+        kind = "tpm"
+        public-key = "{pub_b64}"
+        [[approval.profile]]
+        id = "tpm"
+        threshold = 1
+        factor = [ {{ authenticator = "host-tpm", weight = 1 }} ]
+        "#
+    );
+    let inventory = Inventory::parse(&inv_text).unwrap();
+    let model = inventory.approval_model().unwrap().unwrap();
+    Daemon {
+        inventory,
+        store: Store::at(dir.join("grants.json")),
+        journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
+        drivers: Mutex::new(DriverSet::new()),
+        deadman: Mutex::new(Box::new(FakeDeadman {
+            log: Arc::new(Mutex::new(Vec::new())),
+            fail_install: false,
+            fail_remove: false,
+            fired: Arc::new(Mutex::new(false)),
+        })),
+        approval_window: Duration::from_secs(300),
+        approval: Some(model),
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
+    }
+}
+
+fn open_profile(d: &Daemon, profile: &str, now: SystemTime) -> String {
+    let r = d
+        .dispatch(
+            &Op::Open {
+                host: "db-01".into(),
+                ttl: "1h".into(),
+                profile: Some(profile.into()),
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(r.result, ResponseResult::Ok);
+    r.pending.expect("a pending challenge").challenge
+}
+
+fn approve_token_result(d: &Daemon, token: &str, now: SystemTime) -> Response {
+    d.dispatch(
+        &Op::Approve {
+            host: "db-01".into(),
+            token: token.to_string(),
+        },
+        now,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_valid_tpm_signature_opens_a_profile() {
+    let dir = scratch_dir("tpm-open");
+    let d = tpm_harness(&dir);
+    let now = t(1_000);
+    let challenge = open_profile(&d, "tpm", now);
+    let token = lychgate_core::tpm::sign(&[0x44u8; 32], &challenge).unwrap();
+    let r = approve_token_result(&d, &token, now);
+    assert_eq!(r.result, ResponseResult::Ok, "{:?}", r.error);
+    assert!(is_open(&d, now));
+}
+
+#[test]
+fn a_tpm_signature_for_another_challenge_is_refused() {
+    let dir = scratch_dir("tpm-stale");
+    let d = tpm_harness(&dir);
+    let now = t(1_000);
+    let _live = open_profile(&d, "tpm", now);
+    let stale = lychgate_core::tpm::sign(&[0x44u8; 32], "lg1.req.SOMETHING-ELSE").unwrap();
+    let r = approve_token_result(&d, &stale, now);
+    assert_eq!(r.result, ResponseResult::Refused);
+    assert!(!is_open(&d, now));
+}
+
+#[test]
+fn a_tpm_signature_by_an_unconfigured_key_is_refused() {
+    let dir = scratch_dir("tpm-stranger");
+    let d = tpm_harness(&dir);
+    let now = t(1_000);
+    let challenge = open_profile(&d, "tpm", now);
+    let stranger = lychgate_core::tpm::sign(&[0x55u8; 32], &challenge).unwrap();
+    let r = approve_token_result(&d, &stranger, now);
+    assert_eq!(r.result, ResponseResult::Refused);
+    assert!(!is_open(&d, now));
+}
+
+fn close_db01(d: &Daemon, now: SystemTime) {
+    // Empty driver set: the revert commits synchronously to Closed.
+    let r = d
+        .dispatch(
+            &Op::Close {
+                host: "db-01".into(),
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(r.result, ResponseResult::Ok, "{:?}", r.error);
+}
+
+#[test]
+fn a_fido2_counter_regression_is_refused_across_grants() {
+    // A hardware credential counts 5 on its first grant. A second assertion
+    // claiming 5 again (or less, or a sudden 0) is the clone shape — refused
+    // and journaled — while a proper advance to 6 is accepted.
+    let dir = scratch_dir("f2c-daemon");
+    let d = fido2_harness(&dir);
+    let now = t(1_000);
+
+    let c1 = open_fido2(&d, now);
+    let t5 = lychgate_core::fido2::build_assertion_with_counter(
+        lychgate_core::Alg::Es256,
+        &FIDO2_PRIV,
+        &FIDO2_CRED_ID,
+        &c1,
+        5,
+    )
+    .unwrap();
+    assert_eq!(approve_fido2(&d, &t5, now), ResponseResult::Ok);
+    assert!(is_open(&d, now));
+    close_db01(&d, now);
+
+    // Same counter again on a fresh grant: regression.
+    let c2 = open_fido2(&d, now);
+    let t5_again = lychgate_core::fido2::build_assertion_with_counter(
+        lychgate_core::Alg::Es256,
+        &FIDO2_PRIV,
+        &FIDO2_CRED_ID,
+        &c2,
+        5,
+    )
+    .unwrap();
+    assert_eq!(approve_fido2(&d, &t5_again, now), ResponseResult::Refused);
+    assert!(!is_open(&d, now), "a regressed counter must not open");
+    let raw = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+    assert!(
+        raw.contains("cloned"),
+        "the refusal should be journaled with the clone diagnosis"
+    );
+
+    // An advancing counter on the SAME pending grant is accepted.
+    let t6 = lychgate_core::fido2::build_assertion_with_counter(
+        lychgate_core::Alg::Es256,
+        &FIDO2_PRIV,
+        &FIDO2_CRED_ID,
+        &c2,
+        6,
+    )
+    .unwrap();
+    assert_eq!(approve_fido2(&d, &t6, now), ResponseResult::Ok);
+    assert!(is_open(&d, now));
+    close_db01(&d, now);
+
+    // A sudden zero from a credential that used to count: also the clone shape.
+    let c3 = open_fido2(&d, now);
+    let t0 = lychgate_core::fido2::build_assertion_with_counter(
+        lychgate_core::Alg::Es256,
+        &FIDO2_PRIV,
+        &FIDO2_CRED_ID,
+        &c3,
+        0,
+    )
+    .unwrap();
+    assert_eq!(approve_fido2(&d, &t0, now), ResponseResult::Refused);
+}
+
+#[test]
+fn counterless_software_assertions_stay_usable() {
+    // The software authenticator always sends 0; with no recorded mark, zeros
+    // pass forever — the ledger must not break the CI/software path.
+    let dir = scratch_dir("f2c-zero-daemon");
+    let d = fido2_harness(&dir);
+    let now = t(1_000);
+    for _ in 0..2 {
+        let c = open_fido2(&d, now);
+        let tok = lychgate_core::fido2::build_assertion(
+            lychgate_core::Alg::Es256,
+            &FIDO2_PRIV,
+            &FIDO2_CRED_ID,
+            &c,
+        )
+        .unwrap();
+        assert_eq!(approve_fido2(&d, &tok, now), ResponseResult::Ok);
+        assert!(is_open(&d, now));
+        close_db01(&d, now);
+    }
 }

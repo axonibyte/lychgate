@@ -108,6 +108,9 @@ pub enum ApprovalError {
     BadSignature,
     /// A one-time proof (a TOTP code) that was already used — replay refused.
     AlreadyUsed,
+    /// A FIDO2 signature counter went backwards: the credential may have been
+    /// cloned. Refused, loudly — this is the signal counters exist to give.
+    CloneSuspected,
 }
 
 impl fmt::Display for ApprovalError {
@@ -127,6 +130,11 @@ impl fmt::Display for ApprovalError {
             ApprovalError::AlreadyUsed => {
                 write!(f, "this one-time approval code was already used")
             }
+            ApprovalError::CloneSuspected => write!(
+                f,
+                "FIDO2 signature counter went backwards — the credential may be \
+                 cloned; refusing, and this credential should be rotated"
+            ),
         }
     }
 }
