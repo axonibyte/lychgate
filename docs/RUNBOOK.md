@@ -224,7 +224,34 @@ break-glass grants depend on is broken *now*, before a real close needs it.
 
 ---
 
-## 6. Operations
+## 6. Optional: the TPM (a hardware factor, and secrets at rest)
+
+A machine may or may not have a TPM 2.0 — **probe before configuring one**.
+Build the TPM tooling (`cargo build --release -p lychgate --features tpm-client`
+on Linux; add `-bindgen` and `LIBCLANG_PATH` on FreeBSD, with `tpm2-tss`
+installed) and run:
+
+```sh
+lychgate tpm-probe --tcti device:/dev/tpm0
+```
+
+A passing probe exercises everything lychgate needs (connect, derive the
+signing key, seal/unseal round trip). Then either or both of:
+
+- **The tpm factor** — `lychgate tpm-register` prints the
+  `[[approval.authenticator]] kind = "tpm"` block; at approve time
+  `lychgate tpm-sign --challenge <c>` emits the `lgtpm.` token. The private key
+  never leaves the chip, and nothing is persisted in the TPM (the key is
+  re-derived from a fixed template).
+- **Sealed secrets** — `lychgate tpm-seal --file oncall.totp > oncall.totp.sealed`,
+  point the inventory's `secret-file`/`hash-file` at the sealed blob, and run
+  the daemon (a `tpm-seal` feature build) with `--tpm-unseal device:/dev/tpm0`.
+  The plaintext then exists only in the daemon's memory; the files at rest are
+  useless off the host. Fail-closed: the flag on a build without the feature,
+  or with an unreachable TPM, refuses the start — it never silently reads the
+  blobs as plaintext.
+
+## 7. Operations
 
 - **The journal is the audit record.** `<state-dir>/journal.jsonl` records every
   transition — requests, accepted proofs, opens, reverts, expiries — and, unlike

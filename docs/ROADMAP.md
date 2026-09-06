@@ -756,16 +756,39 @@ is now PID-aware — the holder records its PID, and a waiter whose holder PID i
 dead steals at once — in one shared `daemon/src/lockfile.rs` used by both the
 store and the ledger. Aging by mtime remains the backstop. This also cured the
 intermittent `a_second_daemon` e2e flake.
-- **TPM integration (tail-end)** — a TPM 2.0-backed factor: a signature from a
-  key sealed in the platform TPM, verified like Ed25519/FIDO2 but with a
-  non-exportable private key, and/or sealing lychgate's own secrets to the TPM.
-  It slots behind the same authenticator seam as a later kind, after the
-  operator surface and the remaining test tiers; noted now so the engine keeps
-  room for it.
-- **FIDO2 hardening (future)** — signature-counter clone detection and
-  attestation-chain verification (today we trust the registered public key, not
-  an attestation), and a bundled hardware register/assert ceremony validated on
-  physical keys beyond the virtual-authenticator simulation.
+### M9 — TPM 2.0 integration + FIDO2 hardening — DONE (2026-09-07), bumps to v0.12.0
+
+The tail-end feature milestone, taken as one piece. **TPM**: a fifth (and final)
+authenticator kind — a P-256 signature over the challenge from a key that lives
+non-exportable in the machine's TPM (`lgtpm.` tokens; core verifies plain ECDSA
+and knows nothing about TPMs) — plus **secrets at rest**: `lychgate tpm-seal`
+wraps TOTP secrets/password hashes into TPM-bound blobs and
+`lychgated --tpm-unseal` unseals them at startup, so the files are useless off
+the host. Both keys are owner-hierarchy primaries with fixed templates
+(re-derived, nothing persisted, shared in one `lychgate-tpm` crate so the
+seal/unseal templates cannot drift). Compatibility is probed, never assumed:
+`lychgate tpm-probe` exercises everything lychgate needs, and every
+misconfiguration is fail-closed (the flag without the feature, or with an
+unreachable TPM, refuses the start — never a silent plaintext fallback). The C
+TSS stack (tss-esapi) is confined behind `tpm-client`/`tpm-seal` features;
+default builds compile an empty stub crate. **FIDO2 hardening**: a
+per-credential signature-counter ledger (a regression — equal, lower, or a
+sudden zero after counting — is the clone shape: refused as CloneSuspected and
+journaled), and hardware registration now VERIFIES the packed attestation
+statement and surfaces the AAGUID, refusing an unverifiable credential.
+
+**Tests** — the tpm KAT + oracle self-tests + fuzz; daemon tpm dispatch tests;
+counter-ledger units (advance/regress/zero/independence/durability/corrupt) and
+the daemon-level clone oracle across grants (mutation-checked); the fail-closed
+--tpm-unseal e2e unit; `e2e/tpm-acceptance.sh` green on the Ubuntu guest against
+swtpm (probe → factor → sealed-secret round trip → fail-closed negative) with a
+named SKIP on FreeBSD (run.sh's new tri-state phase); attestation verification
+validated live against virtual-fido and mutation-checked (a corrupted message
+refuses registration).
+
+**Future hardening (noted, not built):** PCR-bound sealing; attestation
+chain-pinning to vendor roots; the physical-key/discrete-TPM ceremonies beyond
+the simulators.
 
 **Tests** — the remaining tiers, in §15 order: **~~source-as-data~~ DONE
 (2026-09-06, rides v0.11.0)** — `daemon/tests/source_as_data.rs` parses the

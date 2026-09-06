@@ -42,7 +42,11 @@ profile's threshold is met by weighted factors — operator signatures
 (`ssh-keygen -Y sign`, an Ed25519 key in the allowed-signers set), TOTP codes
 from an authenticator app (RFC 6238, single-use), Argon2id passwords,
 challenge-bound FIDO2 assertions (ES256/EdDSA — a software key, or a hardware
-key over USB-HID with the `fido2-client` build), nested
+key over USB-HID with the `fido2-client` build; attestation is verified and a
+signature-counter ledger refuses suspected clones), TPM 2.0 challenge
+signatures (a non-exportable key in the machine's TPM, via the `tpm-client`
+build — which can also seal the daemon's secret files at rest with
+`--tpm-unseal`), nested
 groups, and/or an elapsed `wait`, handed back through `lychgate approve`. Proofs accumulate across
 calls and a wait matures on the daemon's own loop, so a profile can demand
 genuine multi-factor approval. The

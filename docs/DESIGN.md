@@ -73,9 +73,9 @@ Policy decisions, all enforced in core and all tested:
   (the vnc tunnel) that outlived a restart is re-established. All four
   channels are live: a grant flips PermitRootLogin via a verified drop-in,
   installs break-glass keys in the fence, enables a break-glass iDRAC account,
-  and brings up a console tunnel with a rotated password. As of M8a.5 opening is
-  gated on a weighted-threshold approval authority (Ed25519/SSHSIG, TOTP, password
-  and FIDO2 factors, with groups and waits). `--dry-run` registers no drivers and accepts any approval token,
+  and brings up a console tunnel with a rotated password. As of M9 opening is
+  gated on a weighted-threshold approval authority (Ed25519/SSHSIG, TOTP,
+  password, FIDO2 and TPM factors, with groups and waits). `--dry-run` registers no drivers and accepts any approval token,
   opening grants as pure bookkeeping.
 - **`lychgate`** — the operator CLI, built for FreeBSD, Linux, and Windows
   (an operator's workstation may be anything; the daemon's host may not).
@@ -120,7 +120,8 @@ modelled on EOS/Antelope permissions. An authority is a `threshold` over
 weighted factors; a factor is one of:
 
 - an **authenticator** — a leaf proof identified by id (an Ed25519 SSHSIG, a
-  TOTP code, a password, or a FIDO2 assertion — all four kinds now implemented);
+  TOTP code, a password, a FIDO2 assertion, or a TPM challenge signature — all
+  five kinds implemented);
 - a **group** — itself an authority, satisfied when *its* threshold is met, so
   gates nest into a DAG;
 - a **wait** — satisfied once a duration has elapsed since the request.
@@ -177,16 +178,41 @@ assertion made for another site cannot be replayed here), the user-present flag,
 and the signature — ES256 (ECDSA-P256) or EdDSA (Ed25519) over
 `authenticatorData ‖ SHA-256(clientDataJSON)` — against the credential's
 registered public key. That key is public and lives inline in the inventory (a
-SEC1 point for ES256, the raw key for EdDSA); we trust the registered key, not
-an attestation chain (a documented simplification), and the signature counter is
-not tracked (many keys hold it at zero). No ledger is needed: the per-request
-nonce inside the challenge is itself the anti-replay. Producing an assertion is
-either the deterministic **software authenticator** (`lychgate fido2-assert
---software-key`, used by the tests and the e2e) or a real hardware key over
-USB-HID — the **CTAP2 client** behind the `fido2-client` cargo feature, off by
-default so the daemon, the guests and the Windows cross-build never pull the
-hidapi C dependency. Both emit the exact bytes `verify` accepts, from one shared
-wire format in `core::fido2`.
+SEC1 point for ES256, the raw key for EdDSA). Two hardening layers (M9): the
+daemon keeps a per-credential **signature-counter ledger** — once a device has
+presented a nonzero counter, every later assertion must present a strictly
+greater one, and a regression (equal, lower, or a sudden zero) is the
+two-devices-one-credential clone shape, refused and journaled; and hardware
+registration **verifies the packed attestation statement** and surfaces the
+AAGUID, so the operator sees what device minted a credential before trusting
+it (the certificate is verified, not chained to a vendor root — root-pinning is
+future hardening). No challenge ledger is needed: the per-request nonce inside
+the challenge is itself the anti-replay. Producing an assertion is either the
+deterministic **software authenticator** (`lychgate fido2-assert
+--software-key`, used by the tests and the e2e; it counts nothing and attests
+nothing, said plainly) or a real hardware key over USB-HID — the **CTAP2
+client** behind the `fido2-client` cargo feature, off by default so the daemon,
+the guests and the Windows cross-build never pull the hidapi C dependency. Both
+emit the exact bytes `verify` accepts, from one shared wire format in
+`core::fido2`.
+
+A **TPM factor** is a P-256 ECDSA key whose private half lives non-exportable
+inside the machine's TPM 2.0; its proof (`lgtpm.<base64url(DER signature)>`) is
+a signature over the request's challenge, verified with the registered SEC1
+public key — plain ECDSA in core, which knows nothing about TPMs: the TPM-ness
+is an *operational* property (the key cannot leave the chip). The key and the
+sealing parent are owner-hierarchy **primaries with fixed templates**, re-derived
+on demand — nothing is persisted in the TPM and there is no handle management.
+The hardware ceremony (`lychgate tpm-probe / tpm-register / tpm-sign /
+tpm-seal`) lives behind the `tpm-client` cargo feature (tss-esapi, the C TSS
+stack; FreeBSD builds add `-bindgen`), and the daemon's `tpm-seal` feature adds
+`--tpm-unseal`: configured secret files (TOTP secrets, password hashes) are
+TPM-sealed blobs unsealed at startup, so the files at rest are useless off the
+host. A machine may or may not have a TPM — `lychgate tpm-probe` is the
+compatibility check, and everything is fail-closed: the flag without the
+feature, or with an unreachable TPM, refuses the start rather than falling back
+to plaintext. Sealed blobs bind to the TPM itself with no PCR policy in v1
+(documented; PCR binding is future hardening).
 
 A failed approval is journaled (`ApprovalDenied`, with a reason) — a deliberate
 departure from "refusals journal nothing", because a rejected authorization is
@@ -226,8 +252,8 @@ step, is [ROADMAP.md](ROADMAP.md). The sketch below is the shape of it:
    see [Approval](#approval)) leads; the **MCP front door** (M8b, done; see
    [MCP front door](#mcp-front-door)) lets a Claude session request and use a
    grant without shell access. **Drill mode** (M8c, done; see
-   [Drill mode](#drill-mode)) is the standing revert oracle. All four
-   authenticator kinds (Ed25519, TOTP, password, FIDO2) are done.
+   [Drill mode](#drill-mode)) is the standing revert oracle. All five
+   authenticator kinds (Ed25519, TOTP, password, FIDO2, TPM) are done.
 
 ## MCP front door
 

@@ -335,9 +335,11 @@ approval gate does not get in the way of a legitimate open.
 **What the approval tier does NOT prove:** the FIDO2 **hardware** client in the
 default CI — there is no key on the build hosts, so the `fido2-client` feature is
 not compiled or run by the gate (it is exercised by the simulated tier below and
-a one-time manual ceremony on a physical key). FIDO2 attestation is not verified
-and the signature counter is not tracked (both documented simplifications — we
-trust the registered public key). Trust reduces to the configured public
+a one-time manual ceremony on a physical key). As of M9 the signature counter
+IS tracked (a per-credential ledger; a regression is refused as a suspected
+clone — see the fido2 paragraphs above) and hardware registration verifies the
+packed attestation statement and surfaces the AAGUID; the certificate is not
+chained to a vendor root (root-pinning is future hardening). Trust reduces to the configured public
 keys, TOTP secrets and password hashes; a compromised key/secret is out of scope,
 as is revocation (edit the inventory and reload). Neither a TOTP code nor a
 password binds to the host/challenge — for TOTP the single-use ledger, short
@@ -382,6 +384,29 @@ attached):
 This tier is deliberately not wired into `e2e/run.sh`: the default battery builds
 without the feature, so the script would only ever skip there. It is run by hand,
 and its green run is recorded here rather than by CI.
+
+## TPM tier: EXISTS (M9) — swtpm-simulated + fail-closed units
+
+The tpm factor's verify path is pure ECDSA (core knows nothing about TPMs), so
+it gets the usual treatment: a committed KAT pins the deterministic software
+signer and the verifier both ways, with oracle self-tests refusing a wrong
+challenge, a tampered signature, a wrong key, and malformed junk; the daemon
+tier opens a tpm profile on a valid signature and refuses a stale-challenge or
+unconfigured-key one; the token decoder joins the fuzz corpus. The hardware
+side is proven against **swtpm** (the TPM's virtual-fido): the Ubuntu guest's
+container build compiles the tpm features and `e2e/tpm-acceptance.sh` runs
+`tpm-probe` (the compatibility check a machine may or may not pass), refuses a
+stale-challenge `tpm-sign` and opens a grant with the fresh one over the real
+vnc channel, seals a TOTP secret with `tpm-seal`, starts
+`lychgated --tpm-unseal`, and proves a code computed from the PLAINTEXT secret
+is accepted — seal/unseal byte-exact — plus the fail-closed negative: the same
+daemon WITHOUT the flag refuses to start on the sealed file. A default build
+given `--tpm-unseal` refuses naming the missing feature (an e2e unit). The
+FreeBSD guest runs default binaries and the phase is a named SKIP
+(run.sh's tri-state `phase_skippable`: exit 2 renders as SKIPPED, never as a
+pass). **What this tier does not prove:** a discrete hardware TPM's quirks
+(swtpm is the reference implementation's software build), and PCR-bound
+sealing (v1 seals to the TPM only, documented in DESIGN).
 
 ## MCP front-door tier: EXISTS (M8b)
 
