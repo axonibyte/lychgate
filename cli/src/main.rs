@@ -76,9 +76,14 @@ enum Command {
         /// Signature algorithm: es256 or eddsa.
         #[arg(long, default_value = "es256")]
         alg: String,
-        /// The software authenticator file to create/reuse (mode 600).
+        /// The software authenticator file to create/reuse (mode 600). Omit to
+        /// use a hardware key (requires the `fido2-client`-feature build).
         #[arg(long)]
         software_key: Option<PathBuf>,
+        /// PIN for a hardware authenticator that requires one (ignored in
+        /// software mode).
+        #[arg(long)]
+        pin: Option<String>,
     },
     /// Produce a FIDO2 assertion over a challenge, printing the token to pipe
     /// into `approve`. Local. `--software-key <file>` uses a software
@@ -87,9 +92,19 @@ enum Command {
         /// The challenge string from `open`.
         #[arg(long)]
         challenge: String,
-        /// The software authenticator file (from fido2-register).
+        /// The software authenticator file (from fido2-register). Omit to use a
+        /// hardware key (requires the `fido2-client`-feature build).
         #[arg(long)]
         software_key: Option<PathBuf>,
+        /// The registered credential-id (base64url), as printed by
+        /// fido2-register. Required in hardware mode (the key is non-resident, so
+        /// the id must be presented); ignored in software mode.
+        #[arg(long)]
+        credential_id: Option<String>,
+        /// PIN for a hardware authenticator that requires one (ignored in
+        /// software mode).
+        #[arg(long)]
+        pin: Option<String>,
     },
 }
 
@@ -157,18 +172,13 @@ fn read_softkey(path: &std::path::Path) -> anyhow::Result<(lychgate_core::Alg, V
     Ok((alg, cred_id, priv_key))
 }
 
-fn fido2_register(
+/// The software authenticator's registration: create or reuse the key file and
+/// return `(credential_id, public_key)` in the storage form the inventory wants.
+fn software_register(
+    alg: lychgate_core::Alg,
     alg_str: &str,
-    software_key: Option<&std::path::Path>,
-) -> anyhow::Result<ExitCode> {
-    let alg = parse_alg(alg_str)?;
-    let path = software_key.ok_or_else(|| {
-        anyhow::anyhow!(
-            "hardware registration needs the fido2-client feature; \
-             pass --software-key <file> for a software authenticator"
-        )
-    })?;
-    let b64 = data_encoding::BASE64URL_NOPAD;
+    path: &std::path::Path,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     let (cred_id, priv_key) = if path.exists() {
         let (existing_alg, cred_id, priv_key) = read_softkey(path)?;
         if existing_alg != alg {
@@ -188,6 +198,7 @@ fn fido2_register(
             }
         };
         let cred_id = read_urandom(16)?;
+        let b64 = data_encoding::BASE64URL_NOPAD;
         let body = format!(
             "{alg_str}\n{}\n{}\n",
             b64.encode(&cred_id),
@@ -202,6 +213,20 @@ fn fido2_register(
     };
     let public =
         lychgate_core::fido2::public_key(alg, &priv_key).map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok((cred_id, public))
+}
+
+fn fido2_register(
+    alg_str: &str,
+    software_key: Option<&std::path::Path>,
+    pin: Option<&str>,
+) -> anyhow::Result<ExitCode> {
+    let alg = parse_alg(alg_str)?;
+    let (cred_id, public) = match software_key {
+        Some(path) => software_register(alg, alg_str, path)?,
+        None => hardware_register(alg, pin)?,
+    };
+    let b64 = data_encoding::BASE64URL_NOPAD;
     println!("[[approval.authenticator]]");
     println!("id = \"fido2\"                       # rename as you like");
     println!("kind = \"fido2\"");
@@ -214,18 +239,163 @@ fn fido2_register(
 fn fido2_assert(
     challenge: &str,
     software_key: Option<&std::path::Path>,
+    credential_id: Option<&str>,
+    pin: Option<&str>,
 ) -> anyhow::Result<ExitCode> {
-    let path = software_key.ok_or_else(|| {
-        anyhow::anyhow!(
-            "hardware assertions need the fido2-client feature; \
-             pass --software-key <file> for a software authenticator"
-        )
-    })?;
-    let (alg, cred_id, priv_key) = read_softkey(path)?;
-    let token = lychgate_core::fido2::build_assertion(alg, &priv_key, &cred_id, challenge)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let token = match software_key {
+        Some(path) => {
+            let (alg, cred_id, priv_key) = read_softkey(path)?;
+            lychgate_core::fido2::build_assertion(alg, &priv_key, &cred_id, challenge)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+        }
+        None => {
+            let cred_id_b64 = credential_id.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "a hardware assertion needs --credential-id <base64url> \
+                     (the id fido2-register printed)"
+                )
+            })?;
+            let cred_id = data_encoding::BASE64URL_NOPAD
+                .decode(cred_id_b64.trim().as_bytes())
+                .map_err(|_| anyhow::anyhow!("--credential-id is not base64url"))?;
+            hardware_assert(challenge, &cred_id, pin)?
+        }
+    };
     println!("{token}");
     Ok(ExitCode::SUCCESS)
+}
+
+// --- hardware backend: the CTAP2/USB-HID client behind the fido2-client feature.
+// The seam is identical in both builds; only the body differs, so the caller
+// (fido2_register/fido2_assert) never needs a #[cfg]. Without the feature the
+// hardware path is a clear, actionable refusal — never a silent fallback.
+
+#[cfg(not(feature = "fido2-client"))]
+fn hardware_register(
+    _alg: lychgate_core::Alg,
+    _pin: Option<&str>,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    anyhow::bail!(
+        "this build has no hardware FIDO2 support; rebuild with \
+         `--features fido2-client` (unix, needs the system hidapi library), \
+         or pass --software-key <file> for a software authenticator"
+    )
+}
+
+#[cfg(not(feature = "fido2-client"))]
+fn hardware_assert(
+    _challenge: &str,
+    _credential_id: &[u8],
+    _pin: Option<&str>,
+) -> anyhow::Result<String> {
+    anyhow::bail!(
+        "this build has no hardware FIDO2 support; rebuild with \
+         `--features fido2-client` (unix, needs the system hidapi library), \
+         or pass --software-key <file> for a software authenticator"
+    )
+}
+
+#[cfg(feature = "fido2-client")]
+fn hardware_register(
+    alg: lychgate_core::Alg,
+    pin: Option<&str>,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    hw::register(alg, pin)
+}
+
+#[cfg(feature = "fido2-client")]
+fn hardware_assert(
+    challenge: &str,
+    credential_id: &[u8],
+    pin: Option<&str>,
+) -> anyhow::Result<String> {
+    hw::assert(challenge, credential_id, pin)
+}
+
+/// The CTAP2 hardware client: drives a real (or virtual) authenticator over
+/// USB-HID via `ctap-hid-fido2`. It produces exactly the bytes the software
+/// path and the KAT-pinned verifier accept — the clientDataJSON and the token
+/// are assembled by `lychgate_core::fido2`, so there is one wire format.
+///
+/// This path has no CI oracle (no hardware on the build hosts). It is exercised
+/// against a *virtual* authenticator over USB/IP in TESTING's simulated tier,
+/// and the ceremony on a specific real key is a one-time manual check.
+#[cfg(feature = "fido2-client")]
+mod hw {
+    use anyhow::{anyhow, Result};
+    use ctap_hid_fido2::fidokey::CredentialSupportedKeyType;
+    use ctap_hid_fido2::{Cfg, FidoKeyHid, FidoKeyHidFactory};
+    use lychgate_core::fido2::RP_ID;
+    use lychgate_core::Alg;
+
+    fn open_device() -> Result<FidoKeyHid> {
+        // Keep-alive prompts ("touch the key") must go to stderr — stdout carries
+        // only the token, so `fido2-assert | approve` pipes cleanly.
+        let cfg = Cfg::init().with_keep_alive_msg_to_stderr(true);
+        FidoKeyHidFactory::create(&cfg)
+            .map_err(|e| anyhow!("no FIDO2 authenticator found over USB-HID: {e}"))
+    }
+
+    /// Register: CTAP2 authenticatorMakeCredential with rpId = lychgate, keeping
+    /// the credential id and public key. We do not verify the attestation — we
+    /// trust the key material the user is registering, exactly as the inventory
+    /// does (see DESIGN); a self-check confirms the extracted key parses.
+    pub fn register(alg: Alg, pin: Option<&str>) -> Result<(Vec<u8>, Vec<u8>)> {
+        let dev = open_device()?;
+        let key_type = match alg {
+            Alg::Es256 => CredentialSupportedKeyType::Ecdsa256,
+            Alg::EdDsa => CredentialSupportedKeyType::Ed25519,
+        };
+        // The makeCredential clientDataHash is irrelevant to us (we do not check
+        // the attestation), but the call needs one — a fixed, distinctive tag.
+        let att = dev
+            .make_credential_with_key_type(RP_ID, b"lychgate-fido2-register", pin, Some(key_type))
+            .map_err(|e| anyhow!("makeCredential failed (touch the key? PIN?): {e}"))?;
+        let public = extract_public_key(alg, &att.credential_publickey.der)?;
+        // Self-check: the bytes we are about to print MUST parse as this alg's
+        // public key, or registration would silently record an unusable key.
+        lychgate_core::fido2::check_public_key(alg, &public)
+            .map_err(|e| anyhow!("the authenticator's public key did not parse: {e}"))?;
+        Ok((att.credential_descriptor.id, public))
+    }
+
+    /// Assert: CTAP2 authenticatorGetAssertion. We hand the authenticator the
+    /// raw clientDataJSON as its `challenge`; the crate SHA-256's it into the
+    /// clientDataHash the key signs (with authenticatorData) — which is what our
+    /// verifier recomputes. The same clientDataJSON goes into the token.
+    pub fn assert(challenge: &str, credential_id: &[u8], pin: Option<&str>) -> Result<String> {
+        let dev = open_device()?;
+        let cdj = lychgate_core::fido2::client_data_json(challenge);
+        // The credential is non-resident: its id must be in the allow-list so
+        // the authenticator can unwrap the private key.
+        let assertion = dev
+            .get_assertion(RP_ID, &cdj, &[credential_id.to_vec()], pin)
+            .map_err(|e| anyhow!("getAssertion failed (touch the key? PIN?): {e}"))?;
+        Ok(lychgate_core::fido2::assemble_token(
+            &assertion.credential_id,
+            &assertion.auth_data,
+            &cdj,
+            &assertion.signature,
+        ))
+    }
+
+    /// A SubjectPublicKeyInfo DER → the storage form `verify` expects. For P-256
+    /// the SPKI ends in the 65-byte uncompressed SEC1 point (0x04‖X‖Y); for
+    /// Ed25519 it ends in the raw 32-byte key. `check_public_key` in the caller
+    /// is the oracle that this slice is right.
+    fn extract_public_key(alg: Alg, der: &[u8]) -> Result<Vec<u8>> {
+        let n = match alg {
+            Alg::Es256 => 65,
+            Alg::EdDsa => 32,
+        };
+        if der.len() < n {
+            return Err(anyhow!(
+                "authenticator public-key DER is {} bytes, too short for {alg:?}",
+                der.len()
+            ));
+        }
+        Ok(der[der.len() - n..].to_vec())
+    }
 }
 
 fn run() -> anyhow::Result<ExitCode> {
@@ -234,13 +404,24 @@ fn run() -> anyhow::Result<ExitCode> {
     // Local utilities — no daemon connection. Handled before an Op is built.
     match &cli.command {
         Command::HashPassword => return hash_password(),
-        Command::Fido2Register { alg, software_key } => {
-            return fido2_register(alg, software_key.as_deref())
-        }
+        Command::Fido2Register {
+            alg,
+            software_key,
+            pin,
+        } => return fido2_register(alg, software_key.as_deref(), pin.as_deref()),
         Command::Fido2Assert {
             challenge,
             software_key,
-        } => return fido2_assert(challenge, software_key.as_deref()),
+            credential_id,
+            pin,
+        } => {
+            return fido2_assert(
+                challenge,
+                software_key.as_deref(),
+                credential_id.as_deref(),
+                pin.as_deref(),
+            )
+        }
         _ => {}
     }
 

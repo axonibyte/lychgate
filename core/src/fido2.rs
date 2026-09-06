@@ -118,6 +118,55 @@ fn b64(bytes: &[u8]) -> String {
     data_encoding::BASE64URL_NOPAD.encode(bytes)
 }
 
+/// `SHA-256(RP_ID)` — the rpIdHash a lychgate assertion's authenticatorData must
+/// carry. A hardware client passes `RP_ID` as the relying-party id to its key;
+/// this is what the daemon checks the returned authData against.
+pub fn rp_id_hash() -> [u8; 32] {
+    Sha256::digest(RP_ID.as_bytes()).into()
+}
+
+/// The canonical `clientDataJSON` bytes for a challenge — exactly what `verify`
+/// re-hashes and parses. Both authenticators (software and the CTAP2 hardware
+/// client) build the assertion over *these* bytes, so the format has one source
+/// of truth: the hardware client hashes this to the clientDataHash it hands the
+/// key, then puts these same bytes in the token.
+pub fn client_data_json(challenge: &str) -> Vec<u8> {
+    let cd = ClientDataOut {
+        ty: "webauthn.get",
+        challenge: b64(challenge.as_bytes()),
+        origin: RP_ID,
+    };
+    // ClientDataOut serialises infallibly (only owned/borrowed strings).
+    serde_json::to_vec(&cd).expect("clientDataJSON serialises")
+}
+
+/// `SHA-256(clientDataJSON)` — the clientDataHash a WebAuthn client hands the
+/// authenticator to sign (with authenticatorData) during getAssertion.
+pub fn client_data_hash(challenge: &str) -> [u8; 32] {
+    Sha256::digest(client_data_json(challenge)).into()
+}
+
+/// Assemble an `lgfido2.` token from the four assertion fields — used by the
+/// software authenticator and by the CTAP2 hardware client, so both emit the
+/// exact bytes `verify` accepts. For ES256 the signature is DER-encoded ECDSA
+/// (as CTAP2 returns); for EdDSA it is the raw 64-byte signature.
+pub fn assemble_token(
+    credential_id: &[u8],
+    authenticator_data: &[u8],
+    client_data_json: &[u8],
+    signature: &[u8],
+) -> String {
+    let tok = AssertionToken {
+        credential_id: b64(credential_id),
+        authenticator_data: b64(authenticator_data),
+        client_data_json: b64(client_data_json),
+        signature: b64(signature),
+    };
+    // AssertionToken serialises infallibly (four owned strings).
+    let outer = serde_json::to_vec(&tok).expect("assertion token serialises");
+    format!("{TOKEN_PREFIX}{}", b64(&outer))
+}
+
 fn unb64(s: &str, what: &str) -> Result<Vec<u8>, Fido2Error> {
     data_encoding::BASE64URL_NOPAD
         .decode(s.trim().as_bytes())
@@ -259,15 +308,10 @@ pub fn build_assertion(
     credential_id: &[u8],
     challenge: &str,
 ) -> Result<String, Fido2Error> {
-    let cd = ClientDataOut {
-        ty: "webauthn.get",
-        challenge: b64(challenge.as_bytes()),
-        origin: RP_ID,
-    };
-    let client_data = serde_json::to_vec(&cd).map_err(|e| Fido2Error::Malformed(e.to_string()))?;
+    let client_data = client_data_json(challenge);
 
     let mut auth_data = Vec::with_capacity(37);
-    auth_data.extend_from_slice(&Sha256::digest(RP_ID.as_bytes()));
+    auth_data.extend_from_slice(&rp_id_hash());
     auth_data.push(FLAG_UP);
     auth_data.extend_from_slice(&[0u8; 4]); // signature counter 0
 
@@ -275,14 +319,12 @@ pub fn build_assertion(
     signed.extend_from_slice(&Sha256::digest(&client_data));
     let signature = sign(alg, private_key, &signed)?;
 
-    let tok = AssertionToken {
-        credential_id: b64(credential_id),
-        authenticator_data: b64(&auth_data),
-        client_data_json: b64(&client_data),
-        signature: b64(&signature),
-    };
-    let outer = serde_json::to_vec(&tok).map_err(|e| Fido2Error::Malformed(e.to_string()))?;
-    Ok(format!("{TOKEN_PREFIX}{}", b64(&outer)))
+    Ok(assemble_token(
+        credential_id,
+        &auth_data,
+        &client_data,
+        &signature,
+    ))
 }
 
 fn sign(alg: Alg, private_key: &[u8], msg: &[u8]) -> Result<Vec<u8>, Fido2Error> {

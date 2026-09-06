@@ -8,9 +8,19 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[features]
+# The hardware FIDO2 client: drives a CTAP2 authenticator over USB-HID. Off by
+# default so the daemon, the guest builds and the Windows cross-build never pull
+# the hidapi C dependency. Unix only; needs the system hidapi library at build
+# time (pkg install hidapi / apt install libhidapi-dev). Not exercised by CI —
+# see TESTING.md's simulated tier.
+fido2-client = ["dep:ctap-hid-fido2"]
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
 lychgate-core = { workspace = true }
 # base64url for the FIDO2 software-authenticator files and tokens.
 data-encoding = { workspace = true }
+# The CTAP2/USB-HID client — only compiled under the fido2-client feature.
+ctap-hid-fido2 = { version = "3.6", optional = true }
