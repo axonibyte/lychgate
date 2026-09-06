@@ -140,7 +140,15 @@ const OPS: &[&str] = &["open", "approve", "close", "renew", "status", "drill"];
 
 /// CLI subcommands that are LOCAL (no daemon round trip) — the allowed
 /// difference between the Command enum and the op vocabulary, stated by hand.
-const LOCAL_COMMANDS: &[&str] = &["HashPassword", "Fido2Register", "Fido2Assert"];
+const LOCAL_COMMANDS: &[&str] = &[
+    "HashPassword",
+    "Fido2Register",
+    "Fido2Assert",
+    "TpmProbe",
+    "TpmRegister",
+    "TpmSign",
+    "TpmSeal",
+];
 
 #[test]
 fn the_wire_decoder_speaks_exactly_the_stated_ops() {

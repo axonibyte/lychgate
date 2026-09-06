@@ -15,6 +15,12 @@ repository.workspace = true
 # time (pkg install hidapi / apt install libhidapi-dev). Not exercised by CI —
 # see TESTING.md's simulated tier.
 fido2-client = ["dep:ctap-hid-fido2"]
+# The TPM 2.0 client: probe/register/sign/seal against a real (or swtpm) TPM.
+# Off by default so default builds never pull the C TSS stack. On platforms
+# without tss-esapi's shipped bindings (FreeBSD), use tpm-client-bindgen and set
+# LIBCLANG_PATH.
+tpm-client = ["dep:lychgate-tpm", "lychgate-tpm/tss"]
+tpm-client-bindgen = ["tpm-client", "lychgate-tpm/bindgen"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -24,3 +30,5 @@ lychgate-core = { workspace = true }
 data-encoding = { workspace = true }
 # The CTAP2/USB-HID client — only compiled under the fido2-client feature.
 ctap-hid-fido2 = { version = "3.6", optional = true }
+# The shared TPM plumbing — only compiled under the tpm-client feature.
+lychgate-tpm = { workspace = true, optional = true }

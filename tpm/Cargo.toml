@@ -1,0 +1,28 @@
+[package]
+name = "lychgate-tpm"
+description = "Shared TPM 2.0 plumbing for lychgate's tpm-client and tpm-seal features"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[features]
+# Everything real lives behind `tss`: without it this crate compiles to an empty
+# stub, so `--workspace` builds (the gate, the guests, CI) never touch the C TSS
+# stack. The cli's tpm-client and the daemon's tpm-seal features enable it.
+tss = ["dep:tss-esapi"]
+# Platforms without tss-esapi's pre-generated bindings (FreeBSD) generate them
+# at build time; needs libclang (set LIBCLANG_PATH). Linux uses the shipped
+# bindings and never needs this.
+bindgen = ["tss", "tss-esapi/generate-bindings"]
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+data-encoding = { workspace = true }
+sha2 = { workspace = true }
+p256 = { workspace = true }
+tss-esapi = { workspace = true, optional = true }

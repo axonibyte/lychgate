@@ -75,6 +75,43 @@ enum Command {
     /// `[[approval.authenticator]] kind="password"` hash-file. Local — talks to
     /// no daemon. Redirect the output into a mode-600 file.
     HashPassword,
+    /// Probe the machine's TPM 2.0: connect, read the manufacturer, and
+    /// round-trip the exact operations lychgate uses (derive the signing key,
+    /// seal/unseal). Local; requires a `tpm-client` feature build. A machine may
+    /// or may not have a TPM — run this before configuring one.
+    TpmProbe {
+        /// TCTI, e.g. device:/dev/tpm0 or swtpm:host=127.0.0.1,port=2321.
+        #[arg(long, default_value = "device:/dev/tpm0")]
+        tcti: String,
+    },
+    /// Derive the TPM's signing key and print its `[[approval.authenticator]]`
+    /// block. The key is an owner-hierarchy primary with a fixed template:
+    /// non-exportable, re-derived on demand, nothing persisted in the TPM.
+    /// Local; requires a `tpm-client` feature build.
+    TpmRegister {
+        #[arg(long, default_value = "device:/dev/tpm0")]
+        tcti: String,
+    },
+    /// Sign a challenge with the TPM-resident key, printing the `lgtpm.` token
+    /// to pipe into `approve`. Local; requires a `tpm-client` feature build.
+    TpmSign {
+        /// The challenge string from `open`.
+        #[arg(long)]
+        challenge: String,
+        #[arg(long, default_value = "device:/dev/tpm0")]
+        tcti: String,
+    },
+    /// Seal a secret file (a TOTP secret, a password hash) to this TPM,
+    /// printing the sealed blob JSON — redirect it next to the original and
+    /// point the daemon at it with --tpm-unseal. Only this physical TPM can
+    /// unseal it. Local; requires a `tpm-client` feature build.
+    TpmSeal {
+        /// The plaintext secret file to seal.
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long, default_value = "device:/dev/tpm0")]
+        tcti: String,
+    },
     /// Register a FIDO2 credential and print its `[[approval.authenticator]]`
     /// block. Local — talks to no daemon. `--software-key <file>` creates (or
     /// reuses) a software authenticator in that mode-600 file; the hardware
@@ -278,6 +315,82 @@ fn fido2_assert(
     Ok(ExitCode::SUCCESS)
 }
 
+// --- TPM backend: probe/register/sign/seal behind the tpm-client feature (the
+// fido2-client pattern). Without the feature every tpm command is a clear,
+// actionable refusal — never a silent fallback.
+
+#[cfg(not(feature = "tpm-client"))]
+fn tpm_unavailable() -> anyhow::Result<ExitCode> {
+    anyhow::bail!(
+        "this build has no TPM support; rebuild with `--features tpm-client` \
+         (or tpm-client-bindgen on FreeBSD, with LIBCLANG_PATH set and the \
+         tpm2-tss libraries installed)"
+    )
+}
+
+#[cfg(not(feature = "tpm-client"))]
+fn tpm_probe(_tcti: &str) -> anyhow::Result<ExitCode> {
+    tpm_unavailable()
+}
+#[cfg(not(feature = "tpm-client"))]
+fn tpm_register(_tcti: &str) -> anyhow::Result<ExitCode> {
+    tpm_unavailable()
+}
+#[cfg(not(feature = "tpm-client"))]
+fn tpm_sign(_challenge: &str, _tcti: &str) -> anyhow::Result<ExitCode> {
+    tpm_unavailable()
+}
+#[cfg(not(feature = "tpm-client"))]
+fn tpm_seal(_file: &std::path::Path, _tcti: &str) -> anyhow::Result<ExitCode> {
+    tpm_unavailable()
+}
+
+#[cfg(feature = "tpm-client")]
+fn tpm_probe(tcti: &str) -> anyhow::Result<ExitCode> {
+    let report = lychgate_tpm::probe(tcti)?;
+    println!("TPM 2.0 reachable via {tcti}");
+    println!("  manufacturer: {}", report.manufacturer);
+    println!(
+        "  signing key (SEC1 P-256): {}",
+        report.signing_public_sec1_b64
+    );
+    println!("  seal/unseal round trip: ok");
+    println!("This machine can serve the tpm factor and --tpm-unseal.");
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(feature = "tpm-client")]
+fn tpm_register(tcti: &str) -> anyhow::Result<ExitCode> {
+    let mut ctx = lychgate_tpm::context(tcti)?;
+    let public = lychgate_tpm::signing_public_sec1(&mut ctx)?;
+    println!("[[approval.authenticator]]");
+    println!("id = \"host-tpm\"                    # rename as you like");
+    println!("kind = \"tpm\"");
+    println!(
+        "public-key = \"{}\"",
+        data_encoding::BASE64URL_NOPAD.encode(&public)
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(feature = "tpm-client")]
+fn tpm_sign(challenge: &str, tcti: &str) -> anyhow::Result<ExitCode> {
+    let mut ctx = lychgate_tpm::context(tcti)?;
+    let der = lychgate_tpm::sign_challenge(&mut ctx, challenge)?;
+    println!("{}", lychgate_core::tpm::assemble_token(&der));
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(feature = "tpm-client")]
+fn tpm_seal(file: &std::path::Path, tcti: &str) -> anyhow::Result<ExitCode> {
+    let data =
+        std::fs::read(file).map_err(|e| anyhow::anyhow!("reading {}: {e}", file.display()))?;
+    let mut ctx = lychgate_tpm::context(tcti)?;
+    let blob = lychgate_tpm::seal(&mut ctx, &data)?;
+    println!("{}", lychgate_tpm::blob_to_string(&blob)?);
+    Ok(ExitCode::SUCCESS)
+}
+
 // --- hardware backend: the CTAP2/USB-HID client behind the fido2-client feature.
 // The seam is identical in both builds; only the body differs, so the caller
 // (fido2_register/fido2_assert) never needs a #[cfg]. Without the feature the
@@ -417,6 +530,10 @@ fn run() -> anyhow::Result<ExitCode> {
     // Local utilities — no daemon connection. Handled before an Op is built.
     match &cli.command {
         Command::HashPassword => return hash_password(),
+        Command::TpmProbe { tcti } => return tpm_probe(tcti),
+        Command::TpmRegister { tcti } => return tpm_register(tcti),
+        Command::TpmSign { challenge, tcti } => return tpm_sign(challenge, tcti),
+        Command::TpmSeal { file, tcti } => return tpm_seal(file, tcti),
         Command::Fido2Register {
             alg,
             software_key,
@@ -481,7 +598,13 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Status => Op::Status,
         Command::Drill { host } => Op::Drill { host: host.clone() },
         // Handled before this match (local, no daemon).
-        Command::HashPassword | Command::Fido2Register { .. } | Command::Fido2Assert { .. } => {
+        Command::HashPassword
+        | Command::Fido2Register { .. }
+        | Command::Fido2Assert { .. }
+        | Command::TpmProbe { .. }
+        | Command::TpmRegister { .. }
+        | Command::TpmSign { .. }
+        | Command::TpmSeal { .. } => {
             unreachable!("local commands are handled before this match")
         }
     };
@@ -606,7 +729,11 @@ fn run() -> anyhow::Result<ExitCode> {
         // Returned early before any daemon round trip.
         (Command::HashPassword, _)
         | (Command::Fido2Register { .. }, _)
-        | (Command::Fido2Assert { .. }, _) => {
+        | (Command::Fido2Assert { .. }, _)
+        | (Command::TpmProbe { .. }, _)
+        | (Command::TpmRegister { .. }, _)
+        | (Command::TpmSign { .. }, _)
+        | (Command::TpmSeal { .. }, _) => {
             unreachable!("local commands are handled before this match")
         }
     }
