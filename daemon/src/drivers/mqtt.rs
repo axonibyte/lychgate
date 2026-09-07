@@ -74,6 +74,51 @@ impl MqttDriver {
         match_state(&message, &v.open_marker, &v.closed_marker)
             .map_err(|e| DriverError(format!("mqtt verify on {:?}: {e}", host.name)))
     }
+
+    /// Poll the state topic until it reads `want` or the budget elapses. A
+    /// retained state topic answers instantly with whatever was CURRENT at
+    /// subscribe time — which, right after a command was published, is often
+    /// the state the device is still transitioning FROM. One-shot sampling
+    /// there reported the stale state as a verify failure (guest-caught on
+    /// FreeBSD); a state topic is eventually consistent and the probe must
+    /// be too. Bounded by attempt count (one ~1s subscribe per attempt), so
+    /// the budget holds against real brokers and instant test fakes alike.
+    fn probe_until(
+        &mut self,
+        host: &Host,
+        mqtt: &MqttConfig,
+        want: ChannelState,
+        what: &str,
+    ) -> Result<(), DriverError> {
+        let v = match &mqtt.verify {
+            VerifyMode::Probe(v) => v.clone(),
+            // Caller guards; verify = "none" means no probe exists.
+            VerifyMode::None(_) => return Ok(()),
+        };
+        let attempts = v.timeout_secs.max(1);
+        let mut last: Option<Result<ChannelState, String>> = None;
+        for _ in 0..attempts {
+            match self.transport.await_message(mqtt, &v.topic, 1)? {
+                None => {}
+                Some(message) => match match_state(&message, &v.open_marker, &v.closed_marker) {
+                    Ok(state) if state == want => return Ok(()),
+                    Ok(state) => last = Some(Ok(state)),
+                    Err(e) => last = Some(Err(e.to_string())),
+                },
+            }
+        }
+        Err(match last {
+            Some(Ok(_)) => DriverError(format!(
+                "mqtt verify failed on {:?}: the device did not read back {what} within {}s",
+                host.name, v.timeout_secs
+            )),
+            Some(Err(e)) => DriverError(format!("mqtt verify on {:?}: {e}", host.name)),
+            None => DriverError(format!(
+                "mqtt verify on {:?}: no message on {:?} within {}s — state unverified",
+                host.name, v.topic, v.timeout_secs
+            )),
+        })
+    }
 }
 
 impl ChannelDriver for MqttDriver {
@@ -85,30 +130,14 @@ impl ChannelDriver for MqttDriver {
         let mqtt = Self::config(host)?.clone();
         self.transport
             .publish(&mqtt, &mqtt.open.topic, &mqtt.open.payload)?;
-        if matches!(mqtt.verify, VerifyMode::Probe(_))
-            && self.probe(host, &mqtt)? != ChannelState::Open
-        {
-            return Err(DriverError(format!(
-                "mqtt verify failed on {:?}: the device did not read back open",
-                host.name
-            )));
-        }
-        Ok(())
+        self.probe_until(host, &mqtt, ChannelState::Open, "open")
     }
 
     fn revert(&mut self, host: &Host) -> Result<(), DriverError> {
         let mqtt = Self::config(host)?.clone();
         self.transport
             .publish(&mqtt, &mqtt.revert.topic, &mqtt.revert.payload)?;
-        if matches!(mqtt.verify, VerifyMode::Probe(_))
-            && self.probe(host, &mqtt)? != ChannelState::Closed
-        {
-            return Err(DriverError(format!(
-                "mqtt verify failed on {:?}: the device did not read back closed",
-                host.name
-            )));
-        }
-        Ok(())
+        self.probe_until(host, &mqtt, ChannelState::Closed, "closed")
     }
 
     fn verify(&mut self, host: &Host) -> Result<ChannelState, DriverError> {

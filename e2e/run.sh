@@ -63,6 +63,7 @@ ensure_mosquitto() {
         return
     fi
     if command -v apt-get >/dev/null 2>&1; then
+        apt-get -qq update >/dev/null 2>&1 || true
         apt-get -qq install -y mosquitto mosquitto-clients >/dev/null 2>&1 || true
         # Debian auto-starts the system broker; the test runs its own on a
         # dedicated port, so the service is stopped where possible.

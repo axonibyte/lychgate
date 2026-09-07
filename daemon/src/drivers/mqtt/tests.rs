@@ -21,6 +21,10 @@ enum Reply {
 
 struct FakeTransport {
     replies: Vec<Reply>,
+    /// When the scripted replies run out, the last one repeats — the shape of
+    /// a retained state topic, which answers every subscribe with the current
+    /// value. An empty script is perpetual silence.
+    last: Option<&'static str>,
     log: Arc<Mutex<Vec<String>>>,
 }
 
@@ -49,11 +53,17 @@ impl MqttTransport for FakeTransport {
             .unwrap()
             .push(format!("sub {topic} {timeout_secs}s"));
         if self.replies.is_empty() {
-            return Err(DriverError("unexpected extra subscribe".into()));
+            return Ok(self.last.map(str::to_string));
         }
         Ok(match self.replies.remove(0) {
-            Reply::Message(m) => Some(m.to_string()),
-            Reply::Silence => None,
+            Reply::Message(m) => {
+                self.last = Some(m);
+                Some(m.to_string())
+            }
+            Reply::Silence => {
+                self.last = None;
+                None
+            }
         })
     }
 }
@@ -104,6 +114,7 @@ fn driver(replies: Vec<Reply>) -> (Box<MqttDriver>, Arc<Mutex<Vec<String>>>) {
     let log = Arc::new(Mutex::new(Vec::new()));
     let transport = FakeTransport {
         replies,
+        last: None,
         log: Arc::clone(&log),
     };
     (MqttDriver::new(Box::new(transport)), log)
@@ -115,15 +126,34 @@ fn apply_publishes_open_then_requires_the_state_topic_to_read_open() {
     d.apply(&host("probe"), &test_ctx()).unwrap();
     assert_eq!(
         *log.lock().unwrap(),
-        vec!["pub dev/7/cmd maint-on", "sub dev/7/state 3s"]
+        vec!["pub dev/7/cmd maint-on", "sub dev/7/state 1s"]
     );
 }
 
 #[test]
 fn apply_refuses_when_the_probe_does_not_read_open() {
-    let (mut d, _) = driver(vec![Reply::Message("maint-off")]);
+    // The retained topic keeps answering with the stale state; after the
+    // whole budget the refusal names what never arrived.
+    let (mut d, log) = driver(vec![Reply::Message("maint-off")]);
     let err = d.apply(&host("probe"), &test_ctx()).unwrap_err();
     assert!(err.0.contains("did not read back open"), "{err:?}");
+    // The probe genuinely retried across the budget (3s -> 3 attempts).
+    assert_eq!(log.lock().unwrap().len(), 1 + 3);
+}
+
+#[test]
+fn a_state_topic_is_eventually_consistent_and_the_probe_waits_for_it() {
+    // The guest-caught race: subscribing right after the command publish
+    // returns the RETAINED pre-flip state first. The probe must keep polling
+    // within its budget rather than report the stale sample as a failure.
+    // Mutation: make apply single-shot (probe() instead of probe_until) and
+    // this fails.
+    let (mut d, log) = driver(vec![
+        Reply::Message("maint-off"),
+        Reply::Message("maint-on"),
+    ]);
+    d.apply(&host("probe"), &test_ctx()).unwrap();
+    assert_eq!(log.lock().unwrap().len(), 1 + 2, "one pub, two probe reads");
 }
 
 #[test]
