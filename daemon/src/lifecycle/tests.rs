@@ -33,6 +33,29 @@ account_id = "4"
 auth_user = "admin"
 auth_password_file = "/etc/lychgate/bmc.pw"
 tls = { mode = "insecure" }
+
+[[hosts]]
+name = "gadget-01"
+address = "10.0.9.31"
+os = "embedded"
+channels = ["http"]
+
+# verify = "none" on purpose: the narrowings test proves the reduced claim is
+# SURFACED in the open response, not only configured in the inventory.
+[hosts.http]
+endpoint = "https://10.0.9.31:8443"
+tls = { mode = "insecure" }
+verify = "none"
+
+[hosts.http.open]
+method = "POST"
+path = "/api/maint"
+expect_status = 200
+
+[hosts.http.revert]
+method = "POST"
+path = "/api/maint"
+expect_status = 200
 "#;
 
 /// A scripted dead-man: logs every call, fails on demand, reports firing.
@@ -2193,4 +2216,79 @@ fn counterless_software_assertions_stay_usable() {
         assert!(is_open(&d, now));
         close_db01(&d, now);
     }
+}
+
+// --- narrowings (E2): verify = "none" is surfaced at open time -------------
+
+/// Open a named host through request + approve (the Harness runs approval:
+/// None, so the first proof opens).
+fn open_host(h: &Harness, host: &str, now: SystemTime) -> Response {
+    let requested = h
+        .daemon
+        .dispatch(
+            &Op::Open {
+                host: host.into(),
+                ttl: "4h".into(),
+                profile: None,
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(
+        requested.result,
+        ResponseResult::Ok,
+        "{:?}",
+        requested.error
+    );
+    h.daemon
+        .dispatch(
+            &Op::Approve {
+                host: host.into(),
+                token: "any-token".into(),
+            },
+            now,
+        )
+        .unwrap()
+}
+
+#[test]
+fn opening_a_verify_none_channel_surfaces_the_narrowing_in_the_response() {
+    // Mutation: drop the `narrowings: narrowings_for(...)` population in
+    // drive_open (or make narrowings_for return None) and this fails.
+    let h = Harness::new(&[(Channel::Http, Script::Succeed)]);
+    let response = open_host(&h, "gadget-01", t(0));
+    assert_eq!(response.result, ResponseResult::Ok, "{:?}", response.error);
+    let narrowings = response
+        .narrowings
+        .expect("a verify = \"none\" open must carry its narrowing");
+    assert_eq!(narrowings.len(), 1);
+    assert!(
+        narrowings[0].contains("verify = \"none\"") && narrowings[0].contains("gadget-01"),
+        "the narrowing must name the rule and the host: {}",
+        narrowings[0]
+    );
+}
+
+#[test]
+fn opening_fully_verified_channels_carries_no_narrowing() {
+    let h = Harness::new(&[
+        (Channel::Ssh, Script::Succeed),
+        (Channel::AuthorizedKeys, Script::Succeed),
+        (Channel::Bmc, Script::Succeed),
+    ]);
+    assert_eq!(open(&h, t(0), "4h"), ResponseResult::Ok);
+    let response = h.daemon.dispatch(&Op::Status, t(1)).unwrap();
+    assert_eq!(response.narrowings, None);
+    // And a fresh open response on the verified host carries none either.
+    let h2 = Harness::new(&[
+        (Channel::Ssh, Script::Succeed),
+        (Channel::AuthorizedKeys, Script::Succeed),
+        (Channel::Bmc, Script::Succeed),
+    ]);
+    let response = open_host(&h2, "db-01", t(0));
+    assert_eq!(response.result, ResponseResult::Ok);
+    assert_eq!(
+        response.narrowings, None,
+        "a fully-verified open must not invent narrowings"
+    );
 }

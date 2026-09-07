@@ -757,6 +757,11 @@ fn run() -> anyhow::Result<ExitCode> {
                 .unwrap_or("break-glass BMC password");
             println!("{label} (shown once): {secret}");
         }
+        // A narrowing is part of the answer, not a footnote: the operator
+        // must see the reduced claim at the moment the grant opens.
+        for narrowing in r.narrowings.iter().flatten() {
+            println!("NARROWING: {narrowing}");
+        }
     };
 
     match (&cli.command, &response) {

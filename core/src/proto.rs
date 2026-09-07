@@ -322,6 +322,14 @@ pub struct Response {
     /// operator approves it.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pending: Option<PendingChallenge>,
+    /// Named narrowings of what this response's success actually proves —
+    /// e.g. a generic channel opened with `verify = "none"`, where the
+    /// daemon's request expectation was the only oracle. Surfaced so the
+    /// operator sees the reduced claim at the moment it applies, not only in
+    /// the inventory where it was configured. Additive and serde-skipped,
+    /// like `secret_label`: older peers are unaffected.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub narrowings: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -343,6 +351,7 @@ impl Response {
             secret: None,
             secret_label: None,
             pending: None,
+            narrowings: None,
         }
     }
 

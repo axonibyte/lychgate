@@ -98,6 +98,44 @@ pub enum Origin {
 
 /// The backstop rides the SSH transport, so only ssh-configured hosts get
 /// one; it exists to revert what the ssh-borne channels applied.
+/// The named narrowings an open under this host's config carries: every
+/// applied generic channel configured `verify = "none"` reduces the success
+/// claim (the daemon's request expectation was the only oracle), and the
+/// operator must see that at open time, not only in the inventory.
+fn narrowings_for(host: &Host, applied: &[Channel]) -> Option<Vec<String>> {
+    use lychgate_core::VerifyMode;
+    let mut out = Vec::new();
+    for channel in applied {
+        let unverified = match channel {
+            Channel::Http => matches!(
+                host.http.as_ref().map(|c| &c.verify),
+                Some(VerifyMode::None(_))
+            ),
+            Channel::Mqtt => matches!(
+                host.mqtt.as_ref().map(|c| &c.verify),
+                Some(VerifyMode::None(_))
+            ),
+            Channel::Serial => matches!(
+                host.serial.as_ref().map(|c| &c.verify),
+                Some(VerifyMode::None(_))
+            ),
+            _ => false,
+        };
+        if unverified {
+            out.push(format!(
+                "channel {channel:?} on {:?} opened with verify = \"none\": the request's own \
+                 expectation was the only oracle; actual device state was not read back",
+                host.name
+            ));
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 fn wants_deadman(host: &Host, applied: &[Channel]) -> bool {
     host.ssh.is_some()
         && applied
@@ -878,6 +916,7 @@ impl Daemon {
                     secret,
                     secret_label,
                     outcome,
+                    narrowings: narrowings_for(host_cfg, &applied),
                     ..Response::ok()
                 })
             }
