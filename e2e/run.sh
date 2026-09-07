@@ -56,6 +56,22 @@ ensure_tpm() {
     fi
 }
 
+# The mqtt acceptance needs a broker and its clients; best-effort on both
+# package systems, and the phase is tri-state skippable if neither lands.
+ensure_mosquitto() {
+    if command -v mosquitto >/dev/null 2>&1; then
+        return
+    fi
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get -qq install -y mosquitto mosquitto-clients >/dev/null 2>&1 || true
+        # Debian auto-starts the system broker; the test runs its own on a
+        # dedicated port, so the service is stopped where possible.
+        service mosquitto stop >/dev/null 2>&1 || true
+    elif command -v pkg >/dev/null 2>&1; then
+        pkg install -qy mosquitto >/dev/null 2>&1 || true
+    fi
+}
+
 failed=0
 phase() {
     label=$1
@@ -126,6 +142,13 @@ phase "fido2 acceptance" sh e2e/fido2-acceptance.sh
 phase "mcp acceptance" sh e2e/mcp-acceptance.sh
 
 phase "drill acceptance" sh e2e/drill-acceptance.sh
+
+phase "http acceptance" sh e2e/http-acceptance.sh
+
+phase "serial acceptance" sh e2e/serial-acceptance.sh
+
+ensure_mosquitto
+phase_skippable "mqtt acceptance" sh e2e/mqtt-acceptance.sh
 
 phase_skippable "tpm acceptance" sh e2e/tpm-acceptance.sh
 

@@ -556,6 +556,35 @@ have their own sections above. What remains:
 Every §15 tier now exists. The standing acceptance discipline remains: when a
 defect is fixed by hand, revert it once and confirm a harness rediscovers it.
 
+## Generic channel tier: EXISTS (E2) — http, mqtt, serial
+
+The generic device channels drive arbitrary management surfaces from
+inventory templates, so their test weight sits on two rules. First, **a
+verify answer is a match, never a guess**: a response matching neither
+marker is unverifiable and one matching both is a broken marker pair — both
+errors (mutation: the both-markers arm made to return Open — the fail-open
+catch); for mqtt specifically, a probe that hears NOTHING within its budget
+is "unverified", never Closed (silence-as-Closed would let a dead broker
+read as a completed revert) — mutation-checked from both the revert and
+verify sides. Second, **`verify = "none"` is an honest narrowing, not a
+shrug**: apply/revert trust only their own request's expectation, standalone
+verify refuses to guess, and the open response carries a `NARROWING:` line
+the CLI prints — proven end to end (the acceptance asserts the line reaches
+the operator, and that a verified open never invents one). Unit tier:
+scripted transports per driver (8 cases each) plus two tests running the
+REAL fd/termios serial transport against a live pty, including the
+silent-device case asserting the absence with the budget genuinely elapsing.
+Acceptance tier: `http-acceptance.sh` (mock HTTP device, real curl),
+`serial-acceptance.sh` (pty mock, the real tty code path — baud on a pty is
+the tolerated no-op that keeps it identical to hardware), and
+`mqtt-acceptance.sh` (a real mosquitto broker + a subscriber playing the
+device with a retained state topic; tri-state skippable where mosquitto
+cannot be provisioned — the driver is still fully unit-tested via its fake).
+Each ends by killing the device and proving the open REFUSES. What this tier
+does not prove: no on-device TTL exists for these channels — the daemon's
+reap loop is the sole expiry enforcement (the bmc residual), until the
+cooperative device channel (E4) moves the deadline into the device.
+
 ## Wire token tier: EXISTS (E3) — KATs as a cross-language contract
 
 `lychgate-wire` (the lgcap./lgrvk. capability-token codec compiled into
