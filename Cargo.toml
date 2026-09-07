@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "daemon", "mcp", "tpm", "wire"]
+members = ["core", "cli", "daemon", "mcp", "tpm", "wire", "embed"]
 
 [workspace.package]
 version = "0.12.0"
@@ -48,3 +48,4 @@ x509-cert = "0.2"
 lychgate-core = { path = "core" }
 lychgate-tpm = { path = "tpm" }
 lychgate-wire = { path = "wire" }
+lychgate-embed = { path = "embed" }

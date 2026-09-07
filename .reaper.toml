@@ -46,7 +46,7 @@ if command -v rustup >/dev/null 2>&1; then \
   cargo check -p lychgate --target x86_64-pc-windows-gnu --locked && \
   CARGO_HOME=$REAPER_CACHE_CARGO \
   CARGO_TARGET_DIR=$REAPER_CACHE_TARGET \
-  cargo check -p lychgate-wire --no-default-features \
+  cargo check -p lychgate-wire -p lychgate-embed --no-default-features \
     --target riscv32imc-unknown-none-elf --locked && \
   apt-get -qq update && apt-get -qq install -y libtss2-dev && \
   CARGO_HOME=$REAPER_CACHE_CARGO \

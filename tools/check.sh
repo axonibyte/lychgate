@@ -59,13 +59,13 @@ run "windows client check" windows_client_check
 # real embedded target (riscv32imc) is checked below where its rust-std
 # exists, and enforced in the Ubuntu guest container and CI regardless.
 run "wire no_std check" env CARGO_TARGET_DIR=target/nostd-check \
-    cargo check -p lychgate-wire --no-default-features --locked
+    cargo check -p lychgate-wire -p lychgate-embed --no-default-features --locked
 
 wire_embedded_target_check() {
     sysroot=$(rustc --print sysroot 2>/dev/null)
     if [ -n "${sysroot}" ] && [ -d "${sysroot}/lib/rustlib/riscv32imc-unknown-none-elf" ]; then
         env CARGO_TARGET_DIR=target/riscv-check \
-            cargo check -p lychgate-wire --no-default-features \
+            cargo check -p lychgate-wire -p lychgate-embed --no-default-features \
             --target riscv32imc-unknown-none-elf --locked
     else
         echo "    SKIPPED here: no riscv32imc-unknown-none-elf rust-std in this toolchain."
