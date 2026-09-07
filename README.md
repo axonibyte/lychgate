@@ -57,7 +57,9 @@ opens grants as pure bookkeeping, touching no host — for validating an invento
 or rehearsing the lifecycle. See [docs/RUNBOOK.md](docs/RUNBOOK.md) for the
 operator's end-to-end procedure (granting a Claude session emergency access),
 [TESTING.md](TESTING.md) for exactly what is and is not proven,
-[docs/DESIGN.md](docs/DESIGN.md) for the architecture, and
+[docs/DESIGN.md](docs/DESIGN.md) for the architecture,
+[docs/EMBEDDED.md](docs/EMBEDDED.md) for the embedded-devices design of
+record (microcontrollers, secure elements, FPGAs), and
 [docs/ROADMAP.md](docs/ROADMAP.md) for the milestone plan of record.
 
 ## Components

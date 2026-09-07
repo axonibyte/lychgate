@@ -790,6 +790,37 @@ refuses registration).
 chain-pinning to vendor roots; the physical-key/discrete-TPM ceremonies beyond
 the simulators.
 
+### E — the embedded expansion (IN PROGRESS, design of record: [EMBEDDED.md](EMBEDDED.md))
+
+Extends lychgate to firmware-class devices: devices as targets, as
+self-enforcing grant verifiers (reboot closes the grant), as approval factors,
+and as the access mechanism itself, down to an FPGA whose TTL is enforced in
+gates. Milestones, in order — each closes with both guests green:
+
+- **E0** — this design of record into the repo. **DONE**
+- **E1** — armv7 release target (arm64 already ships).
+- **E2** — generic `http`/`mqtt`/`serial` channel drivers (exec/fd
+  transports, verify-or-named-narrowing).
+- **E3** — `lychgate-wire`: the no_std lgcap./lgrvk. capability-token codec
+  (deterministic CBOR subset; v1 Ed25519 + v2 P-256; committed KAT vectors as
+  the cross-language contract).
+- **E4** — the `device` channel (daemon-signed tokens, seq anti-replay,
+  device-enforced TTL) + `lychgate-embed` (the reusable no_std device engine
+  behind UptimeClock/SeqStore/Gate traits) + the `lychgate-devsim` e2e tier +
+  the ESP32-C3 reference firmware + the manual HIL tier. Bumps to v0.13.0.
+- **E5** — ATECC608 secure-element tooling (the existing `tpm` kind already
+  verifies plain P-256 — zero engine changes).
+- **E6** — the normative wire/protocol spec (E6a) and the hardening profile +
+  provisioning ceremonies (E6b).
+- **E7** — the symmetric `lghmac.` authenticator kind + the AVR C library
+  (lgcap v2 verify via the SE). 
+- **E8** — actuator devices (fail_state policy, current-sense second oracle,
+  hardware drill). Bumps to v0.14.0.
+- **E9** — FPGA: the counter/gate RTL with a formally verified
+  never-open-at-zero property (M1), a picorv32 soft-core verifier driven by
+  the shared KAT vectors (M2), a reference iCE40 build (M3). Bumps to
+  v0.15.0.
+
 **Tests** — the remaining tiers, in §15 order: **~~source-as-data~~ DONE
 (2026-09-06, rides v0.11.0)** — `daemon/tests/source_as_data.rs` parses the
 source and asserts the cross-artifact vocabularies agree (channels vs the driver
