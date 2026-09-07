@@ -2,6 +2,13 @@
 //! over the wire, and what happens when the wire lies or dies mid-operation.
 
 use super::*;
+
+fn test_ctx() -> lychgate_core::ApplyCtx {
+    lychgate_core::ApplyCtx {
+        ttl_secs: 900,
+        expires_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(900),
+    }
+}
 use crate::transport::{CommandOutput, SshTransport};
 
 use std::sync::{Arc, Mutex};
@@ -117,7 +124,7 @@ fn posture_apply_writes_the_dropin_reloads_and_verifies_the_effective_value() {
     let (responder, dropin, _keys) = fake_host_responder(true);
     let (transport, log) = Scripted::new(responder);
     let mut driver = SshPostureDriver::new(transport);
-    driver.apply(&host()).unwrap();
+    driver.apply(&host(), &test_ctx()).unwrap();
 
     // The drop-in landed with the emergency posture.
     assert!(dropin
@@ -139,7 +146,7 @@ fn posture_apply_fails_loudly_when_the_dropin_has_no_effect() {
     let (responder, _dropin, _keys) = fake_host_responder(false);
     let (transport, _log) = Scripted::new(responder);
     let mut driver = SshPostureDriver::new(transport);
-    let err = driver.apply(&host()).unwrap_err();
+    let err = driver.apply(&host(), &test_ctx()).unwrap_err();
     assert!(err.to_string().contains("Include"), "{err}");
 }
 
@@ -148,7 +155,7 @@ fn posture_revert_removes_the_dropin_and_verifies_the_declared_default() {
     let (responder, dropin, _keys) = fake_host_responder(true);
     let (transport, _log) = Scripted::new(responder);
     let mut driver = SshPostureDriver::new(transport);
-    driver.apply(&host()).unwrap();
+    driver.apply(&host(), &test_ctx()).unwrap();
     driver.revert(&host()).unwrap();
     assert!(dropin.lock().unwrap().is_empty(), "drop-in survived revert");
 }
@@ -176,7 +183,7 @@ fn a_transport_that_dies_mid_apply_fails_the_apply() {
         Box::new(|_, _| Err(DriverError("connection dropped mid-write".into())));
     let (transport, _log) = Scripted::new(responder);
     let mut driver = SshPostureDriver::new(transport);
-    let err = driver.apply(&host()).unwrap_err();
+    let err = driver.apply(&host(), &test_ctx()).unwrap_err();
     assert!(err.to_string().contains("dropped"), "{err}");
 }
 
@@ -191,7 +198,7 @@ fn a_remote_command_that_exits_nonzero_fails_with_its_stderr() {
     });
     let (transport, _log) = Scripted::new(responder);
     let mut driver = SshPostureDriver::new(transport);
-    let err = driver.apply(&host()).unwrap_err();
+    let err = driver.apply(&host(), &test_ctx()).unwrap_err();
     assert!(err.to_string().contains("permission denied"), "{err}");
 }
 
@@ -215,7 +222,7 @@ fn keys_apply_installs_the_fence_and_verifies_the_readback() {
     let (responder, _dropin, keys) = fake_host_responder(true);
     let (transport, _log) = Scripted::new(responder);
     let mut driver = AuthorizedKeysDriver::new(transport);
-    driver.apply(&host()).unwrap();
+    driver.apply(&host(), &test_ctx()).unwrap();
     let file = keys.lock().unwrap().clone();
     assert!(
         file.starts_with("human@key A\n"),
@@ -230,7 +237,7 @@ fn keys_revert_strips_the_fence_and_restores_the_human_file() {
     let (responder, _dropin, keys) = fake_host_responder(true);
     let (transport, _log) = Scripted::new(responder);
     let mut driver = AuthorizedKeysDriver::new(transport);
-    driver.apply(&host()).unwrap();
+    driver.apply(&host(), &test_ctx()).unwrap();
     driver.revert(&host()).unwrap();
     assert_eq!(*keys.lock().unwrap(), "human@key A\n");
 }
@@ -241,7 +248,7 @@ fn keys_apply_refuses_a_malformed_fence_without_writing() {
     *keys.lock().unwrap() = format!("{FENCE_BEGIN}\norphaned begin, no end\n");
     let (transport, log) = Scripted::new(responder);
     let mut driver = AuthorizedKeysDriver::new(transport);
-    let err = driver.apply(&host()).unwrap_err();
+    let err = driver.apply(&host(), &test_ctx()).unwrap_err();
     assert!(err.to_string().contains("malformed"), "{err}");
     // Absence oracle: no write ever went over the wire.
     let wrote: Vec<String> = log
@@ -269,7 +276,7 @@ fn a_write_the_host_silently_lost_fails_the_keys_apply() {
     });
     let (transport, _log) = Scripted::new(responder);
     let mut driver = AuthorizedKeysDriver::new(transport);
-    let err = driver.apply(&host()).unwrap_err();
+    let err = driver.apply(&host(), &test_ctx()).unwrap_err();
     assert!(err.to_string().contains("read back"), "{err}");
 }
 
@@ -287,7 +294,7 @@ fn an_absent_authorized_keys_file_reads_as_empty_and_gets_created() {
     });
     let (transport, _log) = Scripted::new(responder);
     let mut driver = AuthorizedKeysDriver::new(transport);
-    driver.apply(&host()).unwrap();
+    driver.apply(&host(), &test_ctx()).unwrap();
     let file = keys.lock().unwrap().clone();
     assert!(file.starts_with(FENCE_BEGIN));
 }
@@ -344,7 +351,7 @@ fn the_post_reload_verify_survives_the_sshd_restart_window() {
     });
     let (transport, _log) = Scripted::new(responder);
     let mut driver = SshPostureDriver::new(transport);
-    driver.apply(&host()).unwrap();
+    driver.apply(&host(), &test_ctx()).unwrap();
     assert!(
         refusals.load(Ordering::SeqCst) >= 3,
         "the retry never happened"

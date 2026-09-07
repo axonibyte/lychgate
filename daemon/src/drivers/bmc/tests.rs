@@ -2,6 +2,13 @@
 //! out, and what happens when the iDRAC lies or fails mid-operation.
 
 use super::*;
+
+fn test_ctx() -> lychgate_core::ApplyCtx {
+    lychgate_core::ApplyCtx {
+        ttl_secs: 900,
+        expires_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(900),
+    }
+}
 use lychgate_core::bmc::Secret;
 use lychgate_core::Inventory;
 
@@ -153,7 +160,7 @@ fn rig(start_enabled: bool, start_user: &str, fail_patch: bool, fail_escrow: boo
 #[test]
 fn apply_enables_the_account_with_a_rotated_password_and_verifies() {
     let mut r = rig(false, "breakglass", false, false);
-    r.driver.apply(&host()).unwrap();
+    r.driver.apply(&host(), &test_ctx()).unwrap();
     assert!(*r.enabled.lock().unwrap(), "account not enabled");
 
     // The enable PATCH carried the username, the fresh password, and Enabled.
@@ -171,7 +178,7 @@ fn apply_enables_the_account_with_a_rotated_password_and_verifies() {
 #[test]
 fn the_generated_password_is_handed_off_once_and_then_gone() {
     let mut r = rig(false, "breakglass", false, false);
-    r.driver.apply(&host()).unwrap();
+    r.driver.apply(&host(), &test_ctx()).unwrap();
     assert_eq!(
         r.driver.take_secret().map(|s| s.reveal().to_string()),
         Some("fixed-test-password".to_string())
@@ -183,7 +190,7 @@ fn the_generated_password_is_handed_off_once_and_then_gone() {
 #[test]
 fn the_password_is_escrowed_before_the_account_is_enabled() {
     let mut r = rig(false, "breakglass", false, false);
-    r.driver.apply(&host()).unwrap();
+    r.driver.apply(&host(), &test_ctx()).unwrap();
     assert_eq!(
         *r.escrowed.lock().unwrap(),
         vec![format!(
@@ -196,7 +203,7 @@ fn the_password_is_escrowed_before_the_account_is_enabled() {
 #[test]
 fn an_escrow_failure_fails_the_apply_before_the_account_is_enabled() {
     let mut r = rig(false, "breakglass", false, true);
-    let err = r.driver.apply(&host()).unwrap_err();
+    let err = r.driver.apply(&host(), &test_ctx()).unwrap_err();
     assert!(err.to_string().contains("escrow"), "{err}");
     // The account was never enabled — no unrecoverable credential.
     assert!(!*r.enabled.lock().unwrap());
@@ -207,7 +214,7 @@ fn an_escrow_failure_fails_the_apply_before_the_account_is_enabled() {
 #[test]
 fn a_slot_held_by_a_stranger_is_refused_before_any_write() {
     let mut r = rig(true, "root", false, false);
-    let err = r.driver.apply(&host()).unwrap_err();
+    let err = r.driver.apply(&host(), &test_ctx()).unwrap_err();
     assert!(err.to_string().contains("root"), "{err}");
     // Only the GET happened; no PATCH, no escrow.
     assert!(!r.log.lock().unwrap().iter().any(|(m, _, _)| m == "PATCH"));
@@ -217,7 +224,7 @@ fn a_slot_held_by_a_stranger_is_refused_before_any_write() {
 #[test]
 fn a_failing_patch_fails_the_apply_with_the_http_status() {
     let mut r = rig(false, "breakglass", true, false);
-    let err = r.driver.apply(&host()).unwrap_err();
+    let err = r.driver.apply(&host(), &test_ctx()).unwrap_err();
     assert!(err.to_string().contains("500"), "{err}");
     assert!(!*r.enabled.lock().unwrap());
 }
@@ -242,7 +249,7 @@ fn apply_fails_if_the_account_does_not_read_back_enabled() {
         Box::new(FixedPassword("pw")),
         Box::new(NoEscrow),
     );
-    let err = driver.apply(&host()).unwrap_err();
+    let err = driver.apply(&host(), &test_ctx()).unwrap_err();
     assert!(
         err.to_string().contains("someone-else") || err.to_string().contains("verify"),
         "{err}"
@@ -316,7 +323,7 @@ fn a_non_200_account_read_fails_the_operation() {
         Box::new(FixedPassword("pw")),
         Box::new(NoEscrow),
     );
-    let err = driver.apply(&host()).unwrap_err();
+    let err = driver.apply(&host(), &test_ctx()).unwrap_err();
     assert!(err.to_string().contains("401"), "{err}");
     assert!(driver.verify(&host()).is_err());
 }

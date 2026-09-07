@@ -8,7 +8,7 @@
 //! (retried loudly), never a shrug.
 
 use lychgate_core::ssh::{fence_remove, fence_upsert, render_dropin, DEFAULT_DROPIN, FENCE_BEGIN};
-use lychgate_core::{Channel, ChannelDriver, ChannelState, DriverError, Host, SshConfig};
+use lychgate_core::{ApplyCtx, Channel, ChannelDriver, ChannelState, DriverError, Host, SshConfig};
 
 use crate::drivers::remote::Remote;
 use crate::transport::SshTransport;
@@ -41,7 +41,7 @@ impl ChannelDriver for SshPostureDriver {
         Channel::Ssh
     }
 
-    fn apply(&mut self, host: &Host) -> Result<(), DriverError> {
+    fn apply(&mut self, host: &Host, _ctx: &ApplyCtx) -> Result<(), DriverError> {
         let ssh = ssh_of(host)?;
         let mut remote = Remote {
             transport: self.transport.as_mut(),
@@ -112,7 +112,7 @@ impl ChannelDriver for AuthorizedKeysDriver {
         Channel::AuthorizedKeys
     }
 
-    fn apply(&mut self, host: &Host) -> Result<(), DriverError> {
+    fn apply(&mut self, host: &Host, _ctx: &ApplyCtx) -> Result<(), DriverError> {
         let ssh = ssh_of(host)?;
         let mut remote = Remote {
             transport: self.transport.as_mut(),

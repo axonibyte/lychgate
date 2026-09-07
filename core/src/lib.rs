@@ -30,8 +30,8 @@ pub use authority::{
     ProfileSpec, WeightedFactor,
 };
 pub use channel::{
-    apply_channels, reestablish_channels, revert_channels, ApplyOutcome, ChannelDriver,
-    ChannelState, DriverError, DriverSet, ReestablishOutcome, RevertOutcome,
+    apply_channels, reestablish_channels, renew_channels, revert_channels, ApplyCtx, ApplyOutcome,
+    ChannelDriver, ChannelState, DriverError, DriverSet, ReestablishOutcome, RevertOutcome,
 };
 pub use fido2::{Alg, Fido2Credential, Fido2Error};
 pub use generic::{match_state, GenericTemplateError, MatchError};

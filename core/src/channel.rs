@@ -37,13 +37,33 @@ pub enum ChannelState {
     Open,
 }
 
+/// What an apply (or renew) is FOR: the grant's lifetime, as decided by the
+/// approval flow. Host-side channels ignore it — their expiry enforcement is
+/// the daemon's reap loop and the dead-man — but a cooperative device
+/// channel is meaningless without it: the TTL travels INTO the device, which
+/// enforces it on its own clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApplyCtx {
+    pub ttl_secs: u64,
+    pub expires_at: std::time::SystemTime,
+}
+
 pub trait ChannelDriver {
     /// Which channel this driver operates. A driver set holds at most one
     /// driver per channel.
     fn channel(&self) -> Channel;
-    fn apply(&mut self, host: &Host) -> Result<(), DriverError>;
+    fn apply(&mut self, host: &Host, ctx: &ApplyCtx) -> Result<(), DriverError>;
     fn revert(&mut self, host: &Host) -> Result<(), DriverError>;
     fn verify(&mut self, host: &Host) -> Result<ChannelState, DriverError>;
+
+    /// A grant on this channel was renewed: the new lifetime is in `ctx`.
+    /// Host-side channels have nothing to tell anyone (the daemon's own
+    /// deadline moved; the dead-man was rescheduled separately), so the
+    /// default is a no-op. A device channel overrides this to deliver a
+    /// re-anchoring token.
+    fn renew(&mut self, _host: &Host, _ctx: &ApplyCtx) -> Result<(), DriverError> {
+        Ok(())
+    }
 
     /// A secret this driver's last apply produced for the operator (a BMC
     /// break-glass password), taken exactly once. Most channels have none.
@@ -142,14 +162,19 @@ pub enum ApplyOutcome {
 /// Applies `channels` in order; on the first failure, reverts the applied
 /// prefix in reverse. The failed channel itself is also reverted —
 /// atomic-or-reported means it may be half applied.
-pub fn apply_channels(set: &mut DriverSet, host: &Host, channels: &[Channel]) -> ApplyOutcome {
+pub fn apply_channels(
+    set: &mut DriverSet,
+    host: &Host,
+    channels: &[Channel],
+    ctx: &ApplyCtx,
+) -> ApplyOutcome {
     let mut applied: Vec<Channel> = Vec::new();
     for &channel in channels {
         let driver = set
             .drivers
             .get_mut(&channel)
             .expect("apply_channels is called with drivable channels only");
-        if let Err(error) = driver.apply(host) {
+        if let Err(error) = driver.apply(host, ctx) {
             // Unwind: the failed channel first (it may be half applied),
             // then the applied prefix in reverse order.
             let mut to_revert = vec![channel];
@@ -173,6 +198,30 @@ pub fn apply_channels(set: &mut DriverSet, host: &Host, channels: &[Channel]) ->
         applied.push(channel);
     }
     ApplyOutcome::Applied { applied }
+}
+
+/// Tells each of a grant's channels about a renewal, in application order,
+/// aborting on the first failure — a renewal the device never learned of
+/// must refuse rather than pretend (fail-closed both ways: the daemon's
+/// grant keeps its old deadline, and the device's own TTL still fires).
+pub fn renew_channels(
+    set: &mut DriverSet,
+    host: &Host,
+    channels: &[Channel],
+    ctx: &ApplyCtx,
+) -> Result<(), (Channel, DriverError)> {
+    for &channel in channels {
+        match set.drivers.get_mut(&channel) {
+            None => {
+                return Err((
+                    channel,
+                    DriverError(format!("no driver registered for channel {channel:?}")),
+                ))
+            }
+            Some(driver) => driver.renew(host, ctx).map_err(|e| (channel, e))?,
+        }
+    }
+    Ok(())
 }
 
 /// The outcome of reverting a grant's applied channels.

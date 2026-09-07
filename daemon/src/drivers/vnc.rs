@@ -18,7 +18,7 @@
 //! alone — a documented residual (README, TESTING).
 
 use lychgate_core::bmc::{password_from_bytes, PasswordGen, Secret};
-use lychgate_core::{Channel, ChannelDriver, ChannelState, DriverError, Host, VncConfig};
+use lychgate_core::{ApplyCtx, Channel, ChannelDriver, ChannelState, DriverError, Host, VncConfig};
 
 use crate::drivers::tunnel::TunnelControl;
 use crate::transport::{shell_quote, CommandOutput};
@@ -178,7 +178,7 @@ impl ChannelDriver for VncDriver {
         Channel::Vnc
     }
 
-    fn apply(&mut self, host: &Host) -> Result<(), DriverError> {
+    fn apply(&mut self, host: &Host, _ctx: &ApplyCtx) -> Result<(), DriverError> {
         let vnc = Self::vnc(host)?.clone();
         let pw_path = Self::password_file_path(host, &vnc);
 

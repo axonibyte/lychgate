@@ -825,9 +825,13 @@ impl Daemon {
         expires: SystemTime,
         now: SystemTime,
     ) -> anyhow::Result<Response> {
+        let ctx = lychgate_core::ApplyCtx {
+            ttl_secs,
+            expires_at: expires,
+        };
         let outcome = {
             let mut drivers = self.drivers.lock().expect("drivers poisoned");
-            apply_channels(&mut drivers, host_cfg, &to_apply)
+            apply_channels(&mut drivers, host_cfg, &to_apply, &ctx)
         };
 
         // Commit the terminal state and journal it.
@@ -984,6 +988,38 @@ impl Daemon {
                 {
                     return Ok(Response::refused(format!(
                         "renewal refused: the dead-man backstop could not be rescheduled ({e})"
+                    )));
+                }
+            }
+            // Channels that carry their own deadline (the device channel)
+            // must learn the new one BEFORE the commit — a renewal the
+            // device never heard of must refuse rather than pretend. Both
+            // failure orders stay fail-closed: an over-delivered token is
+            // reverted by the reap via revocation, an under-delivered one
+            // expires early on the device.
+            let channels = {
+                let doc = self.store.read()?;
+                let registry = GrantRegistry::from_parts(&self.inventory, &doc)
+                    .with_context(|| format!("validating {}", self.store.path().display()))?;
+                registry
+                    .open_channels(now)
+                    .into_iter()
+                    .find(|(h, _)| h == host)
+                    .map(|(_, c)| c)
+                    .unwrap_or_default()
+            };
+            if !channels.is_empty() {
+                let ctx = lychgate_core::ApplyCtx {
+                    ttl_secs: ttl.duration().as_secs(),
+                    expires_at: expires,
+                };
+                let mut drivers = self.drivers.lock().expect("drivers poisoned");
+                if let Err((channel, e)) =
+                    lychgate_core::renew_channels(&mut drivers, &host_cfg, &channels, &ctx)
+                {
+                    return Ok(Response::refused(format!(
+                        "renewal refused: channel {channel:?} could not be told the new \
+                         deadline ({e})"
                     )));
                 }
             }

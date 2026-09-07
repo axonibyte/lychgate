@@ -30,6 +30,9 @@ pub struct FakeDriver {
     /// An optional one-time secret this driver yields at apply, for testing
     /// the BMC password handoff without a real BMC.
     secret: Option<crate::bmc::Secret>,
+    /// The ttl_secs from the last apply ctx, shared so tests can assert the
+    /// context reached the driver.
+    pub last_ttl_secs: std::sync::Arc<std::sync::Mutex<Option<u64>>>,
 }
 
 impl FakeDriver {
@@ -40,6 +43,7 @@ impl FakeDriver {
             log,
             open: false,
             secret: None,
+            last_ttl_secs: Default::default(),
         })
     }
 
@@ -51,6 +55,7 @@ impl FakeDriver {
             log,
             open: false,
             secret: Some(crate::bmc::Secret::new(secret.to_string())),
+            last_ttl_secs: Default::default(),
         })
     }
 
@@ -62,6 +67,7 @@ impl FakeDriver {
             script,
             log,
             open: true,
+            last_ttl_secs: Default::default(),
             secret: None,
         })
     }
@@ -72,7 +78,10 @@ impl ChannelDriver for FakeDriver {
         self.channel
     }
 
-    fn apply(&mut self, _host: &Host) -> Result<(), DriverError> {
+    fn apply(&mut self, _host: &Host, ctx: &super::ApplyCtx) -> Result<(), DriverError> {
+        // The ttl is recorded so tests can assert the context actually
+        // arrived at the driver (the E4 device channel depends on it).
+        self.last_ttl_secs.lock().unwrap().replace(ctx.ttl_secs);
         self.log.lock().unwrap().push((self.channel, "apply"));
         match self.script {
             Script::FailApply | Script::FailBoth => {

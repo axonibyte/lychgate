@@ -16,7 +16,7 @@
 
 use lychgate_core::generic::match_state;
 use lychgate_core::{
-    Channel, ChannelDriver, ChannelState, DriverError, Host, SerialCmdSpec, SerialConfig,
+    ApplyCtx, Channel, ChannelDriver, ChannelState, DriverError, Host, SerialCmdSpec, SerialConfig,
     VerifyMode,
 };
 
@@ -97,7 +97,7 @@ impl ChannelDriver for SerialDriver {
         Channel::Serial
     }
 
-    fn apply(&mut self, host: &Host) -> Result<(), DriverError> {
+    fn apply(&mut self, host: &Host, _ctx: &ApplyCtx) -> Result<(), DriverError> {
         let serial = Self::config(host)?.clone();
         self.run(host, &serial, "open", &serial.open)?;
         if matches!(serial.verify, VerifyMode::Probe(_))

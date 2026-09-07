@@ -1,5 +1,12 @@
 use super::fakes::{CallLog, FakeDriver, Script};
 use super::*;
+
+fn test_ctx() -> ApplyCtx {
+    ApplyCtx {
+        ttl_secs: 900,
+        expires_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(900),
+    }
+}
 use crate::inventory::Inventory;
 
 use std::sync::{Arc, Mutex};
@@ -53,7 +60,7 @@ fn a_clean_apply_opens_every_channel_in_declaration_order() {
         (Channel::AuthorizedKeys, Script::Succeed),
         (Channel::Bmc, Script::Succeed),
     ]);
-    let outcome = apply_channels(&mut set, &host(), &ALL);
+    let outcome = apply_channels(&mut set, &host(), &ALL, &test_ctx());
     assert_eq!(
         outcome,
         ApplyOutcome::Applied {
@@ -77,7 +84,7 @@ fn a_mid_sequence_failure_reverts_the_applied_prefix_in_reverse() {
         (Channel::AuthorizedKeys, Script::Succeed),
         (Channel::Bmc, Script::FailApply),
     ]);
-    let outcome = apply_channels(&mut set, &host(), &ALL);
+    let outcome = apply_channels(&mut set, &host(), &ALL, &test_ctx());
     match outcome {
         ApplyOutcome::Failed {
             failed,
@@ -118,7 +125,7 @@ fn a_first_channel_failure_applies_nothing_else() {
         (Channel::AuthorizedKeys, Script::Succeed),
         (Channel::Bmc, Script::Succeed),
     ]);
-    let outcome = apply_channels(&mut set, &host(), &ALL);
+    let outcome = apply_channels(&mut set, &host(), &ALL, &test_ctx());
     match outcome {
         ApplyOutcome::Failed {
             failed,
@@ -146,7 +153,7 @@ fn an_unwind_that_cannot_revert_reports_the_stuck_channels() {
         (Channel::AuthorizedKeys, Script::Succeed),
         (Channel::Bmc, Script::FailApply),
     ]);
-    let outcome = apply_channels(&mut set, &host(), &ALL);
+    let outcome = apply_channels(&mut set, &host(), &ALL, &test_ctx());
     match outcome {
         ApplyOutcome::Failed {
             failed,
@@ -258,7 +265,7 @@ fn fake_verify_reads_the_state_the_fake_host_is_actually_in() {
         set.drivers.get_mut(&Channel::Ssh).unwrap()
     }
     assert_eq!(driver(&mut set).verify(&h).unwrap(), ChannelState::Closed);
-    driver(&mut set).apply(&h).unwrap();
+    driver(&mut set).apply(&h, &test_ctx()).unwrap();
     assert_eq!(driver(&mut set).verify(&h).unwrap(), ChannelState::Open);
     driver(&mut set).revert(&h).unwrap();
     assert_eq!(driver(&mut set).verify(&h).unwrap(), ChannelState::Closed);
@@ -273,7 +280,7 @@ fn a_failed_apply_still_shows_open_on_the_fake_host() {
     let (mut set, _log) = set_with(&[(Channel::Ssh, Script::FailApply)]);
     let h = host();
     let d = set.drivers.get_mut(&Channel::Ssh).unwrap();
-    assert!(d.apply(&h).is_err());
+    assert!(d.apply(&h, &test_ctx()).is_err());
     assert_eq!(d.verify(&h).unwrap(), ChannelState::Open);
 }
 
@@ -283,7 +290,12 @@ fn a_channel_that_fails_apply_and_wont_revert_is_stuck_itself() {
         (Channel::Ssh, Script::Succeed),
         (Channel::AuthorizedKeys, Script::FailBoth),
     ]);
-    let outcome = apply_channels(&mut set, &host(), &[Channel::Ssh, Channel::AuthorizedKeys]);
+    let outcome = apply_channels(
+        &mut set,
+        &host(),
+        &[Channel::Ssh, Channel::AuthorizedKeys],
+        &test_ctx(),
+    );
     match outcome {
         ApplyOutcome::Failed {
             failed,
@@ -355,7 +367,7 @@ fn a_channel_that_errors_on_reestablish_is_lost() {
         fn channel(&self) -> Channel {
             Channel::Vnc
         }
-        fn apply(&mut self, _: &Host) -> Result<(), DriverError> {
+        fn apply(&mut self, _: &Host, _: &ApplyCtx) -> Result<(), DriverError> {
             Ok(())
         }
         fn revert(&mut self, _: &Host) -> Result<(), DriverError> {
@@ -393,4 +405,40 @@ fn suspend_all_suspends_every_driver_without_reverting() {
     // Both suspended; the second oracle is the absence of any revert.
     assert_eq!(calls.iter().filter(|c| **c == "suspend").count(), 2);
     assert!(!calls.contains(&"revert"), "{calls:?}");
+}
+
+#[test]
+fn the_apply_ctx_reaches_every_driver() {
+    // The E4 device channel is meaningless without the TTL; this pins that
+    // apply_channels actually forwards the ctx. Mutation: pass a dummy ctx
+    // (or drop the forward) in apply_channels and this fails.
+    let log: CallLog = Arc::new(Mutex::new(Vec::new()));
+    let mut set = DriverSet::new();
+    let driver = FakeDriver::new(Channel::Ssh, Script::Succeed, Arc::clone(&log));
+    let ttl_probe = Arc::clone(&driver.last_ttl_secs);
+    set.register(driver).unwrap();
+    let ctx = ApplyCtx {
+        ttl_secs: 1234,
+        expires_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(1234),
+    };
+    apply_channels(&mut set, &host(), &[Channel::Ssh], &ctx);
+    assert_eq!(*ttl_probe.lock().unwrap(), Some(1234));
+}
+
+#[test]
+fn renew_channels_aborts_on_the_first_failure_and_defaults_to_ok() {
+    // Default renew is a no-op Ok; a missing driver is a named failure.
+    let log: CallLog = Arc::new(Mutex::new(Vec::new()));
+    let mut set = DriverSet::new();
+    set.register(FakeDriver::new(
+        Channel::Ssh,
+        Script::Succeed,
+        Arc::clone(&log),
+    ))
+    .unwrap();
+    let ctx = test_ctx();
+    renew_channels(&mut set, &host(), &[Channel::Ssh], &ctx).unwrap();
+    let (channel, err) = renew_channels(&mut set, &host(), &[Channel::Bmc], &ctx).unwrap_err();
+    assert_eq!(channel, Channel::Bmc);
+    assert!(err.0.contains("no driver"), "{err:?}");
 }

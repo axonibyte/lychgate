@@ -15,7 +15,9 @@ use lychgate_core::bmc::{
     account_path, disable_body, enable_body, parse_account, password_from_bytes, AccountState,
     PasswordGen, Secret,
 };
-use lychgate_core::{BmcConfig, BmcTls, Channel, ChannelDriver, ChannelState, DriverError, Host};
+use lychgate_core::{
+    ApplyCtx, BmcConfig, BmcTls, Channel, ChannelDriver, ChannelState, DriverError, Host,
+};
 
 /// One Redfish request over whatever transport. GET has no body; PATCH sends
 /// `body`. Returns (http_status, response_body).
@@ -128,7 +130,7 @@ impl ChannelDriver for BmcDriver {
         Channel::Bmc
     }
 
-    fn apply(&mut self, host: &Host) -> Result<(), DriverError> {
+    fn apply(&mut self, host: &Host, _ctx: &ApplyCtx) -> Result<(), DriverError> {
         let bmc = Self::bmc(host)?.clone();
         // Refuse a slot held by a stranger before touching anything.
         self.get_account(host, &bmc)?;

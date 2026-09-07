@@ -17,7 +17,7 @@
 
 use lychgate_core::generic::match_state;
 use lychgate_core::{
-    Channel, ChannelDriver, ChannelState, DriverError, Host, HttpConfig, HttpRequestSpec,
+    ApplyCtx, Channel, ChannelDriver, ChannelState, DriverError, Host, HttpConfig, HttpRequestSpec,
     VerifyMode,
 };
 
@@ -97,7 +97,7 @@ impl ChannelDriver for HttpDriver {
         Channel::Http
     }
 
-    fn apply(&mut self, host: &Host) -> Result<(), DriverError> {
+    fn apply(&mut self, host: &Host, _ctx: &ApplyCtx) -> Result<(), DriverError> {
         let http = Self::config(host)?.clone();
         self.run(host, &http, "open", &http.open)?;
         // Read the actual state back wherever a probe exists; with

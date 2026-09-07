@@ -1,5 +1,12 @@
 use super::*;
 
+fn test_ctx() -> lychgate_core::ApplyCtx {
+    lychgate_core::ApplyCtx {
+        ttl_secs: 900,
+        expires_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(900),
+    }
+}
+
 use std::sync::{Arc, Mutex};
 
 use lychgate_core::Inventory;
@@ -162,7 +169,7 @@ fn apply_stages_the_password_runs_set_removes_it_then_brings_the_tunnel_up() {
         Arc::clone(&tunnel),
     );
 
-    d.apply(&host()).unwrap();
+    d.apply(&host(), &test_ctx()).unwrap();
 
     let calls = calls.lock().unwrap();
     // Order: stage the password, run the set command, remove the staged file.
@@ -199,7 +206,7 @@ fn apply_removes_the_staged_file_and_drives_no_tunnel_when_the_set_fails() {
         Arc::clone(&tunnel),
     );
 
-    assert!(d.apply(&host()).is_err());
+    assert!(d.apply(&host(), &test_ctx()).is_err());
     let calls = calls.lock().unwrap();
     // The staged file is removed even though the set failed.
     assert_eq!(kinds(&calls), vec!["write", "set", "remove"]);
@@ -224,7 +231,7 @@ fn apply_fails_when_the_tunnel_will_not_come_up_and_offers_no_secret() {
         },
         Arc::clone(&tunnel),
     );
-    let err = d.apply(&host()).unwrap_err();
+    let err = d.apply(&host(), &test_ctx()).unwrap_err();
     assert!(err.to_string().contains("tunnel up"), "{err}");
     assert!(d.take_secret().is_none());
 }
@@ -241,7 +248,7 @@ fn a_transport_failure_on_the_write_fails_the_apply() {
         },
         Arc::clone(&tunnel),
     );
-    assert!(d.apply(&host()).is_err());
+    assert!(d.apply(&host(), &test_ctx()).is_err());
     assert_eq!(tunnel.lock().unwrap().up, 0);
 }
 
@@ -257,7 +264,7 @@ fn the_one_time_password_is_handed_off_exactly_once() {
         },
         tunnel,
     );
-    d.apply(&host()).unwrap();
+    d.apply(&host(), &test_ctx()).unwrap();
     assert_eq!(
         d.take_secret().map(|s| s.reveal().to_string()),
         Some(PW.to_string())

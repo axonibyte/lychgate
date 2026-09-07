@@ -1,4 +1,11 @@
 use super::*;
+
+fn test_ctx() -> lychgate_core::ApplyCtx {
+    lychgate_core::ApplyCtx {
+        ttl_secs: 900,
+        expires_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(900),
+    }
+}
 use std::sync::{Arc, Mutex};
 
 // Mutation notes (each observed failing): drop run()'s expect check →
@@ -81,28 +88,28 @@ fn driver(replies: &[&str]) -> (Box<SerialDriver>, Arc<Mutex<Vec<String>>>) {
 #[test]
 fn apply_sends_open_then_requires_the_probe_to_read_open() {
     let (mut d, log) = driver(&["OK ON", "MAINT ON"]);
-    d.apply(&host("probe")).unwrap();
+    d.apply(&host("probe"), &test_ctx()).unwrap();
     assert_eq!(*log.lock().unwrap(), vec!["maint on\n", "maint?\n"]);
 }
 
 #[test]
 fn apply_refuses_when_the_probe_does_not_read_open() {
     let (mut d, _) = driver(&["OK ON", "MAINT OFF"]);
-    let err = d.apply(&host("probe")).unwrap_err();
+    let err = d.apply(&host("probe"), &test_ctx()).unwrap_err();
     assert!(err.0.contains("did not read back open"), "{err:?}");
 }
 
 #[test]
 fn a_reply_without_the_expectation_fails() {
     let (mut d, _) = driver(&["ERR BUSY"]);
-    let err = d.apply(&host("probe")).unwrap_err();
+    let err = d.apply(&host("probe"), &test_ctx()).unwrap_err();
     assert!(err.0.contains("does not contain expected"), "{err:?}");
 }
 
 #[test]
 fn apply_with_verify_none_runs_exactly_one_transaction() {
     let (mut d, log) = driver(&["OK ON"]);
-    d.apply(&host("none")).unwrap();
+    d.apply(&host("none"), &test_ctx()).unwrap();
     assert_eq!(log.lock().unwrap().len(), 1);
 }
 

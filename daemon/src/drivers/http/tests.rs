@@ -1,4 +1,11 @@
 use super::*;
+
+fn test_ctx() -> lychgate_core::ApplyCtx {
+    lychgate_core::ApplyCtx {
+        ttl_secs: 900,
+        expires_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(900),
+    }
+}
 use std::sync::{Arc, Mutex};
 
 // Mutation notes (each observed failing): drop apply's probe-must-read-Open
@@ -92,7 +99,7 @@ fn driver(replies: &[(u16, &str)]) -> (Box<HttpDriver>, Arc<Mutex<Vec<String>>>)
 #[test]
 fn apply_runs_open_then_requires_the_probe_to_read_open() {
     let (mut d, log) = driver(&[(200, "ok"), (200, "MAINT ON")]);
-    d.apply(&host("probe")).unwrap();
+    d.apply(&host("probe"), &test_ctx()).unwrap();
     assert_eq!(
         *log.lock().unwrap(),
         vec!["POST /maint on", "GET /state -"],
@@ -103,14 +110,14 @@ fn apply_runs_open_then_requires_the_probe_to_read_open() {
 #[test]
 fn apply_refuses_when_the_probe_does_not_read_open() {
     let (mut d, _) = driver(&[(200, "ok"), (200, "MAINT OFF")]);
-    let err = d.apply(&host("probe")).unwrap_err();
+    let err = d.apply(&host("probe"), &test_ctx()).unwrap_err();
     assert!(err.0.contains("did not read back open"), "{err:?}");
 }
 
 #[test]
 fn a_wrong_status_fails_the_request() {
     let (mut d, _) = driver(&[(500, "boom")]);
-    let err = d.apply(&host("probe")).unwrap_err();
+    let err = d.apply(&host("probe"), &test_ctx()).unwrap_err();
     assert!(err.0.contains("HTTP 500"), "{err:?}");
 }
 
@@ -119,7 +126,7 @@ fn apply_with_verify_none_runs_exactly_one_request() {
     // The narrowing in action: no probe exists, so exactly one transaction —
     // asserted as an absence, not assumed.
     let (mut d, log) = driver(&[(200, "ok")]);
-    d.apply(&host("none")).unwrap();
+    d.apply(&host("none"), &test_ctx()).unwrap();
     assert_eq!(log.lock().unwrap().len(), 1);
 }
 

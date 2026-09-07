@@ -1,4 +1,11 @@
 use super::*;
+
+fn test_ctx() -> lychgate_core::ApplyCtx {
+    lychgate_core::ApplyCtx {
+        ttl_secs: 900,
+        expires_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(900),
+    }
+}
 use std::sync::{Arc, Mutex};
 
 // Mutation notes (each observed failing): map the probe's no-message None to
@@ -105,7 +112,7 @@ fn driver(replies: Vec<Reply>) -> (Box<MqttDriver>, Arc<Mutex<Vec<String>>>) {
 #[test]
 fn apply_publishes_open_then_requires_the_state_topic_to_read_open() {
     let (mut d, log) = driver(vec![Reply::Message("maint-on")]);
-    d.apply(&host("probe")).unwrap();
+    d.apply(&host("probe"), &test_ctx()).unwrap();
     assert_eq!(
         *log.lock().unwrap(),
         vec!["pub dev/7/cmd maint-on", "sub dev/7/state 3s"]
@@ -115,7 +122,7 @@ fn apply_publishes_open_then_requires_the_state_topic_to_read_open() {
 #[test]
 fn apply_refuses_when_the_probe_does_not_read_open() {
     let (mut d, _) = driver(vec![Reply::Message("maint-off")]);
-    let err = d.apply(&host("probe")).unwrap_err();
+    let err = d.apply(&host("probe"), &test_ctx()).unwrap_err();
     assert!(err.0.contains("did not read back open"), "{err:?}");
 }
 
@@ -145,7 +152,7 @@ fn revert_refuses_when_the_device_still_reads_open() {
 #[test]
 fn apply_with_verify_none_publishes_exactly_once_and_subscribes_never() {
     let (mut d, log) = driver(vec![]);
-    d.apply(&host("none")).unwrap();
+    d.apply(&host("none"), &test_ctx()).unwrap();
     assert_eq!(*log.lock().unwrap(), vec!["pub dev/7/cmd maint-on"]);
 }
 

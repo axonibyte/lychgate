@@ -18,7 +18,8 @@
 
 use lychgate_core::generic::match_state;
 use lychgate_core::{
-    Channel, ChannelDriver, ChannelState, DriverError, Host, MqttAuth, MqttConfig, VerifyMode,
+    ApplyCtx, Channel, ChannelDriver, ChannelState, DriverError, Host, MqttAuth, MqttConfig,
+    VerifyMode,
 };
 
 pub trait MqttTransport: Send {
@@ -80,7 +81,7 @@ impl ChannelDriver for MqttDriver {
         Channel::Mqtt
     }
 
-    fn apply(&mut self, host: &Host) -> Result<(), DriverError> {
+    fn apply(&mut self, host: &Host, _ctx: &ApplyCtx) -> Result<(), DriverError> {
         let mqtt = Self::config(host)?.clone();
         self.transport
             .publish(&mqtt, &mqtt.open.topic, &mqtt.open.payload)?;
