@@ -390,7 +390,116 @@ awkward to CI is a design input, not an excuse.
 | E8 | actuator channel + fail_state policy + hardware drill |
 | E9 | FPGA: gate RTL + formal (M1), picorv32 soft core (M2), iCE40 build (M3) |
 
-## 11. Decisions (resolved)
+## 11. NORMATIVE: the wire contract (E6a)
+
+This section is normative. The committed vectors in `wire/vectors/*.kat`
+are the machine-checkable form of it; a change to either is a breaking
+protocol change. `lychgate-wire` implements everything here for both ends.
+
+### 11.1 Token grammar
+
+```
+lgcap.<base64url-nopad(payload)>.<base64url-nopad(signature)>
+lgrvk.<base64url-nopad(payload)>.<base64url-nopad(signature)>
+```
+
+The signature covers the ASCII prefix concatenated with the raw payload
+bytes (`b"lgcap." ++ payload`) — domain separation, so a revocation
+signature can never verify as a capability. Signatures are 64 bytes in both
+schemes. Tokens never exceed `MAX_TOKEN_LEN` (192 bytes).
+
+### 11.2 Payload encoding
+
+RFC 8949 deterministic CBOR, restricted to: definite lengths only,
+minimal-width unsigned integers, byte strings, and one top-level map with
+unsigned-integer keys in strictly ascending order. Every deviation —
+non-minimal integers, out-of-order/duplicate/unknown keys, indefinite
+lengths, wrong byte-string lengths, trailing bytes — is refused with a
+named reason. Each payload has exactly one valid encoding.
+
+Capability (map of 6): `0: ver (uint)`, `1: device_id (bstr, exactly 16)`,
+`2: grant_nonce (bstr, exactly 16)`, `3: capability (uint ≤ u32)`,
+`4: ttl_secs (uint ≤ u32)`, `5: issued_seq (uint ≤ u64)`.
+Revocation (map of 4): `0: ver`, `1: device_id`, `2: grant_nonce`,
+`3: issued_seq`.
+
+`ver = 1`: Ed25519 (RFC 8032). `ver = 2`: ECDSA P-256 over SHA-256 of the
+signed message, signature as raw `r || s` (the ATECC608's native Verify
+format). Any other ver is refused. A `ttl_secs` above `MAX_TTL_SECS`
+(86400) **parses** — the wire format is policy-free; the device refuses it
+and the daemon never issues it (`ttl_bound.kat` pins this so every port
+agrees where policy lives).
+
+### 11.3 The device line protocol
+
+Newline-delimited ASCII; one command, one reply. Both directions are
+implemented once in `lychgate_wire::line` (daemon renders commands/parses
+replies; the engine parses commands/renders replies). Unknown commands,
+replies, and STATE trailers are refused — a newer dialect must never be
+half-understood.
+
+```
+daemon -> device                 device -> daemon
+TOK <lgcap-token>                ACK <nonce-hex32> <remaining_secs> | NAK <reason>
+RVK <lgrvk-token>                ACK closed                         | NAK <reason>
+STAT                             STATE open <nonce-hex32> <remaining_secs> seq=<n> [trailers]
+                                 STATE closed seq=<n> [trailers]
+SE-PUBKEY?                       PUBKEY <hex>                       | NAK <reason>
+SE-SIGN <challenge>              SIG <lgtpm-token>                  | NAK <reason>
+```
+
+Trailers: `load=on|off`, `fail=energized|de-energized`,
+`reason=revert|expiry|boot`. `seq=` is mandatory in every STATE. Pinned
+examples (also the wire test suite's KAT):
+
+```
+TOK lgcap.AA.BB
+ACK a0a1a2a3a4a5a6a7a8a9aaabacadaeaf 900
+STATE open a0a1a2a3a4a5a6a7a8a9aaabacadaeaf 887 seq=42 load=on fail=energized
+STATE closed seq=7 reason=boot
+```
+
+NAK reason words the engine emits: `bad-token` (signature/structure),
+`wrong-alg` (ver/key mismatch), `wrong-device`, `replay` (seq did not
+advance), `busy` (a different grant is open), `ttl` (over the cap),
+`store-failed` (the seq mark could not be made durable — fail closed),
+`wrong-grant` (a fresh revocation naming a grant not held), `bad-command`,
+`unsupported`.
+
+### 11.4 Engine semantics (what a conformant device does)
+
+- Boot drives the gate closed before any protocol handling; grant state is
+  RAM-only. **A reboot closes the grant.**
+- The TTL anchors at token acceptance on the device's monotonic uptime
+  clock; expiry is a property of observation and drops the gate.
+- `issued_seq` must strictly advance past the durable mark, which is
+  persisted BEFORE the grant takes effect. Redelivery of the exact current
+  token (same nonce, seq equal to the mark) is re-acknowledged WITHOUT
+  re-anchoring; a same-nonce higher-seq token is a renewal and re-anchors;
+  a new nonce while open is `busy`.
+- A stale revocation is dead by seq ordering; a fresh one naming a grant
+  the device does not hold is `wrong-grant`.
+
+### 11.5 Bring your own firmware
+
+Any embedded Rust project is four steps from being a conformant device:
+
+1. depend on `lychgate-wire` and `lychgate-embed`, both with
+   `default-features = false`;
+2. implement `UptimeClock` (a monotonic ms counter), `SeqStore` (a durable
+   u64 — flash, NVS, an SE monotonic counter; `store` must be
+   write-through), and `Gate` (the GPIO/relay/port-enable access flows
+   through);
+3. construct `DeviceEngine::new(device_id, TrustRoot::..., clock, seq,
+   gate)` at boot;
+4. feed inbound lines to `handle_line` and call `tick()` from the main
+   loop.
+
+The engine owns every rule in §11.4; the e2e simulator (`devsim/`) and the
+reference ESP32-C3 firmware are both thin wrappers over it, and the
+committed KAT vectors are the cross-language contract for non-Rust ports.
+
+## 12. Decisions (resolved)
 
 1. **Token payload encoding** — deterministic CBOR subset (portability of the
    C/FPGA ports and language-neutral vectors beat postcard's size edge).
