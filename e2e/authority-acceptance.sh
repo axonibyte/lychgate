@@ -10,15 +10,15 @@
 #   profile "claude": threshold 3
 #     group "OPS" (weight 2)   = threshold 2 over { k1, k2 }
 #     authenticator k3 (weight 1)
-#     wait "3s" (weight 1)
+#     wait "8s" (weight 1)
 #
 # So claude opens either by proofs alone — k1 + k2 (OPS met → 2) + k3 (→ 3) — or
-# by k1 + k2 (→ 2) plus the 3s wait maturing on a daemon pass (→ 3), no third
+# by k1 + k2 (→ 2) plus the 8s wait maturing on a daemon pass (→ 3), no third
 # proof. The claims:
 #   1. accumulation: neither one proof nor OPS alone opens it; the third factor
 #      (k3) tips it over and the grant opens;
 #   2. open-on-wait: with OPS satisfied but no k3, the daemon's own pass loop
-#      opens the grant once the 3s wait elapses — no further human action;
+#      opens the grant once the 8s wait elapses — no further human action;
 #   3. a signature from an unconfigured key is refused, the grant left pending.
 #
 # What it does NOT prove: TOTP/password/FIDO2 factors (later sub-milestones); a
@@ -136,7 +136,7 @@ threshold = 3
 factor = [
   { group = "OPS", weight = 2 },
   { authenticator = "k3", weight = 1 },
-  { wait = "3s", weight = 1 },
+  { wait = "8s", weight = 1 },
 ]
 EOF
 
@@ -213,7 +213,7 @@ do_open
 approve_key "${work}/k1" || fail "k1 proof was refused (wait path)"
 approve_key "${work}/k2" || fail "k2 proof was refused (wait path)"
 is_open && fail "opened before the wait matured"
-note "waiting for the 3s wait to accrue on a daemon pass"
+note "waiting for the 8s wait to accrue on a daemon pass"
 opened=0
 i=0
 while [ "${i}" -lt 100 ]; do
