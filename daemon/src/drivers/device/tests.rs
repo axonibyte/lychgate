@@ -313,3 +313,106 @@ fn reestablish_reads_ours_as_open_and_anything_else_as_closed() {
     assert_eq!(r.driver.reestablish(&h).unwrap(), ChannelState::Closed);
     assert_eq!(r.driver.reestablish(&h).unwrap(), ChannelState::Closed);
 }
+
+// --- the actuator second oracle (E8) ---------------------------------------
+//
+// Mutation notes: invert the load-vs-grant comparison → the stuck-relay and
+// dead-load cases fail; drop the reason=boot exception → the fail-energized
+// boot case fails; drop the fail= equality check → the drift case fails.
+
+fn actuator_host(fail_state: &str, current_sense: bool) -> Host {
+    lychgate_core::Inventory::parse(&format!(
+        r#"
+        [signing]
+        key_file = "/nonexistent"
+
+        [[hosts]]
+        name = "pdu-1"
+        address = "local-serial"
+        os = "embedded"
+        channels = ["device"]
+        drill = true
+        [hosts.device]
+        device_id = "000102030405060708090a0b0c0d0e0f"
+        transport = "serial"
+        [hosts.device.serial]
+        device = "/dev/nonexistent"
+        [hosts.device.actuator]
+        fail_state = "{fail_state}"
+        current_sense = {current_sense}
+    "#
+    ))
+    .unwrap()
+    .hosts
+    .remove(0)
+}
+
+#[test]
+fn a_stuck_relay_fails_the_revert_loudly() {
+    // Commanded closed, load still ON: the exact silent failure drills exist
+    // to catch — a revert that did not actually revert.
+    let ack = format!("ACK {NONCE_HEX} 900");
+    let open_stat = format!("STATE open {NONCE_HEX} 890 seq=1 load=on fail=de-energized");
+    let stuck = "STATE closed seq=2 load=on fail=de-energized reason=revert";
+    let mut r = rig("stuck", &[&ack, &open_stat, "ACK closed", stuck]);
+    let h = actuator_host("de-energized", true);
+    r.driver.apply(&h, &ctx(900)).unwrap();
+    let err = r.driver.revert(&h).unwrap_err();
+    assert!(err.0.contains("load reads ON"), "{err:?}");
+}
+
+#[test]
+fn a_dead_load_fails_the_open() {
+    // Commanded open, load never came up: the actuator did not actuate.
+    let ack = format!("ACK {NONCE_HEX} 900");
+    let dead = format!("STATE open {NONCE_HEX} 890 seq=1 load=off fail=de-energized");
+    let mut r = rig("dead-load", &[&ack, &dead]);
+    let err = r
+        .driver
+        .apply(&actuator_host("de-energized", true), &ctx(900))
+        .unwrap_err();
+    assert!(err.0.contains("load reads OFF"), "{err:?}");
+}
+
+#[test]
+fn a_fail_energized_boot_reads_load_on_while_closed_by_name() {
+    // The don't-hard-down case: after a power cycle a fail-energized outlet
+    // legitimately carries load with no grant — allowed EXACTLY when the
+    // device says reason=boot and the policy says energized.
+    let boot = "STATE closed seq=1 load=on fail=energized reason=boot";
+    let mut r = rig("boot-energized", &[boot]);
+    assert_eq!(
+        r.driver.verify(&actuator_host("energized", true)).unwrap(),
+        ChannelState::Closed
+    );
+    // The same reading WITHOUT the boot reason is a stuck relay.
+    let stuck = "STATE closed seq=1 load=on fail=energized reason=revert";
+    let mut r = rig("not-boot", &[stuck]);
+    let err = r
+        .driver
+        .verify(&actuator_host("energized", true))
+        .unwrap_err();
+    assert!(err.0.contains("load reads ON"), "{err:?}");
+}
+
+#[test]
+fn fail_state_drift_and_a_missing_promised_sensor_are_errors() {
+    // The device's configured fail-state disagreeing with the inventory is
+    // policy drift, surfaced before it matters in an outage.
+    let drift = "STATE closed seq=1 load=off fail=de-energized reason=revert";
+    let mut r = rig("drift", &[drift]);
+    let err = r
+        .driver
+        .verify(&actuator_host("energized", true))
+        .unwrap_err();
+    assert!(err.0.contains("DIFFERENT fail-state"), "{err:?}");
+
+    // current_sense promised, no load= in STATE: refused by name.
+    let sensorless = "STATE closed seq=1 fail=energized reason=revert";
+    let mut r = rig("no-sense", &[sensorless]);
+    let err = r
+        .driver
+        .verify(&actuator_host("energized", true))
+        .unwrap_err();
+    assert!(err.0.contains("no load reading"), "{err:?}");
+}

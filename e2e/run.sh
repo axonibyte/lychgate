@@ -155,6 +155,8 @@ phase_skippable "mqtt acceptance" sh e2e/mqtt-acceptance.sh
 
 phase_skippable "device acceptance" sh e2e/device-acceptance.sh
 
+phase_skippable "actuator acceptance" sh e2e/actuator-acceptance.sh
+
 phase_skippable "tpm acceptance" sh e2e/tpm-acceptance.sh
 
 # The oracle self-test: with the dead-man sabotaged away, revert-under-kill

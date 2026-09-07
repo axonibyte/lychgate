@@ -618,6 +618,25 @@ host-tested, including the torn-write survivor property). Real crystal
 drift, brown-out behavior, flash wear, and GPIO reality belong to the
 manual HIL tier (`e2e/embedded-hardware.sh`, E4b) on physical hardware.
 
+## Actuator tier: EXISTS (E8) — the drill as a physical oracle
+
+An actuator device carries TWO oracles — "switch commanded" and "load
+actually powered" — and the driver's matrix reads both: the reported
+fail-state must equal the inventory's declaration (drift is a loud error),
+a promised current sensor must actually report, the load must agree with
+the grant, and the one exception is named and checked (a fail-energized
+actuator that just BOOTED legitimately reads load-on while closed —
+reason=boot, and only then). Three mutations observed failing: the
+load-vs-grant comparison inverted, the boot exception dropped, the
+fail-state equality dropped. `actuator-acceptance.sh` runs the drill loop
+end to end against the sim's modeled relay: a healthy drill passes, a
+STUCK relay (command moves, load does not — the silent failure drills
+exist to catch) fails the drill loudly with the load named in the
+diagnosis and a drill-failed journal entry, and the canary recovers once
+freed. What the sim's relay does not prove: real contact welding, real
+current sensing, real switching times — a physical canary outlet on a
+weekly drill cron is the production form of this tier.
+
 ## Wire token tier: EXISTS (E3) — KATs as a cross-language contract
 
 `lychgate-wire` (the lgcap./lgrvk. capability-token codec compiled into

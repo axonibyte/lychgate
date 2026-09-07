@@ -26,6 +26,7 @@ use std::time::Instant;
 
 use lychgate_embed::{DeviceEngine, Gate, SeqStore, StoreError, TrustRoot, UptimeClock};
 use lychgate_wire::line;
+use lychgate_wire::line::FailState;
 
 fn die(msg: &str) -> ! {
     eprintln!("lychgate-devsim: {msg}");
@@ -77,13 +78,39 @@ impl SeqStore for FileSeq {
     }
 }
 
-/// The gate is a shared flag the state-file writer reads.
+/// The gate: a shared commanded flag, plus (in actuator mode) a modeled
+/// LOAD line that follows the command unless the relay is stuck — the two
+/// separate oracles the daemon's actuator matrix reads.
 #[derive(Clone)]
-struct FlagGate(std::rc::Rc<std::cell::Cell<bool>>);
+struct FlagGate {
+    commanded: std::rc::Rc<std::cell::Cell<bool>>,
+    actuator: Option<ActuatorSim>,
+}
+
+#[derive(Clone)]
+struct ActuatorSim {
+    fail_state: FailState,
+    load: std::rc::Rc<std::cell::Cell<bool>>,
+    stuck: std::rc::Rc<std::cell::Cell<bool>>,
+}
 
 impl Gate for FlagGate {
     fn set_open(&mut self, open: bool) {
-        self.0.set(open);
+        self.commanded.set(open);
+        if let Some(a) = &self.actuator {
+            // A healthy relay follows the command; a stuck one holds.
+            if !a.stuck.get() {
+                a.load.set(open);
+            }
+        }
+    }
+
+    fn load(&self) -> Option<bool> {
+        self.actuator.as_ref().map(|a| a.load.get())
+    }
+
+    fn fail_state(&self) -> Option<FailState> {
+        self.actuator.as_ref().map(|a| a.fail_state)
     }
 }
 
@@ -94,6 +121,7 @@ struct Args {
     device_id: [u8; 16],
     workdir: std::path::PathBuf,
     scale: u64,
+    actuator: Option<FailState>,
 }
 
 fn parse_args() -> Args {
@@ -101,6 +129,7 @@ fn parse_args() -> Args {
     let mut device_id = None;
     let mut workdir = None;
     let mut scale = 1u64;
+    let mut actuator = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         let mut val = |name: &str| {
@@ -122,6 +151,13 @@ fn parse_args() -> Args {
                     .parse()
                     .unwrap_or_else(|_| die("--time-scale: not a number"))
             }
+            "--actuator" => {
+                actuator = Some(match val("actuator").as_str() {
+                    "energized" => FailState::Energized,
+                    "de-energized" => FailState::DeEnergized,
+                    other => die(&format!("--actuator: unknown fail-state {other}")),
+                })
+            }
             other => die(&format!("unknown argument {other}")),
         }
     }
@@ -130,6 +166,7 @@ fn parse_args() -> Args {
         device_id: device_id.unwrap_or_else(|| die("missing --device-id <hex32>")),
         workdir: workdir.unwrap_or_else(|| die("missing --workdir <dir>")),
         scale: scale.max(1),
+        actuator,
     }
 }
 
@@ -184,6 +221,7 @@ fn open_fifo(path: &std::path::Path) -> std::fs::File {
 struct Sim {
     engine: Engine,
     gate_flag: std::rc::Rc<std::cell::Cell<bool>>,
+    actuator: Option<ActuatorSim>,
     args: Args,
     /// Mirrors the engine clock's epoch for the state file's uptime_ms.
     epoch: Instant,
@@ -193,8 +231,22 @@ struct Sim {
 }
 
 impl Sim {
-    fn fresh_engine(args: &Args, gate_flag: &std::rc::Rc<std::cell::Cell<bool>>) -> Engine {
-        DeviceEngine::new(
+    fn fresh_engine(
+        args: &Args,
+        gate_flag: &std::rc::Rc<std::cell::Cell<bool>>,
+        actuator: &Option<ActuatorSim>,
+    ) -> Engine {
+        // A power cycle drops the load line to the configured FAIL-STATE
+        // before the engine (which then commands closed) exists — the boot
+        // reality the daemon's reason=boot exception models.
+        if let Some(a) = actuator {
+            a.load.set(a.fail_state == FailState::Energized);
+            // Hold the load at its fail-state through the constructor's
+            // gate-close (a real relay only moves when DRIVEN, and at boot
+            // nothing has driven it yet); unstuck right after.
+            a.stuck.set(true);
+        }
+        let engine = DeviceEngine::new(
             args.device_id,
             trust_root(&args.pubkey),
             ScaledClock {
@@ -204,8 +256,15 @@ impl Sim {
             FileSeq {
                 path: args.workdir.join("seq.json"),
             },
-            FlagGate(std::rc::Rc::clone(gate_flag)),
-        )
+            FlagGate {
+                commanded: std::rc::Rc::clone(gate_flag),
+                actuator: actuator.clone(),
+            },
+        );
+        if let Some(a) = actuator {
+            a.stuck.set(false);
+        }
+        engine
     }
 
     fn handle(&mut self, input: &str) -> String {
@@ -232,8 +291,9 @@ impl Sim {
             "reboot" => {
                 // The power cycle: grant state dies with the engine, the seq
                 // file survives, the uptime epoch resets, and the new engine
-                // boots with the gate driven closed.
-                self.engine = Self::fresh_engine(&self.args, &self.gate_flag);
+                // boots with the gate driven closed (an actuator's load line
+                // boots to its fail-state).
+                self.engine = Self::fresh_engine(&self.args, &self.gate_flag, &self.actuator);
                 self.epoch = Instant::now();
                 self.last_result = "rebooted".into();
             }
@@ -244,6 +304,22 @@ impl Sim {
                 }
                 None => self.last_result = "replay -> no token seen yet".into(),
             },
+            "stick-relay on" => {
+                if let Some(a) = &self.actuator {
+                    a.stuck.set(true);
+                    self.last_result = "relay stuck".into();
+                } else {
+                    self.last_result = "stick-relay: not an actuator".into();
+                }
+            }
+            "stick-relay off" => {
+                if let Some(a) = &self.actuator {
+                    a.stuck.set(false);
+                    // A freed relay snaps to the commanded state.
+                    a.load.set(self.gate_flag.get());
+                    self.last_result = "relay freed".into();
+                }
+            }
             "corrupt-replay" => match self.last_token_line.clone() {
                 Some(mut line) => {
                     let last = line.pop().unwrap_or('A');
@@ -272,6 +348,7 @@ impl Sim {
             "remaining_secs": report.open.map(|(_, r)| r),
             "uptime_ms": self.uptime_ms(),
             "stored_seq": report.seq,
+            "load": report.load,
             "last_result": self.last_result,
             "closed_reason": report.reason.map(|r| match r {
                 line::CloseReason::Revert => "revert",
@@ -298,9 +375,15 @@ fn main() {
     let mut ctl = open_fifo(&args.workdir.join("ctl"));
 
     let gate_flag = std::rc::Rc::new(std::cell::Cell::new(false));
+    let actuator = args.actuator.map(|fail_state| ActuatorSim {
+        fail_state,
+        load: std::rc::Rc::new(std::cell::Cell::new(false)),
+        stuck: std::rc::Rc::new(std::cell::Cell::new(false)),
+    });
     let mut sim = Sim {
-        engine: Sim::fresh_engine(&args, &gate_flag),
+        engine: Sim::fresh_engine(&args, &gate_flag, &actuator),
         gate_flag: std::rc::Rc::clone(&gate_flag),
+        actuator,
         args,
         epoch: Instant::now(),
         last_token_line: None,

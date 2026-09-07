@@ -361,6 +361,31 @@ pub struct DeviceMqtt {
     pub timeout_secs: u64,
 }
 
+/// The actuator's fail-state vocabulary — explicit words, never a
+/// site-relative "safe" (docs/EMBEDDED.md §7): a server-power relay should
+/// fail energized (don't hard-down the machine because lychgate lost
+/// power); a door must fail locked. The device reports its own configured
+/// fail-state, and drift from this declaration is a loud driver error.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FailStatePolicy {
+    Energized,
+    DeEnergized,
+}
+
+/// `[hosts.device.actuator]` — this device drives a physical actuator (a
+/// relay, a PDU outlet, a lock) and its verification carries a SECOND
+/// oracle: the load/position sense, not just the commanded state.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ActuatorSpec {
+    pub fail_state: FailStatePolicy,
+    /// When true, the device's STATE must carry a load= reading — a
+    /// promised sensor that stops reporting is an error, not a shrug.
+    #[serde(default)]
+    pub current_sense: bool,
+}
+
 /// `[hosts.device]` — a cooperative device holding the daemon's public key:
 /// "open" delivers a signed lgcap. capability token and the DEVICE enforces
 /// the TTL on its own uptime clock (a reboot closes the grant). See
@@ -385,6 +410,9 @@ pub struct DeviceConfig {
     pub mqtt: Option<DeviceMqtt>,
     #[serde(default)]
     pub serial: Option<DeviceSerial>,
+    /// Present when this device drives a physical actuator (see ActuatorSpec).
+    #[serde(default)]
+    pub actuator: Option<ActuatorSpec>,
 }
 
 impl DeviceConfig {

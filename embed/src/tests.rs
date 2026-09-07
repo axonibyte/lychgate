@@ -320,3 +320,54 @@ fn revocation_is_idempotent_when_nothing_is_open() {
     let reply = send(&mut r, &format!("RVK {}", rvk_token(NONCE_A, 1)));
     assert_eq!(reply, "ACK closed");
 }
+
+#[test]
+fn actuator_sense_flows_into_the_state_report() {
+    // A gate with sensors surfaces load= and fail= in STATE; the default
+    // (sensorless) gate stays silent — the trailers never lie about having
+    // a sensor. Mutation: hard-code report.load to None in report() and
+    // this fails.
+    struct SensedGate {
+        open: std::rc::Rc<Cell<bool>>,
+    }
+    impl Gate for SensedGate {
+        fn set_open(&mut self, open: bool) {
+            self.open.set(open);
+        }
+        fn load(&self) -> Option<bool> {
+            Some(self.open.get())
+        }
+        fn fail_state(&self) -> Option<line::FailState> {
+            Some(line::FailState::DeEnergized)
+        }
+    }
+    let open = std::rc::Rc::new(Cell::new(false));
+    let seq = FakeSeq {
+        value: std::rc::Rc::new(Cell::new(0)),
+        fail_store: std::rc::Rc::new(Cell::new(false)),
+        stores: std::rc::Rc::new(Cell::new(0)),
+    };
+    let mut engine = DeviceEngine::new(
+        DEVICE_ID,
+        TrustRoot::Ed25519(
+            ed25519_dalek::SigningKey::from_bytes(&SEED)
+                .verifying_key()
+                .to_bytes(),
+        ),
+        FakeClock(std::rc::Rc::new(Cell::new(0))),
+        seq,
+        SensedGate {
+            open: std::rc::Rc::clone(&open),
+        },
+    );
+    let mut buf = [0u8; line::MAX_LINE_LEN];
+    let stat = engine.handle_line("STAT", &mut buf).to_string();
+    assert!(
+        stat.contains("load=off") && stat.contains("fail=de-energized"),
+        "{stat}"
+    );
+    let tok = cap_token(NONCE_A, 900, 1);
+    engine.handle_line(&format!("TOK {tok}"), &mut buf);
+    let stat = engine.handle_line("STAT", &mut buf).to_string();
+    assert!(stat.contains("load=on"), "{stat}");
+}

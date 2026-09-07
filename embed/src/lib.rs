@@ -52,6 +52,22 @@ pub trait SeqStore {
 /// it is invoked unconditionally at boot and on every close.
 pub trait Gate {
     fn set_open(&mut self, open: bool);
+
+    /// Actuator load sense (a current sensor, a lock position switch), when
+    /// the hardware carries one. "Switch commanded" and "load actually
+    /// powered" are two different oracles — this is the second one
+    /// (docs/EMBEDDED.md §7). Default: no sensor.
+    fn load(&self) -> Option<bool> {
+        None
+    }
+
+    /// The fail-state this actuator is configured to boot into, when it
+    /// reports one. The daemon checks it against the inventory's declared
+    /// fail_state — config drift is a loud error, not a surprise during an
+    /// outage. Default: not an actuator.
+    fn fail_state(&self) -> Option<line::FailState> {
+        None
+    }
 }
 
 /// A storage failure. The engine fails CLOSED on it: a token whose seq
@@ -162,8 +178,8 @@ impl<C: UptimeClock, S: SeqStore, G: Gate> DeviceEngine<C, S, G> {
                 .as_ref()
                 .map(|g| (g.nonce, self.remaining_secs(g))),
             seq,
-            load: None,
-            fail: None,
+            load: self.gate.load(),
+            fail: self.gate.fail_state(),
             reason: if self.grant.is_none() {
                 self.last_close
             } else {

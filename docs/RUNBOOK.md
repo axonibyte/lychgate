@@ -222,6 +222,15 @@ root_posture_emergency = "yes"
 fully fired. Treat a failing drill as an incident: the revert path your
 break-glass grants depend on is broken *now*, before a real close needs it.
 
+For a **hardware** canary — a relay/PDU device with `[hosts.device.actuator]`
+and `current_sense = true` — the drill is a standing *physical* oracle: it
+proves the load actually switches both ways, and a stuck relay fails the
+drill by name. Choose `fail_state` per site and on purpose: a server-power
+outlet should fail `energized` (losing lychgate must not hard-down the
+machine); a door strike must fail locked. The device reports its configured
+fail-state and the daemon refuses on drift, so the declaration cannot rot
+silently.
+
 ---
 
 ## 6. Optional: the TPM (a hardware factor, and secrets at rest)

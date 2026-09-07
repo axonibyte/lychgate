@@ -16,7 +16,8 @@
 //! device engine, so the two ends cannot drift.
 
 use lychgate_core::{
-    ApplyCtx, Channel, ChannelDriver, ChannelState, DeviceAlg, DeviceConfig, DriverError, Host,
+    ActuatorSpec, ApplyCtx, Channel, ChannelDriver, ChannelState, DeviceAlg, DeviceConfig,
+    DriverError, FailStatePolicy, Host,
 };
 use lychgate_wire::line::{self, Command, Reply};
 
@@ -179,6 +180,65 @@ impl DeviceDriver {
     }
 }
 
+/// The actuator second oracle (docs/EMBEDDED.md §7): when the inventory
+/// declares an actuator, "switch commanded" is not enough — the reported
+/// fail-state must match the declaration (config drift is a loud error),
+/// a promised current sensor must actually report, and the load must agree
+/// with the grant, with exactly one named exception: a fail-energized
+/// actuator that just BOOTED legitimately reads load=on while closed (the
+/// don't-hard-down-the-server case — checked, not shrugged at).
+fn check_actuator(
+    actuator: &ActuatorSpec,
+    report: &line::Report,
+    expect_open: bool,
+    host: &str,
+) -> Result<(), DriverError> {
+    let declared = match actuator.fail_state {
+        FailStatePolicy::Energized => line::FailState::Energized,
+        FailStatePolicy::DeEnergized => line::FailState::DeEnergized,
+    };
+    match report.fail {
+        Some(reported) if reported == declared => {}
+        Some(_) => {
+            return Err(DriverError(format!(
+                "device {host:?} reports a DIFFERENT fail-state than the inventory declares — the actuator's failure behavior has drifted from policy"
+            )))
+        }
+        None => {
+            return Err(DriverError(format!(
+                "device {host:?} is declared an actuator but reports no fail-state"
+            )))
+        }
+    }
+    let load = match (actuator.current_sense, report.load) {
+        (true, None) => {
+            return Err(DriverError(format!(
+                "device {host:?} promises current sense but its STATE carries no load reading"
+            )))
+        }
+        (_, load) => load,
+    };
+    if let Some(load) = load {
+        let boot_energized = report.reason == Some(line::CloseReason::Boot)
+            && actuator.fail_state == FailStatePolicy::Energized;
+        match (expect_open, load) {
+            (true, true) | (false, false) => {}
+            (false, true) if boot_energized => {} // the named exception
+            (true, false) => {
+                return Err(DriverError(format!(
+                    "device {host:?}: the grant is open but the load reads OFF — the actuator did not actually actuate"
+                )))
+            }
+            (false, true) => {
+                return Err(DriverError(format!(
+                    "device {host:?}: the grant is closed but the load reads ON — the revert did not actually revert (stuck relay?)"
+                )))
+            }
+        }
+    }
+    Ok(())
+}
+
 impl ChannelDriver for DeviceDriver {
     fn channel(&self) -> Channel {
         Channel::Device
@@ -201,6 +261,9 @@ impl ChannelDriver for DeviceDriver {
 
         // Verify against actual device state, not the ACK alone.
         let report = self.report(host, &device)?;
+        if let Some(actuator) = &device.actuator {
+            check_actuator(actuator, &report, true, &host.name)?;
+        }
         match report.open {
             Some((n, remaining)) if n == nonce && remaining > 0 => Ok(()),
             Some((n, _)) if n != nonce => Err(DriverError(format!(
@@ -277,6 +340,9 @@ impl ChannelDriver for DeviceDriver {
         }
         // Read the actual state back before believing it.
         let report = self.report(host, &device)?;
+        if let Some(actuator) = &device.actuator {
+            check_actuator(actuator, &report, false, &host.name)?;
+        }
         if report.open.is_some() {
             return Err(DriverError(format!(
                 "device {:?} still reports open after the revocation",
@@ -297,6 +363,9 @@ impl ChannelDriver for DeviceDriver {
             .open_nonce(&device_id)
             .map_err(|e| DriverError(format!("reading grant nonce: {e}")))?;
         let report = self.report(host, &device)?;
+        if let Some(actuator) = &device.actuator {
+            check_actuator(actuator, &report, report.open.is_some(), &host.name)?;
+        }
         match (report.open, ours) {
             (None, _) => Ok(ChannelState::Closed),
             (Some((n, _)), Some(mine)) if n == mine => Ok(ChannelState::Open),
@@ -304,7 +373,7 @@ impl ChannelDriver for DeviceDriver {
             // would let a revert path shrug at a live foreign grant).
             (Some(_), _) => Err(DriverError(format!(
                 "device {:?} is open under a grant this daemon did not record — refusing to \
-                 report a state for someone else's grant",
+ report a state for someone else's grant",
                 host.name
             ))),
         }

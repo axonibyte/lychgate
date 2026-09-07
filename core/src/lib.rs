@@ -38,11 +38,11 @@ pub use fido2::{Alg, Fido2Credential, Fido2Error};
 pub use generic::{match_state, GenericTemplateError, MatchError};
 pub use grant::{Grant, GrantError, GrantStatus, PendingView, MAX_APPROVAL_WINDOW_SECS};
 pub use inventory::{
-    BmcConfig, BmcMethod, BmcTls, Channel, DeviceAlg, DeviceConfig, DeviceHttp, DeviceMqtt,
-    DeviceSerial, DeviceTransportKind, Host, HostAccess, HttpConfig, HttpRequestSpec,
-    HttpVerifySpec, Inventory, InventoryError, MqttAuth, MqttConfig, MqttMessageSpec,
-    MqttVerifySpec, Os, SerialCmdSpec, SerialConfig, SerialVerifySpec, SigningSpec, SshConfig,
-    VerifyMode, VncConfig,
+    ActuatorSpec, BmcConfig, BmcMethod, BmcTls, Channel, DeviceAlg, DeviceConfig, DeviceHttp,
+    DeviceMqtt, DeviceSerial, DeviceTransportKind, FailStatePolicy, Host, HostAccess, HttpConfig,
+    HttpRequestSpec, HttpVerifySpec, Inventory, InventoryError, MqttAuth, MqttConfig,
+    MqttMessageSpec, MqttVerifySpec, Os, SerialCmdSpec, SerialConfig, SerialVerifySpec,
+    SigningSpec, SshConfig, VerifyMode, VncConfig,
 };
 pub use password::PasswordError;
 pub use registry::{ExpiredGrant, ExpiredPending, GrantRegistry, RegistryError};
