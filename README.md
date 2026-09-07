@@ -150,7 +150,11 @@ it. Besides the four below, the generic device channels `http`, `mqtt`, and
 `serial` drive a device's management surface from request/command templates
 (daemon-enforced TTL, no on-device dead-man; each requires a `verify` probe
 or an explicit `verify = "none"`, which the open response surfaces as a named
-narrowing — see docs/EMBEDDED.md):
+narrowing), and the `device` channel drives a cooperative device that holds
+the daemon's public key: "open" delivers a signed capability token whose TTL
+the DEVICE enforces on its own clock — a reboot closes the grant. The token
+signing keys live under `[signing]`; see docs/EMBEDDED.md for the whole
+model:
 
 ```toml
 [[hosts]]

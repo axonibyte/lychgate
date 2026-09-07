@@ -90,6 +90,7 @@ const CHANNELS: &[&str] = &[
     "http",
     "mqtt",
     "serial",
+    "device",
 ];
 
 /// Channels whose schema has landed ahead of their driver, stated BY HAND so
@@ -97,7 +98,7 @@ const CHANNELS: &[&str] = &[
 /// channel parses, and an open on it is refused for want of a driver —
 /// fail-closed). Empty since the E2 drivers all landed; kept so the next
 /// schema-first channel has somewhere honest to stand.
-const UNDRIVEN_CHANNELS: &[&str] = &[];
+const UNDRIVEN_CHANNELS: &[&str] = &["device"];
 
 #[test]
 fn the_channel_enum_matches_the_stated_vocabulary() {

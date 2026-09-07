@@ -54,6 +54,7 @@ fn a_single_host_with_its_fields_parses_intact() {
             http: None,
             mqtt: None,
             serial: None,
+            device: None,
             access: None,
             drill: false,
         }]
@@ -1372,4 +1373,172 @@ fn an_embedded_host_with_only_deviceless_channels_is_accepted() {
     Inventory::parse(&http_host(HTTP_VERIFY)).unwrap();
     Inventory::parse(&mqtt_host("", MQTT_VERIFY)).unwrap();
     Inventory::parse(&serial_host("", SERIAL_VERIFY)).unwrap();
+}
+
+// --- [hosts.device] + [signing] (E4) ---------------------------------------
+//
+// Mutation notes: delete any validate_device arm (id length, transport
+// match, signing-key requirement) or the SigningUnused check — the named
+// test below fails.
+
+fn device_host(extra: &str, transport: &str, subtable: &str) -> String {
+    format!(
+        r#"
+        [signing]
+        key_file = "/etc/lychgate/device-signing.hex"
+        p256_key_file = "/etc/lychgate/device-signing-p256.hex"
+
+        [[hosts]]
+        name = "esp-1"
+        address = "local-serial"
+        os = "embedded"
+        channels = ["device"]
+        [hosts.device]
+        device_id = "000102030405060708090a0b0c0d0e0f"
+        transport = "{transport}"
+        {extra}
+        {subtable}
+    "#
+    )
+}
+
+const DEV_SERIAL: &str = r#"
+        [hosts.device.serial]
+        device = "/dev/cuaU0"
+"#;
+
+#[test]
+fn a_full_device_host_parses_with_defaults() {
+    let inv = Inventory::parse(&device_host("", "serial", DEV_SERIAL)).unwrap();
+    let device = inv.hosts[0].device.as_ref().unwrap();
+    assert_eq!(device.alg, DeviceAlg::Ed25519);
+    assert_eq!(device.capability, 1);
+    assert_eq!(
+        device.device_id_bytes().unwrap(),
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    );
+    assert_eq!(device.serial.as_ref().unwrap().timeout_secs, 5);
+}
+
+#[test]
+fn a_bad_device_id_is_refused() {
+    for bad in ["shorty", "zz0102030405060708090a0b0c0d0e0f"] {
+        let toml =
+            device_host("", "serial", DEV_SERIAL).replace("000102030405060708090a0b0c0d0e0f", bad);
+        assert_eq!(
+            Inventory::parse(&toml),
+            Err(InventoryError::DeviceBadId {
+                host: "esp-1".into()
+            }),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn the_transport_and_its_subtable_must_agree_exactly() {
+    // transport = "http" with a serial sub-table: mismatch.
+    assert_eq!(
+        Inventory::parse(&device_host("", "http", DEV_SERIAL)),
+        Err(InventoryError::DeviceTransportMismatch {
+            host: "esp-1".into()
+        })
+    );
+    // A second, extra sub-table: also a mismatch (dead config).
+    let extra = format!(
+        "{DEV_SERIAL}\n        [hosts.device.http]\n        endpoint = \"http://x\"\n        tls = {{ mode = \"insecure\" }}\n"
+    );
+    assert_eq!(
+        Inventory::parse(&device_host("", "serial", &extra)),
+        Err(InventoryError::DeviceTransportMismatch {
+            host: "esp-1".into()
+        })
+    );
+}
+
+#[test]
+fn a_device_channel_without_its_alg_key_is_refused() {
+    let toml = device_host("", "serial", DEV_SERIAL)
+        .replace("key_file = \"/etc/lychgate/device-signing.hex\"\n", "");
+    assert_eq!(
+        Inventory::parse(&toml),
+        Err(InventoryError::SigningKeyMissing {
+            host: "esp-1".into(),
+            which: "key_file",
+        })
+    );
+    // alg = p256 requires the p256 key specifically.
+    let toml = device_host("alg = \"p256\"", "serial", DEV_SERIAL).replace(
+        "p256_key_file = \"/etc/lychgate/device-signing-p256.hex\"\n",
+        "",
+    );
+    assert_eq!(
+        Inventory::parse(&toml),
+        Err(InventoryError::SigningKeyMissing {
+            host: "esp-1".into(),
+            which: "p256_key_file",
+        })
+    );
+}
+
+#[test]
+fn signing_without_any_device_channel_is_dead_config() {
+    let toml = r#"
+        [signing]
+        key_file = "/etc/lychgate/device-signing.hex"
+
+        [[hosts]]
+        name = "cam-1"
+        address = "a"
+        os = "embedded"
+        channels = ["http"]
+        [hosts.http]
+        endpoint = "http://x"
+        tls = { mode = "insecure" }
+        verify = "none"
+        [hosts.http.open]
+        method = "POST"
+        path = "/m"
+        expect_status = 200
+        [hosts.http.revert]
+        method = "POST"
+        path = "/m"
+        expect_status = 200
+    "#;
+    assert_eq!(Inventory::parse(toml), Err(InventoryError::SigningUnused));
+}
+
+#[test]
+fn a_device_channel_without_config_is_refused() {
+    let toml = r#"
+        [[hosts]]
+        name = "esp-1"
+        address = "a"
+        os = "embedded"
+        channels = ["device"]
+    "#;
+    assert_eq!(
+        Inventory::parse(toml),
+        Err(InventoryError::GenericConfigMissing {
+            host: "esp-1".into(),
+            channel: "device",
+        })
+    );
+}
+
+#[test]
+fn device_mqtt_password_auth_is_refused_here_too() {
+    let sub = r#"
+        [hosts.device.mqtt]
+        broker = "10.0.9.20:1883"
+        auth = { mode = "password", username = "x" }
+        cmd_topic = "dev/1/cmd"
+        reply_topic = "dev/1/rsp"
+    "#;
+    assert_eq!(
+        Inventory::parse(&device_host("", "mqtt", sub)),
+        Err(InventoryError::MqttPasswordAuth {
+            host: "esp-1".into()
+        })
+    );
 }

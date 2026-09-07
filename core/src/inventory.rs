@@ -15,6 +15,14 @@ use crate::authority::{ApprovalSpec, AuthorityBody, AuthorityError, AuthorityMod
 pub struct Inventory {
     #[serde(default)]
     pub hosts: Vec<Host>,
+    /// The daemon's token-signing keys for `device` channels (lgcap./lgrvk.
+    /// capability tokens). Required exactly when a host declares a device
+    /// channel; refused as dead config otherwise. Each key is a PATH — the
+    /// inventory is world-readable config, never a secret store — read at
+    /// startup through the same seam as the other secret files, so
+    /// --tpm-unseal seals them for free.
+    #[serde(default)]
+    pub signing: Option<SigningSpec>,
     /// Deployment-wide operator-approval policy: the weighted-threshold
     /// authorities (authenticators, groups, profiles) that gate opening a grant.
     /// When present, an open must satisfy the resolved profile's authority.
@@ -64,6 +72,9 @@ pub struct Host {
     /// Required exactly when the host declares a `serial` channel.
     #[serde(default)]
     pub serial: Option<SerialConfig>,
+    /// Required exactly when the host declares a `device` channel.
+    #[serde(default)]
+    pub device: Option<DeviceConfig>,
     /// Which approval profiles may be opened on this host, and any per-profile
     /// overrides. Absent: the host permits every global profile at its default
     /// authority. Meaningful only when [approval] is configured.
@@ -271,6 +282,126 @@ pub struct SerialConfig {
     pub verify: VerifyMode<SerialVerifySpec>,
 }
 
+/// `[signing]` — the daemon's capability-token signing keys.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SigningSpec {
+    /// Path to a 32-byte hex Ed25519 seed (mode 600). Required when any
+    /// device host uses `alg = "ed25519"` (the default).
+    #[serde(default)]
+    pub key_file: Option<String>,
+    /// Path to a 32-byte hex P-256 scalar (mode 600). Required when any
+    /// device host uses `alg = "p256"`.
+    #[serde(default)]
+    pub p256_key_file: Option<String>,
+}
+
+/// Which lgcap. signature scheme a device is provisioned to verify.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeviceAlg {
+    Ed25519,
+    P256,
+}
+
+fn default_device_alg() -> DeviceAlg {
+    DeviceAlg::Ed25519
+}
+
+fn default_device_capability() -> u32 {
+    1
+}
+
+/// Which wire carries the device line protocol.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeviceTransportKind {
+    Http,
+    Mqtt,
+    Serial,
+}
+
+/// Serial transport parameters for a device host.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceSerial {
+    pub device: String,
+    #[serde(default)]
+    pub baud: Option<u32>,
+    #[serde(default = "default_serial_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+/// HTTP transport parameters for a device host: commands POST to
+/// `<endpoint>/lychgate/cmd`, the reply is the response body.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceHttp {
+    pub endpoint: String,
+    pub tls: BmcTls,
+    #[serde(default)]
+    pub auth_user: Option<String>,
+    #[serde(default)]
+    pub auth_password_file: Option<String>,
+}
+
+/// MQTT transport parameters for a device host: commands publish to
+/// `cmd_topic`, replies arrive on `reply_topic`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceMqtt {
+    pub broker: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub auth: Option<MqttAuth>,
+    pub cmd_topic: String,
+    pub reply_topic: String,
+    #[serde(default = "default_mqtt_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+/// `[hosts.device]` — a cooperative device holding the daemon's public key:
+/// "open" delivers a signed lgcap. capability token and the DEVICE enforces
+/// the TTL on its own uptime clock (a reboot closes the grant). See
+/// docs/EMBEDDED.md.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceConfig {
+    /// The device's provisioned 16-byte identity, hex.
+    pub device_id: String,
+    /// Which signature scheme this device verifies (selects the token ver).
+    #[serde(default = "default_device_alg")]
+    pub alg: DeviceAlg,
+    /// The device-defined capability bitmask a grant opens.
+    #[serde(default = "default_device_capability")]
+    pub capability: u32,
+    /// Which wire carries the line protocol; exactly the matching sub-table
+    /// must be present.
+    pub transport: DeviceTransportKind,
+    #[serde(default)]
+    pub http: Option<DeviceHttp>,
+    #[serde(default)]
+    pub mqtt: Option<DeviceMqtt>,
+    #[serde(default)]
+    pub serial: Option<DeviceSerial>,
+}
+
+impl DeviceConfig {
+    /// The parsed 16-byte device id (validated at load).
+    pub fn device_id_bytes(&self) -> Option<[u8; 16]> {
+        let s = &self.device_id;
+        if s.len() != 32 {
+            return None;
+        }
+        let mut out = [0u8; 16];
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()?;
+        }
+        Some(out)
+    }
+}
+
 fn default_ssh_port() -> u16 {
     22
 }
@@ -399,6 +530,7 @@ pub enum Channel {
     Http,
     Mqtt,
     Serial,
+    Device,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -518,6 +650,22 @@ pub enum InventoryError {
     MqttPasswordAuth {
         host: String,
     },
+    /// A device_id that is not 32 hex characters (16 bytes).
+    DeviceBadId {
+        host: String,
+    },
+    /// The `[hosts.device]` transport and its sub-tables disagree: exactly
+    /// the sub-table matching `transport = "..."` must be present.
+    DeviceTransportMismatch {
+        host: String,
+    },
+    /// A device channel needs the [signing] key matching its alg.
+    SigningKeyMissing {
+        host: String,
+        which: &'static str,
+    },
+    /// [signing] with no device channel anywhere is dead config.
+    SigningUnused,
     /// An embedded host declaring a shell-borne channel (ssh, authorized-keys,
     /// vnc): a device with no shell cannot carry them, and the load rule is
     /// what keeps the shell-rendering Os match sites unreachable.
@@ -659,6 +807,22 @@ impl fmt::Display for InventoryError {
             InventoryError::MqttPasswordAuth { host } => write!(
                 f,
                 "host {host:?}: mqtt password auth is refused — mosquitto clients take the password on argv, where every process on the daemon host can read it; use TLS client certificates or an anonymous listener"
+            ),
+            InventoryError::DeviceBadId { host } => write!(
+                f,
+                "host {host:?}: device_id must be exactly 32 hex characters (16 bytes)"
+            ),
+            InventoryError::DeviceTransportMismatch { host } => write!(
+                f,
+                "host {host:?}: [hosts.device] must carry exactly the sub-table matching its transport (e.g. transport = \"serial\" with [hosts.device.serial]); a mismatched or extra sub-table is dead config"
+            ),
+            InventoryError::SigningKeyMissing { host, which } => write!(
+                f,
+                "host {host:?} declares a device channel whose alg needs [signing] {which}, which is not configured; the daemon could never issue its tokens (fail-closed)"
+            ),
+            InventoryError::SigningUnused => write!(
+                f,
+                "[signing] is configured but no host declares a device channel; dead config is a typo"
             ),
             InventoryError::EmbeddedChannelUnsupported { host, channel } => write!(
                 f,
@@ -816,6 +980,79 @@ impl Inventory {
         Ok(())
     }
 
+    /// The device-channel rules for one host: paired config presence, a
+    /// well-formed device id, exactly-one-matching transport sub-table, and
+    /// the [signing] key its alg needs.
+    fn validate_device(&self, host: &Host) -> Result<(), InventoryError> {
+        match (&host.device, host.channels.contains(&Channel::Device)) {
+            (None, true) => Err(InventoryError::GenericConfigMissing {
+                host: host.name.clone(),
+                channel: "device",
+            }),
+            (Some(_), false) => Err(InventoryError::GenericConfigUnused {
+                host: host.name.clone(),
+                channel: "device",
+            }),
+            (Some(device), true) => {
+                if device.device_id_bytes().is_none() {
+                    return Err(InventoryError::DeviceBadId {
+                        host: host.name.clone(),
+                    });
+                }
+                let present = (
+                    device.http.is_some(),
+                    device.mqtt.is_some(),
+                    device.serial.is_some(),
+                );
+                let expected = match device.transport {
+                    DeviceTransportKind::Http => (true, false, false),
+                    DeviceTransportKind::Mqtt => (false, true, false),
+                    DeviceTransportKind::Serial => (false, false, true),
+                };
+                if present != expected {
+                    return Err(InventoryError::DeviceTransportMismatch {
+                        host: host.name.clone(),
+                    });
+                }
+                if let Some(DeviceMqtt {
+                    auth: Some(MqttAuth::Password { .. }),
+                    ..
+                }) = &device.mqtt
+                {
+                    return Err(InventoryError::MqttPasswordAuth {
+                        host: host.name.clone(),
+                    });
+                }
+                if let Some(serial) = &device.serial {
+                    if serial.timeout_secs == 0 {
+                        return Err(InventoryError::GenericZeroTimeout {
+                            host: host.name.clone(),
+                            channel: "device",
+                        });
+                    }
+                }
+                let (needed, present) = match device.alg {
+                    DeviceAlg::Ed25519 => (
+                        "key_file",
+                        self.signing.as_ref().and_then(|s| s.key_file.as_ref()),
+                    ),
+                    DeviceAlg::P256 => (
+                        "p256_key_file",
+                        self.signing.as_ref().and_then(|s| s.p256_key_file.as_ref()),
+                    ),
+                };
+                if present.is_none() {
+                    return Err(InventoryError::SigningKeyMissing {
+                        host: host.name.clone(),
+                        which: needed,
+                    });
+                }
+                Ok(())
+            }
+            (None, false) => Ok(()),
+        }
+    }
+
     fn validate(&self) -> Result<(), InventoryError> {
         let mut names = BTreeSet::new();
         // local_port is a daemon-host resource: two hosts forwarding the same
@@ -964,6 +1201,7 @@ impl Inventory {
             }
 
             self.validate_generic(host)?;
+            self.validate_device(host)?;
 
             if host.os == Os::Embedded {
                 for ch in &host.channels {
@@ -981,6 +1219,16 @@ impl Inventory {
                     }
                 }
             }
+        }
+
+        // [signing] with nothing to sign for is dead config.
+        if self.signing.is_some()
+            && !self
+                .hosts
+                .iter()
+                .any(|h| h.channels.contains(&Channel::Device))
+        {
+            return Err(InventoryError::SigningUnused);
         }
 
         // Deployment-wide approval policy (not per-host): build and fully
