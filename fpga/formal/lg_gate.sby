@@ -1,0 +1,25 @@
+# SymbiYosys proof for lg_gate: BMC + k-induction over the safety property
+# (never open at counter==0), plus the drop cover. `make formal` runs this
+# against the real RTL; `make formal-mutation` against lg_gate_broken.v and
+# demands FAILURE (the prover's own oracle self-test).
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 12
+cover: mode cover
+cover: depth 40
+
+[engines]
+smtbmc
+
+[script]
+read -formal -DFORMAL lg_gate.v
+# A tiny prescaler makes the cover reachable within depth.
+chparam -set CLK_HZ 2 -set WIDTH 4 lg_gate
+prep -top lg_gate
+
+[files]
+FILE_PLACEHOLDER

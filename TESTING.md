@@ -618,6 +618,28 @@ host-tested, including the torn-write survivor property). Real crystal
 drift, brown-out behavior, flash wear, and GPIO reality belong to the
 manual HIL tier (`e2e/embedded-hardware.sh`, E4b) on physical hardware.
 
+## FPGA gate tier: EXISTS (E9-M1) — a formally proved revert
+
+fpga/rtl/lg_gate.v is the fabric TTL gate: `gate_en = |counter`,
+combinational, no state of its own — no instruction stream (not even the
+soft core that loads the counter) can hold the gate open past expiry. The
+claim is machine-checked, not just structural: SymbiYosys proves the
+safety property (never open at counter zero) by k-induction, covers the
+drop actually happening, and pins clear-is-immediate; the ORACLE
+SELF-TEST is a committed broken gate (rtl/lg_gate_broken.v, a latched
+enable) that the same proof must FAIL on — `make formal-mutation`, the
+project's first formal property observed failing. The iverilog testbench
+walks load/expiry/clear/reset and has its own sim-level mutation target
+against the same broken gate, which is what CI runs.
+
+Named narrowing: Debian (the CI image) packages no SymbiYosys, so CI and
+the guests carry only the sim pair; the formal pair is enforced on sby
+hosts (this workstation runs one — both directions observed) and the gate
+probe-or-skips it loudly. Do not close an rtl-touching change without a
+formal run somewhere. What nothing simulated proves: timing closure, the
+real oscillator, and bitstream/eFuse key security — E9-M3 and the HIL
+roster carry those.
+
 ## Actuator tier: EXISTS (E8) — the drill as a physical oracle
 
 An actuator device carries TWO oracles — "switch commanded" and "load

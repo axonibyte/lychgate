@@ -117,6 +117,33 @@ avr_check() {
 }
 run "avr target check" avr_check
 
+# The FPGA gate (E9): simulation + its broken-gate oracle self-test run
+# wherever iverilog exists; the FORMAL pair (k-induction proof + the prover
+# catching the committed mutation) runs where SymbiYosys exists — Debian
+# packages no sby, so CI carries only the sim pair and the formal claim is
+# enforced on sby hosts (this is a named narrowing, recorded in TESTING.md).
+fpga_sim() {
+    if command -v iverilog >/dev/null 2>&1; then
+        make -C fpga sim && make -C fpga sim-mutation
+    else
+        echo "    SKIPPED here: no iverilog in PATH."
+        echo "    CI and the Ubuntu guest container run the sim pair."
+    fi
+}
+run "fpga gate sim" fpga_sim
+
+fpga_formal() {
+    if command -v sby >/dev/null 2>&1; then
+        make -C fpga formal && make -C fpga formal-mutation
+    else
+        echo "    SKIPPED here: no SymbiYosys (sby) in PATH."
+        echo "    Debian/CI package no sby; the formal proof is enforced on sby"
+        echo "    hosts (this workstation has one) — do not close an rtl-touching"
+        echo "    change without a formal run somewhere."
+    fi
+}
+run "fpga gate formal" fpga_formal
+
 if [ "${failed}" -ne 0 ]; then
     echo "gate: FAILED"
     exit 1
