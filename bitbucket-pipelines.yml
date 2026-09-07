@@ -50,6 +50,10 @@ definitions:
           - cargo check --manifest-path firmware/esp32c3/Cargo.toml --target riscv32imc-unknown-none-elf --locked
           - cargo check --manifest-path firmware/esp32c3/Cargo.toml --target riscv32imc-unknown-none-elf --features se --locked
           - cargo test --manifest-path firmware/esp32c3/Cargo.toml -p lychgate-esp32c3-logic --target x86_64-unknown-linux-gnu --locked
+          # The tier-A C library: host-run the shared-vector KATs and prove
+          # every object compiles for the ATmega328p.
+          - apt-get -qq update && apt-get -qq install -y gcc-avr avr-libc
+          - make -C avr test avr-check
           - shellcheck -x ci/build-target.sh tools/*.sh rc.d/lychgated e2e/*.sh
           - ./tools/install-service-test.sh
 

@@ -101,6 +101,22 @@ firmware_app_check() {
 }
 run "firmware app check" firmware_app_check
 
+# The tier-A C library: the shared-vector KAT harness runs wherever a host C
+# compiler exists (everywhere we build); the atmega328p compile runs where
+# avr-gcc is installed and is enforced in the Ubuntu guest container and CI.
+run "avr library tests" make -C avr test
+
+avr_check() {
+    if command -v avr-gcc >/dev/null 2>&1; then
+        make -C avr avr-check
+    else
+        echo "    SKIPPED here: no avr-gcc in PATH."
+        echo "    The check runs in the Ubuntu guest's build container (reaper test)"
+        echo "    and in CI; do not close an avr-touching milestone without one."
+    fi
+}
+run "avr target check" avr_check
+
 if [ "${failed}" -ne 0 ]; then
     echo "gate: FAILED"
     exit 1

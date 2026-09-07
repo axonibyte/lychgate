@@ -13,6 +13,7 @@ capability = 1
 ttl_secs = 900
 issued_seq = 7
 payload = a600020150000102030405060708090a0b0c0d0e0f0250a0a1a2a3a4a5a6a7a8a9aaabacadaeaf0301041903840507
+signed_sha256 = 5e91b45c2f2191560fcfff4776120907134e6b391a3e489d3c9100c70f205c7d
 token = lgcap.pgACAVAAAQIDBAUGBwgJCgsMDQ4PAlCgoaKjpKWmp6ipqqusra6vAwEEGQOEBQc.A21DPv67apkYnT3DexRHTqam4rG-Z4lBO4hYizqWPjO72J3MWIVup9yC8mp75nAO1bmpigjJ00Gm69Ne4t7igQ
 
 name = cap-v2-u16
@@ -26,6 +27,7 @@ capability = 1
 ttl_secs = 900
 issued_seq = 4242
 payload = a600020150000102030405060708090a0b0c0d0e0f0250a0a1a2a3a4a5a6a7a8a9aaabacadaeaf03010419038405191092
+signed_sha256 = 8ad6a5cc01efb904f75d551965a6d18595b265d68f37d6c6713911cb7b287fff
 token = lgcap.pgACAVAAAQIDBAUGBwgJCgsMDQ4PAlCgoaKjpKWmp6ipqqusra6vAwEEGQOEBRkQkg.nbou-tuqt0alhSqW6dyDL3VKfIZn8s2cbbkajF8fWR3X0y94DIOsoes7BjxODzPmjdGcVPyDxn_Zv0q2JXRoAA
 
 name = cap-v2-u64
@@ -39,5 +41,6 @@ capability = 1
 ttl_secs = 900
 issued_seq = 72623859790382856
 payload = a600020150000102030405060708090a0b0c0d0e0f0250a0a1a2a3a4a5a6a7a8a9aaabacadaeaf030104190384051b0102030405060708
+signed_sha256 = dbb3537c8529e7126751a26731a4de64d21c0230aff8931b6bf1ec49a49efc7f
 token = lgcap.pgACAVAAAQIDBAUGBwgJCgsMDQ4PAlCgoaKjpKWmp6ipqqusra6vAwEEGQOEBRsBAgMEBQYHCA.SKjXCl4TQ5ByJaxG8gYcnu2IgrNd7hyzZM8ndIPLRFw0S0GpHSxJOTxYkntDH3VnYggQwFatVPPMRvShifwZ3w
 

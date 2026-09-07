@@ -60,7 +60,8 @@ if command -v rustup >/dev/null 2>&1; then \
   CARGO_TARGET_DIR=$REAPER_CACHE_TARGET/firmware \
   cargo test --manifest-path firmware/esp32c3/Cargo.toml \
     -p lychgate-esp32c3-logic --target x86_64-unknown-linux-gnu --locked && \
-  apt-get -qq update && apt-get -qq install -y libtss2-dev && \
+  apt-get -qq update && apt-get -qq install -y libtss2-dev gcc-avr avr-libc && \
+  make -C avr test avr-check && \
   CARGO_HOME=$REAPER_CACHE_CARGO \
   CARGO_TARGET_DIR=$REAPER_CACHE_TARGET \
   cargo build --locked -p lychgate -p lychgated \

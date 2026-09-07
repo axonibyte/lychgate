@@ -39,3 +39,4 @@ Thumbs.db
 
 # Nested cargo workspaces (firmware/, fpga/fw/) build into their own target dirs.
 target/
+avr/build/

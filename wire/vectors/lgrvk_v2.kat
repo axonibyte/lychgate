@@ -11,6 +11,7 @@ device_id = 000102030405060708090a0b0c0d0e0f
 grant_nonce = a0a1a2a3a4a5a6a7a8a9aaabacadaeaf
 issued_seq = 7
 payload = a400020150000102030405060708090a0b0c0d0e0f0250a0a1a2a3a4a5a6a7a8a9aaabacadaeaf0307
+signed_sha256 = 91f2af6704d57cc1dee60d3795f5b8240075f719b5d2f932e13ab064c7983478
 token = lgrvk.pAACAVAAAQIDBAUGBwgJCgsMDQ4PAlCgoaKjpKWmp6ipqqusra6vAwc.OwRVAvkRhq5-gK5k5TBo1glKtyxPttX8YhjWTL2HbGG4YDucp5NbG4FP611x0lrJvLvBgmLsL0hPIg-WSYB4kg
 
 name = rvk-v2-u16
@@ -22,6 +23,7 @@ device_id = 000102030405060708090a0b0c0d0e0f
 grant_nonce = a0a1a2a3a4a5a6a7a8a9aaabacadaeaf
 issued_seq = 4242
 payload = a400020150000102030405060708090a0b0c0d0e0f0250a0a1a2a3a4a5a6a7a8a9aaabacadaeaf03191092
+signed_sha256 = e601f9b07bc59ce6308c97c76361dbba218ae953b82b0e54d24eed9e92635dc7
 token = lgrvk.pAACAVAAAQIDBAUGBwgJCgsMDQ4PAlCgoaKjpKWmp6ipqqusra6vAxkQkg.SeP3Z86WQwntGimK4uCvwGbf1zcCt-_6wDTEybR1-Oz4N5hqx9ZwuZEfLoEF-UTn2mYM-y0IPN9aMtBRULZX8g
 
 name = rvk-v2-u64
@@ -33,5 +35,6 @@ device_id = 000102030405060708090a0b0c0d0e0f
 grant_nonce = a0a1a2a3a4a5a6a7a8a9aaabacadaeaf
 issued_seq = 72623859790382856
 payload = a400020150000102030405060708090a0b0c0d0e0f0250a0a1a2a3a4a5a6a7a8a9aaabacadaeaf031b0102030405060708
+signed_sha256 = 2fa1be379f3c9dd2423c8154298e8b2fbecc466dd49c0437f68a98252d431243
 token = lgrvk.pAACAVAAAQIDBAUGBwgJCgsMDQ4PAlCgoaKjpKWmp6ipqqusra6vAxsBAgMEBQYHCA.tKe24UeCvy0bloln5BiqmHkVJbxoc21KHEidLzH-QUyuRD_pPHZ68nljL8RfZLYSFauZM6gT8B_ANjzmBSw3gQ
 

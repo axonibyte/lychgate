@@ -165,6 +165,21 @@ fn positive_record(kind: &str, ver: u8, name: &str, seq: u64) -> String {
     }
     writeln!(rec, "issued_seq = {seq}").unwrap();
     writeln!(rec, "payload = {}", hex(&payload[..payload_len])).unwrap();
+    if ver == VER_P256 {
+        // What a tier-A device hashes before delegating to the SE's Verify:
+        // SHA-256(prefix ++ payload). Emitted for the v2 files so the AVR C
+        // tests can pin their digest path against the same records.
+        use sha2::Digest as _;
+        let prefix = if kind == "cap" {
+            CAP_PREFIX
+        } else {
+            RVK_PREFIX
+        };
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(prefix.as_bytes());
+        hasher.update(&payload[..payload_len]);
+        writeln!(rec, "signed_sha256 = {}", hex(&hasher.finalize())).unwrap();
+    }
     writeln!(rec, "token = {token}").unwrap();
     rec
 }
