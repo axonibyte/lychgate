@@ -305,6 +305,20 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // hmac shared secrets (the lghmac device factor): 32 bytes hex per file,
+    // validated at start — fail-closed like every other secret load.
+    let mut hmac_secrets = std::collections::BTreeMap::new();
+    if let Some(model) = &approval {
+        for (id, secret_file) in model.hmac_authenticators() {
+            let text = secret_reader
+                .read(secret_file, "hmac secret")
+                .with_context(|| format!("hmac secret for authenticator {id:?}"))?;
+            let secret = lychgate_core::hmac_factor::check_secret(&text)
+                .map_err(|e| anyhow::anyhow!("hmac secret for authenticator {id:?}: {e}"))?;
+            hmac_secrets.insert(id.to_string(), secret);
+        }
+    }
+
     // The device channel's signing keys, loaded through the same seam
     // (--tpm-unseal seals them for free) and hex-decoded with the same
     // fail-at-start discipline. Registered here — after the secret reader
@@ -365,6 +379,7 @@ fn main() -> anyhow::Result<()> {
         totp_secrets,
         totp_ledger,
         password_hashes,
+        hmac_secrets,
         fido2_counters: fido2_counters::Fido2Counters::at(
             cli.state_dir.join("fido2-counters.json"),
         ),

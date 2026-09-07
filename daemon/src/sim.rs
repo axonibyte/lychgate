@@ -475,6 +475,7 @@ impl Sim {
             totp_secrets: std::collections::BTreeMap::new(),
             totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
             password_hashes: std::collections::BTreeMap::new(),
+            hmac_secrets: Default::default(),
             fido2_counters: crate::fido2_counters::Fido2Counters::at(
                 dir.join("fido2-counters.json"),
             ),

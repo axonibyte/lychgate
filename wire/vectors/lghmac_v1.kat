@@ -1,0 +1,7 @@
+# lghmac KAT — shared by core and the AVR C library. Regenerate:
+# LYCHGATE_HMAC_REGEN=1 cargo test -p lychgate-core hmac.
+
+name = lghmac-basic
+secret = 2222222222222222222222222222222222222222222222222222222222222222
+challenge = lg1.req.CHALLENGE-EXAMPLE
+token = lghmac.tgpFmE2zz2V70LS8YXAFFdPlMRJwtQSmbcYgsCGi444

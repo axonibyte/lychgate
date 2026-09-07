@@ -275,7 +275,7 @@ fn every_op_is_documented_in_the_readme_usage() {
 // Authenticator kinds: enum <-> README
 // ---------------------------------------------------------------------------
 
-const AUTH_KINDS: &[&str] = &["ed25519", "totp", "password", "fido2", "tpm"];
+const AUTH_KINDS: &[&str] = &["ed25519", "totp", "password", "fido2", "tpm", "hmac"];
 
 #[test]
 fn the_authenticator_kinds_match_the_stated_vocabulary_and_the_readme() {

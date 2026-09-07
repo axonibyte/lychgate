@@ -140,6 +140,7 @@ impl Harness {
             totp_secrets: std::collections::BTreeMap::new(),
             totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
             password_hashes: std::collections::BTreeMap::new(),
+            hmac_secrets: Default::default(),
             fido2_counters: crate::fido2_counters::Fido2Counters::at(
                 dir.join("fido2-counters.json"),
             ),
@@ -346,6 +347,7 @@ fn a_stuck_revert_is_retried_by_the_pass_until_it_clears() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
 
@@ -489,6 +491,7 @@ fn boot_recovery_demotes_a_stored_opening_to_needs_revert() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
     daemon.boot_recover(t(10)).unwrap();
@@ -785,6 +788,7 @@ fn a_bmc_style_secret_reaches_the_open_response_but_never_the_journal() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
     daemon
@@ -886,6 +890,7 @@ fn boot_reestablishes_an_open_vnc_grant_that_outlived_a_restart() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
 
@@ -939,6 +944,7 @@ fn a_vnc_grant_whose_tunnel_cannot_be_reestablished_is_reverted() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
 
@@ -986,6 +992,7 @@ fn simultaneous_opens_of_one_console_produce_one_grant_and_one_apply() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     });
 
@@ -1094,6 +1101,7 @@ fn a_vnc_open_returns_the_one_time_password_labelled_and_the_console_endpoint() 
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
     daemon
@@ -1173,6 +1181,7 @@ fn a_wait_only_profile_opens_on_the_pass_once_the_wait_matures() {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     };
 
@@ -1273,6 +1282,7 @@ fn totp_harness(dir: &crate::scratch::Scratch) -> Daemon {
         totp_secrets,
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     }
 }
@@ -1430,6 +1440,7 @@ fn password_harness(dir: &crate::scratch::Scratch, password: &str) -> Daemon {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes,
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     }
 }
@@ -1561,6 +1572,7 @@ fn fido2_harness(dir: &crate::scratch::Scratch) -> Daemon {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     }
 }
@@ -1691,6 +1703,7 @@ fn mcp_harness(dir: &crate::scratch::Scratch) -> Daemon {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     }
 }
@@ -1855,6 +1868,7 @@ fn drill_daemon(dir: &crate::scratch::Scratch, canary: bool, script: Script) -> 
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     }
 }
@@ -2051,6 +2065,7 @@ fn tpm_harness(dir: &crate::scratch::Scratch) -> Daemon {
         totp_secrets: std::collections::BTreeMap::new(),
         totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
         password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets: Default::default(),
         fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
     }
 }
@@ -2291,4 +2306,126 @@ fn opening_fully_verified_channels_carries_no_narrowing() {
         response.narrowings, None,
         "a fully-verified open must not invent narrowings"
     );
+}
+
+// --- lghmac dispatch (E7a) --------------------------------------------------
+
+/// A daemon whose only host opens driverlessly under a threshold-1 profile
+/// requiring one hmac factor "fixture". The secret is injected directly.
+fn hmac_harness(dir: &crate::scratch::Scratch) -> Daemon {
+    let inv_text = r#"
+        [[hosts]]
+        name = "db-01"
+        address = "10.0.4.11"
+        os = "linux"
+        channels = ["ssh"]
+        [hosts.ssh]
+        agent_user = "root"
+        root_posture_default = "no"
+        root_posture_emergency = "yes"
+
+        [[approval.authenticator]]
+        id = "fixture"
+        kind = "hmac"
+        secret-file = "/unused-in-unit-test"
+        [[approval.profile]]
+        id = "device"
+        threshold = 1
+        factor = [ { authenticator = "fixture", weight = 1 } ]
+    "#;
+    let inventory = Inventory::parse(inv_text).unwrap();
+    let model = inventory.approval_model().unwrap().unwrap();
+    let mut hmac_secrets = std::collections::BTreeMap::new();
+    hmac_secrets.insert("fixture".to_string(), vec![0x55u8; 32]);
+    Daemon {
+        inventory,
+        store: Store::at(dir.join("grants.json")),
+        journal: Mutex::new(Journal::open(dir.join("journal.jsonl")).unwrap()),
+        drivers: Mutex::new(DriverSet::new()),
+        deadman: Mutex::new(Box::new(FakeDeadman {
+            log: Arc::new(Mutex::new(Vec::new())),
+            fail_install: false,
+            fail_remove: false,
+            fired: Arc::new(Mutex::new(false)),
+        })),
+        approval_window: Duration::from_secs(300),
+        approval: Some(model),
+        totp_secrets: std::collections::BTreeMap::new(),
+        totp_ledger: crate::totp_ledger::TotpLedger::at(dir.join("totp-ledger.json")),
+        password_hashes: std::collections::BTreeMap::new(),
+        hmac_secrets,
+        fido2_counters: crate::fido2_counters::Fido2Counters::at(dir.join("fido2-counters.json")),
+    }
+}
+
+fn open_hmac(d: &Daemon, now: SystemTime) -> String {
+    let r = d
+        .dispatch(
+            &Op::Open {
+                host: "db-01".into(),
+                ttl: "1h".into(),
+                profile: Some("device".into()),
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(r.result, ResponseResult::Ok, "{:?}", r.error);
+    r.pending.expect("a pending challenge").challenge
+}
+
+#[test]
+fn an_lghmac_token_bound_to_the_challenge_opens() {
+    // Mutation: drop the lghmac dispatch arm in verify_proof (route to the
+    // password fallback) and this fails with UnknownApprover.
+    let dir = scratch_dir("hmac-open");
+    let d = hmac_harness(&dir);
+    let challenge = open_hmac(&d, t(0));
+    let token = lychgate_core::hmac_factor::sign(&[0x55u8; 32], &challenge);
+    let r = d
+        .dispatch(
+            &Op::Approve {
+                host: "db-01".into(),
+                token,
+            },
+            t(1),
+        )
+        .unwrap();
+    assert_eq!(r.result, ResponseResult::Ok, "{:?}", r.error);
+}
+
+#[test]
+fn a_wrong_secret_and_a_foreign_challenge_are_refused() {
+    let dir = scratch_dir("hmac-refuse");
+    let d = hmac_harness(&dir);
+    let challenge = open_hmac(&d, t(0));
+
+    // Wrong secret: same shape, different key.
+    let bad = lychgate_core::hmac_factor::sign(&[0x66u8; 32], &challenge);
+    let r = d
+        .dispatch(
+            &Op::Approve {
+                host: "db-01".into(),
+                token: bad,
+            },
+            t(1),
+        )
+        .unwrap();
+    assert_eq!(r.result, ResponseResult::Refused);
+
+    // A VALID token for a different challenge (a captured old proof): the
+    // challenge binding must refuse it — this is the no-ledger anti-replay.
+    let foreign = lychgate_core::hmac_factor::sign(&[0x55u8; 32], "lg1.req.SOMETHING-ELSE");
+    let r = d
+        .dispatch(
+            &Op::Approve {
+                host: "db-01".into(),
+                token: foreign,
+            },
+            t(2),
+        )
+        .unwrap();
+    assert_eq!(r.result, ResponseResult::Refused);
+    // And the grant is still pending, untouched by either refusal.
+    let r = d.dispatch(&Op::Status, t(3)).unwrap();
+    assert_eq!(r.result, ResponseResult::Ok);
 }

@@ -72,6 +72,10 @@ pub struct Daemon {
     /// non-digit token) is verified against all of these — no ledger, since a
     /// password is reusable by design.
     pub password_hashes: std::collections::BTreeMap<String, String>,
+    /// hmac shared secrets (the lghmac device factor), keyed by authenticator
+    /// id, read from their mode-600 files at startup. Challenge-bound, so no
+    /// ledger.
+    pub hmac_secrets: std::collections::BTreeMap<String, Vec<u8>>,
     /// The FIDO2 signature-counter ledger: a counter that goes backwards means
     /// a cloned credential, and the assertion is refused.
     pub fido2_counters: crate::fido2_counters::Fido2Counters,
@@ -655,6 +659,33 @@ impl Daemon {
                 (false, None) => {
                     ApprovalError::UnknownApprover("no TPM authenticator is configured".to_string())
                 }
+            }));
+        }
+        if trimmed.starts_with(lychgate_core::hmac_factor::TOKEN_PREFIX) {
+            // An lghmac device MAC. Challenge-bound like fido2/tpm (the
+            // per-request nonce is the anti-replay — no ledger); the token
+            // names no authenticator, so try each configured secret. A
+            // malformed token is named as such; a wrong MAC against every
+            // secret is BadSignature.
+            let challenge = request.challenge_string();
+            let mut any = false;
+            let mut malformed = false;
+            for (id, secret) in &self.hmac_secrets {
+                any = true;
+                match lychgate_core::hmac_factor::verify(secret, trimmed, &challenge) {
+                    Ok(()) => return Ok(Ok(id.clone())),
+                    Err(lychgate_core::hmac_factor::HmacError::Malformed) => malformed = true,
+                    Err(_) => {}
+                }
+            }
+            return Ok(Err(match (any, malformed) {
+                (_, true) => ApprovalError::Malformed(
+                    "lghmac token is not lghmac. + base64url of a 32-byte MAC".to_string(),
+                ),
+                (true, false) => ApprovalError::BadSignature,
+                (false, false) => ApprovalError::UnknownApprover(
+                    "no hmac authenticator is configured".to_string(),
+                ),
             }));
         }
         if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) {

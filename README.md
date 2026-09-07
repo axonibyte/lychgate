@@ -238,6 +238,17 @@ kind = "tpm"
 public-key = "…base64url SEC1 P-256 point…"
 
 [[approval.authenticator]]
+id = "lab-fixture"
+kind = "hmac"
+# A shared HMAC-SHA256 secret (32 bytes as hex, chmod 600) — the tier-A
+# embedded factor: SHA-256 fits a classic AVR where curve crypto does not.
+# SYMMETRIC and honestly weak (the daemon holds the same secret), so give it
+# low weight and compose it with an asymmetric human factor. The device
+# proves it with `lghmac.<base64url(HMAC(secret, challenge))>`, bound to the
+# per-request challenge — no replay across grants. See docs/EMBEDDED.md.
+secret-file = "/usr/local/etc/lychgate/lab-fixture.hmac"
+
+[[approval.authenticator]]
 id = "oncall-fido2"
 kind = "fido2"
 # `lychgate fido2-register` prints this block. alg is es256 or eddsa; the public

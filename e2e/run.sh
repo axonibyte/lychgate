@@ -138,6 +138,8 @@ phase "totp acceptance" sh e2e/totp-acceptance.sh
 
 phase "password acceptance" sh e2e/password-acceptance.sh
 
+phase "hmac acceptance" sh e2e/hmac-acceptance.sh
+
 phase "fido2 acceptance" sh e2e/fido2-acceptance.sh
 
 phase "mcp acceptance" sh e2e/mcp-acceptance.sh

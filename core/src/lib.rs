@@ -12,6 +12,7 @@ pub mod deadman;
 pub mod fido2;
 pub mod generic;
 pub mod grant;
+pub mod hmac_factor;
 pub mod inventory;
 pub mod password;
 pub mod proto;

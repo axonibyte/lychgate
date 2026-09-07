@@ -88,6 +88,7 @@ pub enum AuthKind {
     Password,
     Fido2,
     Tpm,
+    Hmac,
 }
 
 /// An authority's body: the threshold and factors, without an id. A group or
@@ -155,6 +156,11 @@ pub enum Authenticator {
     },
     Password {
         hash_file: String,
+    },
+    /// A shared HMAC-SHA256 secret (the tier-A device factor). SYMMETRIC and
+    /// honestly weak: price it at low weight (docs/EMBEDDED.md §6).
+    Hmac {
+        secret_file: String,
     },
     Fido2(crate::fido2::Fido2Credential),
     /// A TPM-resident P-256 key; the stored SEC1 public half verifies lgtpm tokens.
@@ -418,6 +424,17 @@ impl AuthorityModel {
                     })?;
                     Authenticator::Password { hash_file }
                 }
+                AuthKind::Hmac => {
+                    let secret_file =
+                        a.secret_file
+                            .clone()
+                            .ok_or(AuthorityError::MissingMaterial {
+                                id: a.id.clone(),
+                                kind: "hmac",
+                                field: "secret-file",
+                            })?;
+                    Authenticator::Hmac { secret_file }
+                }
                 AuthKind::Fido2 => {
                     let alg = match a.alg.as_deref() {
                         Some("es256") => crate::fido2::Alg::Es256,
@@ -659,6 +676,15 @@ impl AuthorityModel {
     pub fn password_authenticators(&self) -> impl Iterator<Item = (&str, &str)> {
         self.authenticators.iter().filter_map(|(id, a)| match a {
             Authenticator::Password { hash_file } => Some((id.as_str(), hash_file.as_str())),
+            _ => None,
+        })
+    }
+
+    /// The configured hmac authenticators as `(id, secret_file)` — for the
+    /// daemon's startup secret loading, like the TOTP ones.
+    pub fn hmac_authenticators(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.authenticators.iter().filter_map(|(id, a)| match a {
+            Authenticator::Hmac { secret_file } => Some((id.as_str(), secret_file.as_str())),
             _ => None,
         })
     }
