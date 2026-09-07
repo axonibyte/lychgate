@@ -946,6 +946,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lychgate-wire"
+version = "0.12.0"
+dependencies = [
+ "data-encoding",
+ "ed25519-dalek",
+ "p256",
+ "sha2",
+]
+
+[[package]]
 name = "lychgated"
 version = "0.12.0"
 dependencies = [

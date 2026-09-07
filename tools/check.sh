@@ -53,6 +53,28 @@ windows_client_check() {
 }
 run "windows client check" windows_client_check
 
+# lychgate-wire is compiled into firmware: its load-bearing code must stay
+# no_std. Without default features the crate's #![no_std] is active, so any
+# std leakage fails this cheap host check — no cross toolchain needed. The
+# real embedded target (riscv32imc) is checked below where its rust-std
+# exists, and enforced in the Ubuntu guest container and CI regardless.
+run "wire no_std check" env CARGO_TARGET_DIR=target/nostd-check \
+    cargo check -p lychgate-wire --no-default-features --locked
+
+wire_embedded_target_check() {
+    sysroot=$(rustc --print sysroot 2>/dev/null)
+    if [ -n "${sysroot}" ] && [ -d "${sysroot}/lib/rustlib/riscv32imc-unknown-none-elf" ]; then
+        env CARGO_TARGET_DIR=target/riscv-check \
+            cargo check -p lychgate-wire --no-default-features \
+            --target riscv32imc-unknown-none-elf --locked
+    else
+        echo "    SKIPPED here: no riscv32imc-unknown-none-elf rust-std in this toolchain."
+        echo "    The check runs in the Ubuntu guest's build container (reaper test)"
+        echo "    and in CI; do not close a wire-touching milestone without one."
+    fi
+}
+run "wire embedded target check" wire_embedded_target_check
+
 if [ "${failed}" -ne 0 ]; then
     echo "gate: FAILED"
     exit 1

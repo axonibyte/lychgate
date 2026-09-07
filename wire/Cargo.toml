@@ -1,0 +1,28 @@
+[package]
+name = "lychgate-wire"
+description = "no_std lgcap./lgrvk. capability-token codec — the wire contract between the daemon and device firmware"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[features]
+# `std` gates conveniences only (std::error::Error, String-returning signers).
+# Everything load-bearing — encode, decode, sign, verify — is unconditional and
+# no_std, so firmware consumers build with `default-features = false` and the
+# workspace gate still sees an ordinary host crate.
+default = ["std"]
+std = ["data-encoding/std"]
+
+# Deliberately NOT `workspace = true`: the workspace specs enable std-family
+# defaults for the host crates, while this crate needs the no_std feature
+# surface. Cargo feature unification turns std back on when a host build pulls
+# both — harmless — and an isolated firmware build of this crate alone resolves
+# the lean no_std graph these specs pin.
+[dependencies]
+ed25519-dalek = { version = "2", default-features = false }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+data-encoding = { version = "2", default-features = false }
+sha2 = { version = "0.10", default-features = false }
