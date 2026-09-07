@@ -556,6 +556,31 @@ have their own sections above. What remains:
 Every §15 tier now exists. The standing acceptance discipline remains: when a
 defect is fixed by hand, revert it once and confirm a harness rediscovers it.
 
+## Wire token tier: EXISTS (E3) — KATs as a cross-language contract
+
+`lychgate-wire` (the lgcap./lgrvk. capability-token codec compiled into
+device firmware) is pinned by the committed vectors in `wire/vectors/*.kat` —
+CAVP-style flat text consumed by the Rust suite today and, by design, by the
+AVR C library's test binary and the FPGA testbench later. A regeneration test
+rebuilds every vector from first principles (fixed seeds, deterministic
+signers) and asserts byte equality, so the vectors, the canonical encoder,
+and both signature schemes (v1 Ed25519, v2 P-256 raw r||s) pin each other; a
+vector change is a breaking protocol change by definition. The reject corpus
+carries one vector per deterministic-CBOR rule plus the signature-level
+cases — flipped signature, substituted key, cross-type (a capability under
+the revocation prefix — the domain-separation oracle), cross-version, and an
+over-cap TTL that deliberately PARSES (policy lives in consumers; every port
+must agree). Six mutations observed failing: dropped minimal-int check,
+prefix removed from the signed message, verify stubbed to Ok, trailing-bytes
+check dropped, ver/key-mismatch check dropped, non-canonical encoder widths.
+What this tier does not prove: nothing here exercises a device's *use* of a
+verified token (TTL anchoring, seq persistence, reboot semantics) — that is
+the coming lychgate-embed engine's tier. The no_std claim is enforced three
+ways: a host `--no-default-features` check in the gate, a riscv32imc
+`cargo check` wherever that rust-std exists (gate probe, Ubuntu guest
+container, CI). `wire/examples/lgcap-sign` is the bench signer/verifier the
+manual hardware tier uses; it reproduces the committed vectors byte-for-byte.
+
 ## Source-as-data tier: EXISTS (M8d)
 
 `daemon/tests/source_as_data.rs` parses the source and asserts that vocabularies

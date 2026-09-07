@@ -41,6 +41,10 @@ definitions:
           - cargo fmt --check
           - cargo clippy --workspace --all-targets --locked -- -D warnings
           - cargo test --workspace --release --locked
+          # lychgate-wire ships in firmware: prove its no_std claim against the
+          # real embedded target (rust-std only; cargo check links nothing).
+          - rustup target add riscv32imc-unknown-none-elf
+          - cargo check -p lychgate-wire --no-default-features --target riscv32imc-unknown-none-elf --locked
           - shellcheck -x ci/build-target.sh tools/*.sh rc.d/lychgated e2e/*.sh
           - ./tools/install-service-test.sh
 
