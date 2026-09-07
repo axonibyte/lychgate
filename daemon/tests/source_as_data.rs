@@ -95,9 +95,9 @@ const CHANNELS: &[&str] = &[
 /// Channels whose schema has landed ahead of their driver, stated BY HAND so
 /// the gap is a named decision, not an accident (the pre-M4 shape: the
 /// channel parses, and an open on it is refused for want of a driver —
-/// fail-closed). The E2 driver commits empty this list; a name lingering
-/// here after its driver lands is a bug in this list.
-const UNDRIVEN_CHANNELS: &[&str] = &["mqtt"];
+/// fail-closed). Empty since the E2 drivers all landed; kept so the next
+/// schema-first channel has somewhere honest to stand.
+const UNDRIVEN_CHANNELS: &[&str] = &[];
 
 #[test]
 fn the_channel_enum_matches_the_stated_vocabulary() {
@@ -122,6 +122,7 @@ fn every_channel_has_a_registered_production_driver() {
         ("bmc", "drivers::bmc::BmcDriver"),
         ("vnc", "drivers::vnc::VncDriver"),
         ("http", "drivers::http::HttpDriver"),
+        ("mqtt", "drivers::mqtt::MqttDriver"),
         ("serial", "drivers::serial::SerialDriver"),
     ];
     assert_eq!(

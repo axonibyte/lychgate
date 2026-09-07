@@ -4,6 +4,7 @@
 pub mod bmc;
 pub mod deadman;
 pub mod http;
+pub mod mqtt;
 pub(crate) mod remote;
 pub mod serial;
 pub mod ssh;

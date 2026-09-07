@@ -230,6 +230,11 @@ fn main() -> anyhow::Result<()> {
             )))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         driver_set
+            .register(drivers::mqtt::MqttDriver::new(Box::new(
+                drivers::mqtt::ExecMosquittoTransport,
+            )))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        driver_set
             .register(drivers::serial::SerialDriver::new(Box::new(
                 drivers::serial::FdSerialTransport,
             )))
