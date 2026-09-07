@@ -382,7 +382,7 @@ fn every_mcp_tool_is_both_listed_and_dispatched() {
 
 /// Acceptance scripts deliberately NOT in the battery, stated by hand with the
 /// reason. Anything else unwired is rot: a suite that silently stopped running.
-const UNWIRED: &[&str] = &["fido2-hardware.sh"]; // manual/simulated tier; needs a key
+const UNWIRED: &[&str] = &["fido2-hardware.sh", "embedded-hardware.sh"]; // manual tiers: a FIDO2 key, an ESP32 board
 
 #[test]
 fn every_acceptance_script_is_wired_into_the_battery() {
@@ -392,7 +392,10 @@ fn every_acceptance_script_is_wired_into_the_battery() {
     for entry in std::fs::read_dir(&dir).expect("e2e/ lists") {
         let name = entry.expect("entry").file_name();
         let name = name.to_string_lossy().into_owned();
-        let is_acceptance = name.ends_with("-acceptance.sh") || name == "fido2-hardware.sh";
+        // The *-hardware.sh scripts are covered by the same roster so a new
+        // manual tier must be REGISTERED in UNWIRED, not merely named
+        // suggestively.
+        let is_acceptance = name.ends_with("-acceptance.sh") || name.ends_with("-hardware.sh");
         if !is_acceptance || UNWIRED.contains(&name.as_str()) {
             continue;
         }

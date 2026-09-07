@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["core", "cli", "daemon", "mcp", "tpm", "wire", "embed", "devsim"]
+exclude = ["firmware", "avr", "fpga"]
 
 [workspace.package]
 version = "0.12.0"
@@ -47,5 +48,9 @@ tss-esapi = "7.7"
 x509-cert = "0.2"
 lychgate-core = { path = "core" }
 lychgate-tpm = { path = "tpm" }
-lychgate-wire = { path = "wire" }
-lychgate-embed = { path = "embed" }
+# default-features = false HERE, at the workspace spec: a member writing
+# `workspace = true, default-features = false` is silently IGNORED by cargo
+# when the workspace spec leaves defaults on (it bit: embed pulled wire's std
+# feature onto riscv32imc). std consumers re-enable it explicitly.
+lychgate-wire = { path = "wire", default-features = false }
+lychgate-embed = { path = "embed", default-features = false }

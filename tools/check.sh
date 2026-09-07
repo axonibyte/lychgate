@@ -75,6 +75,30 @@ wire_embedded_target_check() {
 }
 run "wire embedded target check" wire_embedded_target_check
 
+# The reference firmware is its own excluded workspace. Its pure logic crate
+# (the flash seq-record codec) host-tests everywhere; the riscv app compile
+# runs where the target's rust-std exists (same probe as above).
+firmware_logic_test() {
+    host=$(rustc -vV | sed -n 's/host: //p')
+    env CARGO_TARGET_DIR=target/fw-logic cargo test \
+        --manifest-path firmware/esp32c3/Cargo.toml -p lychgate-esp32c3-logic \
+        --target "${host}" --locked --quiet
+}
+run "firmware logic tests" firmware_logic_test
+
+firmware_app_check() {
+    sysroot=$(rustc --print sysroot 2>/dev/null)
+    if [ -n "${sysroot}" ] && [ -d "${sysroot}/lib/rustlib/riscv32imc-unknown-none-elf" ]; then
+        env CARGO_TARGET_DIR=target/fw-check \
+            cargo check --manifest-path firmware/esp32c3/Cargo.toml --target riscv32imc-unknown-none-elf --locked
+    else
+        echo "    SKIPPED here: no riscv32imc-unknown-none-elf rust-std in this toolchain."
+        echo "    The check runs in the Ubuntu guest's build container (reaper test)"
+        echo "    and in CI; do not close a firmware-touching milestone without one."
+    fi
+}
+run "firmware app check" firmware_app_check
+
 if [ "${failed}" -ne 0 ]; then
     echo "gate: FAILED"
     exit 1

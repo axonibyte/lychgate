@@ -48,6 +48,14 @@ if command -v rustup >/dev/null 2>&1; then \
   CARGO_TARGET_DIR=$REAPER_CACHE_TARGET \
   cargo check -p lychgate-wire -p lychgate-embed --no-default-features \
     --target riscv32imc-unknown-none-elf --locked && \
+  CARGO_HOME=$REAPER_CACHE_CARGO \
+  CARGO_TARGET_DIR=$REAPER_CACHE_TARGET/firmware \
+  cargo check --manifest-path firmware/esp32c3/Cargo.toml \
+    --target riscv32imc-unknown-none-elf --locked && \
+  CARGO_HOME=$REAPER_CACHE_CARGO \
+  CARGO_TARGET_DIR=$REAPER_CACHE_TARGET/firmware \
+  cargo test --manifest-path firmware/esp32c3/Cargo.toml \
+    -p lychgate-esp32c3-logic --target x86_64-unknown-linux-gnu --locked && \
   apt-get -qq update && apt-get -qq install -y libtss2-dev && \
   CARGO_HOME=$REAPER_CACHE_CARGO \
   CARGO_TARGET_DIR=$REAPER_CACHE_TARGET \

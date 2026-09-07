@@ -585,6 +585,39 @@ does not prove: no on-device TTL exists for these channels — the daemon's
 reap loop is the sole expiry enforcement (the bmc residual), until the
 cooperative device channel (E4) moves the deadline into the device.
 
+## Device channel tier: EXISTS (E4) — engine matrix, simulator e2e, compiled firmware
+
+Three layers, each earning its place by a defect no cheaper one can see.
+**The engine matrix** (`embed/src/tests.rs`, 11 cases over real signed
+tokens and fake HAL traits) pins the device-side rules: boot closes the gate
+in the constructor; TTL expiry on the uptime clock is a property of
+observation; the seq mark is durable BEFORE a grant takes effect (a store
+failure refuses — fail closed); redelivery is acknowledged without
+re-anchoring while renewal re-anchors; a reboot keeps the mark and kills the
+grant, so the pre-reboot token is refused even though its TTL never expired
+— the power-cycle replay attack, tested by name. Six mutations observed
+failing. **The driver tier** (`daemon/src/drivers/device/tests.rs`, 11
+cases) pins the daemon side: ACK must echo OUR nonce with a plausible
+remaining time; verify NEVER reports a state for a foreign grant;
+reestablish maps anything-not-ours to Closed into the Lost/retract path;
+revocations name the recorded nonce, or the device-reported one, or nothing
+(idempotent, with the no-second-RVK absence asserted). Four mutations.
+**The e2e** (`device-acceptance.sh`) runs the whole stack — real daemon,
+real fd/termios transport, `lychgate-devsim` running the REAL engine — and
+proves what only the composition can: the device expires the grant on its
+own clock while the daemon still believes it open (the roles-swapped
+dead-man observed firing), a reboot plus daemon restart converges to
+closed via two oracles (device state file + daemon status), and the
+capability token appears nowhere in the journal. The sim's `--time-scale`
+makes the expiry oracle run in seconds; its state file is rendered through
+the engine's own STAT so oracle and protocol cannot disagree.
+
+What this tier does not prove: the reference ESP32-C3 firmware is only
+COMPILED by CI (riscv32imc `cargo check`; its pure flash-record codec is
+host-tested, including the torn-write survivor property). Real crystal
+drift, brown-out behavior, flash wear, and GPIO reality belong to the
+manual HIL tier (`e2e/embedded-hardware.sh`, E4b) on physical hardware.
+
 ## Wire token tier: EXISTS (E3) — KATs as a cross-language contract
 
 `lychgate-wire` (the lgcap./lgrvk. capability-token codec compiled into

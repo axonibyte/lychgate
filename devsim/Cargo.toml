@@ -11,5 +11,5 @@ repository.workspace = true
 [dependencies]
 libc = { workspace = true }
 lychgate-embed = { workspace = true }
-lychgate-wire = { workspace = true }
+lychgate-wire = { workspace = true, features = ["std"] }
 serde_json = { workspace = true }

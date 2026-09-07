@@ -36,3 +36,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.sublime-workspace
+
+# Nested cargo workspaces (firmware/, fpga/fw/) build into their own target dirs.
+target/

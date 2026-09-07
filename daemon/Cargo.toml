@@ -20,7 +20,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 libc = { workspace = true }
 lychgate-core = { workspace = true }
-lychgate-wire = { workspace = true }
+lychgate-wire = { workspace = true, features = ["std"] }
 # base64url ledger keys for the FIDO2 counter ledger.
 data-encoding = { workspace = true }
 serde = { workspace = true }

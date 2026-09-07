@@ -1,0 +1,32 @@
+# The reference ESP32-C3 firmware: a thin lychgate-embed integrator.
+#
+# Deliberately its own workspace (excluded from the repo root's): esp-hal's
+# dependency tree must never enter the root Cargo.lock or `--workspace`
+# clippy/test, and its release cadence is contained by this crate's OWN
+# committed lockfile — upgrades are deliberate commits. CI compiles it with
+# `cargo check --manifest-path firmware/esp32c3/Cargo.toml --locked` (the
+# riscv32imc rust-std is already provisioned for lychgate-wire's check);
+# flashing real hardware is the manual HIL tier (e2e/embedded-hardware.sh).
+[workspace]
+members = ["logic"]
+
+[package]
+name = "lychgate-esp32c3"
+description = "reference lychgate device firmware for the ESP32-C3 (USB-Serial-JTAG transport)"
+version = "0.12.0"
+edition = "2021"
+license = "BSD-2-Clause"
+publish = false
+
+[dependencies]
+esp-hal = { version = "1.0.0", features = ["esp32c3", "unstable"] }
+esp-storage = { version = "0.7.0", features = ["esp32c3"] }
+embedded-storage = "0.3"
+lychgate-wire = { path = "../../wire", default-features = false }
+lychgate-embed = { path = "../../embed", default-features = false }
+lychgate-esp32c3-logic = { path = "logic" }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
