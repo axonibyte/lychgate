@@ -62,6 +62,15 @@ definitions:
         script:
           - bash ci/build-target.sh aarch64-unknown-linux-gnu
 
+    - step: &buildLinuxArmv7
+        name: Build armv7-unknown-linux-gnueabihf
+        caches:
+          - cargo
+        artifacts:
+          - dist/*
+        script:
+          - bash ci/build-target.sh armv7-unknown-linux-gnueabihf
+
     - step: &buildFreebsdAmd64
         name: Build x86_64-unknown-freebsd
         caches:
@@ -126,6 +135,7 @@ pipelines:
           steps:
             - step: *buildLinuxAmd64
             - step: *buildLinuxArm64
+            - step: *buildLinuxArmv7
             - step: *buildFreebsdAmd64
             - step: *buildFreebsdArm64
             - step: *buildWindowsAmd64

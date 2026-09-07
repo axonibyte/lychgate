@@ -49,6 +49,16 @@ case "$TARGET" in
         build --workspace
         ;;
 
+    armv7-unknown-linux-gnueabihf)
+        # Same shape as arm64: the hard-float 32-bit tier for Raspberry Pi
+        # 2/3-class boards. libc6-dev-armhf-cross named explicitly for the
+        # same Recommends reason as above.
+        apt_install gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+        rustup target add "$TARGET"
+        export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc
+        build --workspace
+        ;;
+
     x86_64-unknown-freebsd)
         # Tier 2: prebuilt std exists; stable toolchain + zig linker.
         install_zigbuild
