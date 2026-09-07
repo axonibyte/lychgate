@@ -68,6 +68,11 @@ ensure_mosquitto() {
         # Debian auto-starts the system broker; the test runs its own on a
         # dedicated port, so the service is stopped where possible.
         service mosquitto stop >/dev/null 2>&1 || true
+        # Ubuntu ships an AppArmor profile confining mosquitto to
+        # /etc/mosquitto — it cannot read the test's /tmp config ("Unable to
+        # open config file", guest-caught). These are DISPOSABLE test guests:
+        # unload the profile rather than contorting the test around it.
+        apparmor_parser -R /etc/apparmor.d/usr.sbin.mosquitto >/dev/null 2>&1 || true
     elif command -v pkg >/dev/null 2>&1; then
         pkg install -qy mosquitto >/dev/null 2>&1 || true
     fi
