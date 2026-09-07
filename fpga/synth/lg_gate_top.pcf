@@ -1,0 +1,4 @@
+# iCE40-UP5K-SG48 (the common UP5K breakout pinout; adjust per board).
+set_io load_btn  20
+set_io clear_btn 21
+set_io gate_led  39

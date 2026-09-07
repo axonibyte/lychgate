@@ -57,8 +57,14 @@ definitions:
           # The FPGA gate: simulate and run the sim-level oracle self-test.
           # (Debian packages no SymbiYosys; the formal pair runs on sby hosts
           # — a named narrowing, see TESTING.md.)
-          - apt-get -qq install -y iverilog
+          - apt-get -qq install -y iverilog verilator yosys nextpnr-ice40 fpga-icestorm
           - make -C fpga sim sim-mutation
+          # E9-M2: the soft core judging the shared vectors under verilator,
+          # then watching the gate drop with the core alive. E9-M3: the
+          # iCE40 bitstream builds and closes timing.
+          - rustup target add riscv32im-unknown-none-elf
+          - make -C fpga soc-test
+          - make -C fpga synth
           - shellcheck -x ci/build-target.sh tools/*.sh rc.d/lychgated e2e/*.sh
           - ./tools/install-service-test.sh
 

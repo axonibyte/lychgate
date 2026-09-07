@@ -144,6 +144,30 @@ fpga_formal() {
 }
 run "fpga gate formal" fpga_formal
 
+# E9-M2/M3: the soft-core vector run needs verilator + the riscv32i
+# rust-std (rustup hosts; the Ubuntu container and CI enforce it); the
+# iCE40 bitstream needs yosys+nextpnr-ice40+icestorm.
+fpga_soc() {
+    sysroot=$(rustc --print sysroot 2>/dev/null)
+    if command -v verilator >/dev/null 2>&1         && [ -d "${sysroot}/lib/rustlib/riscv32im-unknown-none-elf" ]; then
+        make -C fpga soc-test
+    else
+        echo "    SKIPPED here: needs verilator + the riscv32im rust-std."
+        echo "    The Ubuntu guest container and CI run the soft-core vectors."
+    fi
+}
+run "fpga soft-core vectors" fpga_soc
+
+fpga_synth() {
+    if command -v yosys >/dev/null 2>&1 && command -v nextpnr-ice40 >/dev/null 2>&1; then
+        make -C fpga synth
+    else
+        echo "    SKIPPED here: needs yosys + nextpnr-ice40 (+ icestorm)."
+        echo "    CI builds the iCE40 bitstream."
+    fi
+}
+run "fpga ice40 synth" fpga_synth
+
 if [ "${failed}" -ne 0 ]; then
     echo "gate: FAILED"
     exit 1

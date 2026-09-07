@@ -636,9 +636,24 @@ Named narrowing: Debian (the CI image) packages no SymbiYosys, so CI and
 the guests carry only the sim pair; the formal pair is enforced on sby
 hosts (this workstation runs one — both directions observed) and the gate
 probe-or-skips it loudly. Do not close an rtl-touching change without a
-formal run somewhere. What nothing simulated proves: timing closure, the
-real oscillator, and bitstream/eFuse key security — E9-M3 and the HIL
-roster carry those.
+formal run somewhere.
+
+**The soft core (E9-M2)** puts a vendored picorv32 behind the gate running
+the SAME lychgate-wire verifier everything else compiles, and `make
+soc-test` judges the SAME committed vectors under verilator: the positive
+capability verifies, loads the counter, and then — the demonstration on
+top of the proof — the gate DROPS at zero with the core still executing;
+four reject-corpus samples (flipped signature, cross-type, wrong key,
+trailing byte) refuse without the gate ever rising. The SoC is
+simulation-sized on purpose (1 MB RAM for a ~168 KB crypto image): M2
+proves logic and interop, not resource fit. **The iCE40 build (E9-M3)**
+proves the GATE fits the fabric it exists for: yosys + nextpnr-ice40 place,
+route, and close timing at 12 MHz on a UP5K in ~99 logic cells, `icepack`
+emits the bitstream, and flashing a real board is on the manual HIL roster.
+What nothing simulated proves: the real oscillator, contact reality on
+whatever the gate drives, and bitstream/eFuse key security — named future
+work, with the fabric-sized verifier (128 KB SPRAM could hold an Ed25519
+image) alongside.
 
 ## Actuator tier: EXISTS (E8) — the drill as a physical oracle
 

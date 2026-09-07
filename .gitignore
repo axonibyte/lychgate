@@ -41,3 +41,4 @@ Thumbs.db
 target/
 avr/build/
 fpga/build/
+abc.history

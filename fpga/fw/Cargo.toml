@@ -1,0 +1,24 @@
+# The soft-core verifier image (E9-M2): the SAME lychgate-wire verify the
+# daemon and device firmware compile, on a picorv32 (rv32i). Its own
+# excluded workspace, like firmware/esp32c3 — nothing here enters the root
+# lockfile.
+[workspace]
+
+[package]
+name = "lychgate-fpga-fw"
+version = "0.12.0"
+edition = "2021"
+license = "BSD-2-Clause"
+publish = false
+
+[dependencies]
+lychgate-wire = { path = "../../wire", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
