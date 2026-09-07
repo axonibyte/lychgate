@@ -18,8 +18,16 @@ edition = "2021"
 license = "BSD-2-Clause"
 publish = false
 
+[features]
+# The ATECC608 secure-element integration (SE-PUBKEY?/SE-SIGN): off by
+# default so the base device needs no I2C wiring; HIL-verified with a real
+# chip on GPIO2/GPIO3.
+se = ["dep:sha2", "dep:data-encoding"]
+
 [dependencies]
 esp-hal = { version = "1.0.0", features = ["esp32c3", "unstable"] }
+sha2 = { version = "0.10", default-features = false, optional = true }
+data-encoding = { version = "2", default-features = false, optional = true }
 esp-storage = { version = "0.7.0", features = ["esp32c3"] }
 embedded-storage = "0.3"
 lychgate-wire = { path = "../../wire", default-features = false }

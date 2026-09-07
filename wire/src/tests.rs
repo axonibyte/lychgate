@@ -809,3 +809,55 @@ mod line_protocol {
         render_command(&Command::Token(&long), &mut buf).unwrap();
     }
 }
+
+// --- p256 raw -> DER (E5) --------------------------------------------------
+//
+// Mutation notes: drop the 0x00 high-bit prefix rule → the cross-check
+// against the p256 crate's own DER fails on high-bit halves; keep leading
+// zeros (skip the significant-bytes trim) → the same cross-check fails on
+// small halves.
+
+mod p256_der {
+    use crate::p256der::{p256_raw_sig_to_der, MAX_P256_DER_LEN};
+
+    /// The oracle is the p256 crate's own DER encoder: real signatures over
+    /// varied messages exercise high-bit and short halves statistically, and
+    /// two synthetic edge signatures pin the corners deterministically.
+    #[test]
+    fn matches_the_p256_crates_der_for_real_signatures() {
+        use p256::ecdsa::signature::Signer as _;
+        let sk = p256::ecdsa::SigningKey::from_slice(&[0x22; 32]).unwrap();
+        for i in 0..32u8 {
+            let sig: p256::ecdsa::Signature = sk.sign(&[i; 40]);
+            let raw: [u8; 64] = sig.to_bytes().into();
+            let mut out = [0u8; MAX_P256_DER_LEN];
+            let len = p256_raw_sig_to_der(&raw, &mut out).unwrap();
+            assert_eq!(&out[..len], sig.to_der().as_bytes(), "message {i}");
+        }
+    }
+
+    #[test]
+    fn synthetic_edges_encode_minimally() {
+        // r tiny (1), s with the high bit set: r drops 31 zeros, s gains a
+        // 0x00 prefix.
+        let mut rs = [0u8; 64];
+        rs[31] = 0x01;
+        rs[32] = 0x80;
+        let mut out = [0u8; MAX_P256_DER_LEN];
+        let len = p256_raw_sig_to_der(&rs, &mut out).unwrap();
+        let expected: &[u8] = &[
+            0x30, 0x26, // SEQUENCE: (2+1) + (2+33) = 0x26 bytes
+            0x02, 0x01, 0x01, // INTEGER r = 1
+            0x02, 0x21, 0x00, 0x80, // INTEGER s = 0x8000...00 with prefix
+        ];
+        assert_eq!(&out[..9], expected);
+        assert_eq!(len, 2 + 3 + 2 + 33);
+        // The pathological zero half still encodes as INTEGER 0.
+        let rs = [0u8; 64];
+        let len = p256_raw_sig_to_der(&rs, &mut out).unwrap();
+        assert_eq!(
+            &out[..len],
+            &[0x30, 0x06, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00]
+        );
+    }
+}

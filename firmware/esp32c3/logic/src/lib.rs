@@ -15,6 +15,8 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod atecc;
+
 /// One slot: magic(4) ‖ seq(8, LE) ‖ crc32(4, LE, over magic+seq).
 pub const SLOT_LEN: usize = 16;
 /// Both slots, contiguous.

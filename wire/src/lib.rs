@@ -32,6 +32,7 @@
 
 mod cbor;
 pub mod line;
+pub mod p256der;
 mod token;
 
 pub use token::{

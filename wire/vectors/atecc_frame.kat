@@ -1,0 +1,20 @@
+# ATECC608 framing KAT — shared by the Rust logic crate and the AVR C
+# library. The wake record is datasheet-blessed; command records pin
+# this implementation. Regenerate: LYCHGATE_ATECC_REGEN=1 cargo test.
+
+name = wake-response
+frame = 04113343
+payload = 11
+
+name = info
+frame = 0730000000035d
+
+name = genkey-slot0
+frame = 07400400008387
+
+name = sign-external-slot0
+frame = 07418000002805
+
+name = nonce-passthrough
+frame = 2716430000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf745
+

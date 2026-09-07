@@ -90,7 +90,9 @@ firmware_app_check() {
     sysroot=$(rustc --print sysroot 2>/dev/null)
     if [ -n "${sysroot}" ] && [ -d "${sysroot}/lib/rustlib/riscv32imc-unknown-none-elf" ]; then
         env CARGO_TARGET_DIR=target/fw-check \
-            cargo check --manifest-path firmware/esp32c3/Cargo.toml --target riscv32imc-unknown-none-elf --locked
+            cargo check --manifest-path firmware/esp32c3/Cargo.toml --target riscv32imc-unknown-none-elf --locked &&
+        env CARGO_TARGET_DIR=target/fw-check \
+            cargo check --manifest-path firmware/esp32c3/Cargo.toml --target riscv32imc-unknown-none-elf --features se --locked
     else
         echo "    SKIPPED here: no riscv32imc-unknown-none-elf rust-std in this toolchain."
         echo "    The check runs in the Ubuntu guest's build container (reaper test)"

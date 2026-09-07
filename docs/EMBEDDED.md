@@ -199,6 +199,16 @@ tooling and ceremony, not engine:
   the ready-to-paste `[[approval.authenticator]] kind = "tpm"` block. The
   trust boundary is which key signed, never which wire carried it (the MCP
   lesson) — the engine already only trusts the signature.
+- **Built (E5):** the reference firmware's `se` feature carries the ATECC608
+  integration — pure packet framing and the datasheet-blessed CRC KAT in the
+  host-tested logic crate (shared with the AVR C library via
+  `wire/vectors/atecc_frame.kat`), a thin I2C transport (GPIO2/GPIO3, wake
+  response checked byte-exact, chip status codes surfaced), and the signing
+  ceremony: SHA-256 of the challenge on the MCU, the chip signs the digest
+  in slot 0, and `wire::p256der` (pure raw-`r‖s`→DER, cross-checked against
+  the p256 crate's own encoder) assembles the standard `lgtpm.` token. The
+  chip-facing constants (opcodes, modes, delays) are verified at the HIL
+  tier with the real ATECC608 — CI proves the framing and the compile.
 - **Kind naming (decided): document, don't fork.** `kind = "tpm"` means "a
   non-exportable P-256 signer"; TPM 2.0, ATECC608, and the ESP32 DS
   peripheral are instances. A `p256` alias is deferred until someone actually

@@ -961,12 +961,14 @@ dependencies = [
 name = "lychgate-esp32c3"
 version = "0.12.0"
 dependencies = [
+ "data-encoding",
  "embedded-storage",
  "esp-hal",
  "esp-storage",
  "lychgate-embed",
  "lychgate-esp32c3-logic",
  "lychgate-wire",
+ "sha2",
 ]
 
 [[package]]
