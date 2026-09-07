@@ -1,0 +1,15 @@
+[package]
+name = "lychgate-devsim"
+description = "e2e device simulator: the real lychgate-embed engine over a pty, with a control fifo for nemesis moves"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+libc = { workspace = true }
+lychgate-embed = { workspace = true }
+lychgate-wire = { workspace = true }
+serde_json = { workspace = true }

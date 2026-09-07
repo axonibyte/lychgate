@@ -151,6 +151,8 @@ phase "serial acceptance" sh e2e/serial-acceptance.sh
 ensure_mosquitto
 phase_skippable "mqtt acceptance" sh e2e/mqtt-acceptance.sh
 
+phase_skippable "device acceptance" sh e2e/device-acceptance.sh
+
 phase_skippable "tpm acceptance" sh e2e/tpm-acceptance.sh
 
 # The oracle self-test: with the dead-man sabotaged away, revert-under-kill

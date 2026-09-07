@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.." || exit 2
 # NOTE: CI lints e2e/*.sh wholesale; this list must cover the same set or
 # local and CI lint diverge (it drifted once — fido2/mcp/drill/tpm were
 # missing here while CI linted them).
-files="tools/check.sh tools/lint-shell.sh tools/install-service.sh tools/install-service-test.sh rc.d/lychgated e2e/ssh-acceptance.sh e2e/revert-under-kill.sh e2e/service-start.sh e2e/run.sh e2e/bmc-acceptance.sh e2e/vnc-acceptance.sh e2e/approval-acceptance.sh e2e/authority-acceptance.sh e2e/totp-acceptance.sh e2e/password-acceptance.sh e2e/fido2-acceptance.sh e2e/fido2-hardware.sh e2e/mcp-acceptance.sh e2e/drill-acceptance.sh e2e/tpm-acceptance.sh e2e/http-acceptance.sh e2e/serial-acceptance.sh e2e/mqtt-acceptance.sh e2e/lib.sh"
+files="tools/check.sh tools/lint-shell.sh tools/install-service.sh tools/install-service-test.sh rc.d/lychgated e2e/ssh-acceptance.sh e2e/revert-under-kill.sh e2e/service-start.sh e2e/run.sh e2e/bmc-acceptance.sh e2e/vnc-acceptance.sh e2e/approval-acceptance.sh e2e/authority-acceptance.sh e2e/totp-acceptance.sh e2e/password-acceptance.sh e2e/fido2-acceptance.sh e2e/fido2-hardware.sh e2e/mcp-acceptance.sh e2e/drill-acceptance.sh e2e/tpm-acceptance.sh e2e/http-acceptance.sh e2e/serial-acceptance.sh e2e/mqtt-acceptance.sh e2e/device-acceptance.sh e2e/lib.sh"
 [ -f ci/build-target.sh ] && files="${files} ci/build-target.sh"
 
 if command -v shellcheck >/dev/null 2>&1; then

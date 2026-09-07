@@ -920,6 +920,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lychgate-devsim"
+version = "0.12.0"
+dependencies = [
+ "libc",
+ "lychgate-embed",
+ "lychgate-wire",
+ "serde_json",
+]
+
+[[package]]
 name = "lychgate-embed"
 version = "0.12.0"
 dependencies = [
