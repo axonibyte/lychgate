@@ -56,10 +56,31 @@ ensure_tpm() {
     fi
 }
 
+# Ubuntu ships an AppArmor profile confining mosquitto to /etc/mosquitto —
+# it cannot read the test's /tmp config ("Unable to open config file",
+# guest-caught). These are DISPOSABLE test guests: unload the profile
+# rather than contorting the test around it. Runs on BOTH the
+# already-installed and freshly-installed paths — the profile persists on a
+# guest where the broker was installed in an earlier run, and the first
+# version of this fix sat behind the install branch and never fired there
+# (guest-caught a second time). The profile FILE name varies by release
+# (usr.sbin.mosquitto historically, plain "mosquitto" on current Ubuntu —
+# guest-caught a third time when a hardcoded wrong name failed silently
+# behind || true), so sweep every mosquitto profile file.
+disarm_mosquitto_confinement() {
+    if command -v apparmor_parser >/dev/null 2>&1; then
+        for f in /etc/apparmor.d/*mosquitto*; do
+            [ -e "$f" ] || continue
+            apparmor_parser -R "$f" >/dev/null 2>&1 || true
+        done
+    fi
+}
+
 # The mqtt acceptance needs a broker and its clients; best-effort on both
 # package systems, and the phase is tri-state skippable if neither lands.
 ensure_mosquitto() {
     if command -v mosquitto >/dev/null 2>&1; then
+        disarm_mosquitto_confinement
         return
     fi
     if command -v apt-get >/dev/null 2>&1; then
@@ -68,11 +89,7 @@ ensure_mosquitto() {
         # Debian auto-starts the system broker; the test runs its own on a
         # dedicated port, so the service is stopped where possible.
         service mosquitto stop >/dev/null 2>&1 || true
-        # Ubuntu ships an AppArmor profile confining mosquitto to
-        # /etc/mosquitto — it cannot read the test's /tmp config ("Unable to
-        # open config file", guest-caught). These are DISPOSABLE test guests:
-        # unload the profile rather than contorting the test around it.
-        apparmor_parser -R /etc/apparmor.d/usr.sbin.mosquitto >/dev/null 2>&1 || true
+        disarm_mosquitto_confinement
     elif command -v pkg >/dev/null 2>&1; then
         pkg install -qy mosquitto >/dev/null 2>&1 || true
     fi
