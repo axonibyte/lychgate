@@ -97,7 +97,7 @@ const CHANNELS: &[&str] = &[
 /// channel parses, and an open on it is refused for want of a driver —
 /// fail-closed). The E2 driver commits empty this list; a name lingering
 /// here after its driver lands is a bug in this list.
-const UNDRIVEN_CHANNELS: &[&str] = &["http", "mqtt", "serial"];
+const UNDRIVEN_CHANNELS: &[&str] = &["mqtt", "serial"];
 
 #[test]
 fn the_channel_enum_matches_the_stated_vocabulary() {
@@ -121,6 +121,7 @@ fn every_channel_has_a_registered_production_driver() {
         ("authorized-keys", "drivers::ssh::AuthorizedKeysDriver"),
         ("bmc", "drivers::bmc::BmcDriver"),
         ("vnc", "drivers::vnc::VncDriver"),
+        ("http", "drivers::http::HttpDriver"),
     ];
     assert_eq!(
         drivers.len() + UNDRIVEN_CHANNELS.len(),

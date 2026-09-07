@@ -225,6 +225,11 @@ fn main() -> anyhow::Result<()> {
             ))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         driver_set
+            .register(drivers::http::HttpDriver::new(Box::new(
+                drivers::http::CurlHttpTransport,
+            )))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        driver_set
             .register(drivers::vnc::VncDriver::new(
                 Box::new(drivers::vnc::ExecSshVncTransport),
                 Box::new(drivers::vnc::UrandomVncPasswords),
