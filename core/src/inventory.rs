@@ -666,6 +666,13 @@ pub enum InventoryError {
     },
     /// [signing] with no device channel anywhere is dead config.
     SigningUnused,
+    /// The device-mqtt transport is named in the schema but not implemented
+    /// (the racadm precedent): an exec'd subscribe-then-publish round trip
+    /// cannot be made race-free, so it waits for a real client rather than
+    /// shipping one that mostly works.
+    DeviceMqttUnimplemented {
+        host: String,
+    },
     /// An embedded host declaring a shell-borne channel (ssh, authorized-keys,
     /// vnc): a device with no shell cannot carry them, and the load rule is
     /// what keeps the shell-rendering Os match sites unreachable.
@@ -823,6 +830,10 @@ impl fmt::Display for InventoryError {
             InventoryError::SigningUnused => write!(
                 f,
                 "[signing] is configured but no host declares a device channel; dead config is a typo"
+            ),
+            InventoryError::DeviceMqttUnimplemented { host } => write!(
+                f,
+                "host {host:?}: the device-mqtt transport is not implemented yet; use serial or http"
             ),
             InventoryError::EmbeddedChannelUnsupported { host, channel } => write!(
                 f,
@@ -1020,6 +1031,14 @@ impl Inventory {
                 }) = &device.mqtt
                 {
                     return Err(InventoryError::MqttPasswordAuth {
+                        host: host.name.clone(),
+                    });
+                }
+                // Reserve the vocabulary without pretending (the racadm
+                // precedent): device-mqtt parses but is refused until a
+                // race-free transport exists.
+                if device.transport == DeviceTransportKind::Mqtt {
+                    return Err(InventoryError::DeviceMqttUnimplemented {
                         host: host.name.clone(),
                     });
                 }

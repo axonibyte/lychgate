@@ -1,3 +1,4 @@
+mod device_state;
 mod drivers;
 mod fido2_counters;
 mod journal;
@@ -301,6 +302,53 @@ fn main() -> anyhow::Result<()> {
             lychgate_core::password::validate_hash(&phc)
                 .map_err(|e| anyhow::anyhow!("password hash for authenticator {id:?}: {e}"))?;
             password_hashes.insert(id.to_string(), phc);
+        }
+    }
+
+    // The device channel's signing keys, loaded through the same seam
+    // (--tpm-unseal seals them for free) and hex-decoded with the same
+    // fail-at-start discipline. Registered here — after the secret reader
+    // exists — rather than with the other drivers above.
+    if !cli.dry_run {
+        if let Some(signing) = &inventory.signing {
+            let mut read_key = |path: &str, what: &str| -> anyhow::Result<[u8; 32]> {
+                let text = secret_reader.read(path, what)?;
+                let hex = text.trim();
+                anyhow::ensure!(
+                    hex.len() == 64,
+                    "{what} {path}: expected 64 hex chars (a 32-byte key)"
+                );
+                let mut out = [0u8; 32];
+                for (i, slot) in out.iter_mut().enumerate() {
+                    *slot = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
+                        .map_err(|_| anyhow::anyhow!("{what} {path}: not hex"))?;
+                }
+                Ok(out)
+            };
+            let ed25519_seed = signing
+                .key_file
+                .as_deref()
+                .map(|p| read_key(p, "device signing key"))
+                .transpose()?;
+            let p256_scalar = signing
+                .p256_key_file
+                .as_deref()
+                .map(|p| read_key(p, "device p256 signing key"))
+                .transpose()?;
+            driver_set
+                .register(drivers::device::DeviceDriver::new(
+                    Box::new(drivers::device::ExecDeviceTransport),
+                    Box::new(drivers::device::ProductionSigner {
+                        ed25519_seed,
+                        p256_scalar,
+                        state: device_state::DeviceState::at(
+                            cli.state_dir.join("device-state.json"),
+                        ),
+                    }),
+                    Box::new(drivers::device::UrandomNonces),
+                    device_state::DeviceState::at(cli.state_dir.join("device-state.json")),
+                ))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
     }
 

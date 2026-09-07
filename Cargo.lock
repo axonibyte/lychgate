@@ -965,6 +965,7 @@ dependencies = [
  "libc",
  "lychgate-core",
  "lychgate-tpm",
+ "lychgate-wire",
  "serde",
  "serde_json",
  "ssh-key",

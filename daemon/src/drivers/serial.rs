@@ -142,55 +142,70 @@ impl SerialTransport for FdSerialTransport {
         send: &str,
         until: &Until,
     ) -> Result<String, DriverError> {
-        use std::io::{Read, Write};
-        use std::time::{Duration, Instant};
+        fd_transact(
+            &serial.device,
+            serial.baud,
+            serial.timeout_secs,
+            send,
+            until,
+        )
+    }
+}
 
-        let dev = &serial.device;
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(dev)
-            .map_err(|e| DriverError(format!("opening {dev}: {e}")))?;
+/// The raw fd transaction, shared with the device channel's serial
+/// transport: open, raw termios, write, deadline-bounded short reads.
+pub(crate) fn fd_transact(
+    dev: &str,
+    baud: Option<u32>,
+    timeout_secs: u64,
+    send: &str,
+    until: &Until,
+) -> Result<String, DriverError> {
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
 
-        configure_port(&file, serial)?;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dev)
+        .map_err(|e| DriverError(format!("opening {dev}: {e}")))?;
 
-        file.write_all(send.as_bytes())
-            .and_then(|()| file.flush())
-            .map_err(|e| DriverError(format!("writing to {dev}: {e}")))?;
+    configure_port(&file, dev, baud)?;
 
-        // Deadline loop over short reads: VMIN=0/VTIME=1 makes each read(2)
-        // return within ~100ms, so the overall budget is honored without
-        // blocking forever on a silent device.
-        let deadline = Instant::now() + Duration::from_secs(serial.timeout_secs);
-        let mut reply = String::new();
-        let mut buf = [0u8; 256];
-        loop {
-            if until.0.iter().any(|m| reply.contains(m)) {
-                return Ok(reply);
-            }
-            if Instant::now() >= deadline {
-                return Err(DriverError(format!(
-                    "no expected reply from {dev} within {}s (got {:?})",
-                    serial.timeout_secs,
-                    reply.trim()
-                )));
-            }
-            match file.read(&mut buf) {
-                Ok(0) => {}
-                Ok(n) => reply.push_str(&String::from_utf8_lossy(&buf[..n])),
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(DriverError(format!("reading {dev}: {e}"))),
-            }
+    file.write_all(send.as_bytes())
+        .and_then(|()| file.flush())
+        .map_err(|e| DriverError(format!("writing to {dev}: {e}")))?;
+
+    // Deadline loop over short reads: VMIN=0/VTIME=1 makes each read(2)
+    // return within ~100ms, so the overall budget is honored without
+    // blocking forever on a silent device.
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let mut reply = String::new();
+    let mut buf = [0u8; 256];
+    loop {
+        if until.0.iter().any(|m| reply.contains(m)) {
+            return Ok(reply);
+        }
+        if Instant::now() >= deadline {
+            return Err(DriverError(format!(
+                "no expected reply from {dev} within {timeout_secs}s (got {:?})",
+                reply.trim()
+            )));
+        }
+        match file.read(&mut buf) {
+            Ok(0) => {}
+            Ok(n) => reply.push_str(&String::from_utf8_lossy(&buf[..n])),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(DriverError(format!("reading {dev}: {e}"))),
         }
     }
 }
 
 /// Raw mode + optional baud. A pty accepts the raw flags and ignores the
 /// speed — deliberately tolerated, so the simulator path is identical.
-fn configure_port(file: &std::fs::File, serial: &SerialConfig) -> Result<(), DriverError> {
+fn configure_port(file: &std::fs::File, dev: &str, baud: Option<u32>) -> Result<(), DriverError> {
     use std::os::fd::AsRawFd;
     let fd = file.as_raw_fd();
-    let dev = &serial.device;
 
     // SAFETY-free zone: all through libc's safe-ish FFI with checked returns.
     let mut tio = std::mem::MaybeUninit::<libc::termios>::uninit();
@@ -205,7 +220,7 @@ fn configure_port(file: &std::fs::File, serial: &SerialConfig) -> Result<(), Dri
     // VMIN=0, VTIME=1: reads return within ~100ms with whatever arrived.
     tio.c_cc[libc::VMIN] = 0;
     tio.c_cc[libc::VTIME] = 1;
-    if let Some(baud) = serial.baud {
+    if let Some(baud) = baud {
         let speed = baud_constant(baud)
             .ok_or_else(|| DriverError(format!("unsupported baud rate {baud} for {dev}")))?;
         // Setting the speed on a pty is a no-op; on a real tty it must stick.

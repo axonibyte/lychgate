@@ -3,6 +3,7 @@
 
 pub mod bmc;
 pub mod deadman;
+pub mod device;
 pub mod http;
 pub mod mqtt;
 pub(crate) mod remote;

@@ -149,10 +149,35 @@ impl HttpTransport for CurlHttpTransport {
         path: &str,
         body: Option<&str>,
     ) -> Result<(u16, String), DriverError> {
+        curl_request(
+            &http.endpoint,
+            &http.tls,
+            http.auth_user.as_deref(),
+            http.auth_password_file.as_deref(),
+            method,
+            path,
+            body,
+        )
+    }
+}
+
+/// The raw curl transaction, shared with the device channel's http
+/// transport: status apart from body, TLS from config, basic-auth via a
+/// curl config on stdin (never argv).
+pub(crate) fn curl_request(
+    endpoint: &str,
+    tls: &lychgate_core::BmcTls,
+    auth_user: Option<&str>,
+    auth_password_file: Option<&str>,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> Result<(u16, String), DriverError> {
+    {
         use std::io::Write;
         use std::process::{Command, Stdio};
 
-        let url = format!("{}{}", http.endpoint.trim_end_matches('/'), path);
+        let url = format!("{}{}", endpoint.trim_end_matches('/'), path);
         let mut cmd = Command::new("curl");
         cmd.arg("-sS")
             .arg("-o")
@@ -165,7 +190,7 @@ impl HttpTransport for CurlHttpTransport {
             cmd.arg("-H").arg("Content-Type: application/json");
             cmd.arg("--data-binary").arg(body);
         }
-        match &http.tls {
+        match tls {
             lychgate_core::BmcTls::CaFile { path } => {
                 cmd.arg("--cacert").arg(path);
             }
@@ -173,7 +198,7 @@ impl HttpTransport for CurlHttpTransport {
                 cmd.arg("--insecure");
             }
         }
-        let config = match (&http.auth_user, &http.auth_password_file) {
+        let config = match (auth_user, auth_password_file) {
             (Some(user), Some(file)) => {
                 let password = std::fs::read_to_string(file)
                     .map_err(|e| DriverError(format!("reading {file}: {e}")))?;

@@ -98,7 +98,7 @@ const CHANNELS: &[&str] = &[
 /// channel parses, and an open on it is refused for want of a driver —
 /// fail-closed). Empty since the E2 drivers all landed; kept so the next
 /// schema-first channel has somewhere honest to stand.
-const UNDRIVEN_CHANNELS: &[&str] = &["device"];
+const UNDRIVEN_CHANNELS: &[&str] = &[];
 
 #[test]
 fn the_channel_enum_matches_the_stated_vocabulary() {
@@ -125,6 +125,7 @@ fn every_channel_has_a_registered_production_driver() {
         ("http", "drivers::http::HttpDriver"),
         ("mqtt", "drivers::mqtt::MqttDriver"),
         ("serial", "drivers::serial::SerialDriver"),
+        ("device", "drivers::device::DeviceDriver"),
     ];
     assert_eq!(
         drivers.len() + UNDRIVEN_CHANNELS.len(),

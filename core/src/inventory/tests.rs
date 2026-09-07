@@ -1527,6 +1527,23 @@ fn a_device_channel_without_config_is_refused() {
 }
 
 #[test]
+fn the_device_mqtt_transport_is_refused_as_unimplemented() {
+    // Reserved vocabulary, not pretended capability (the racadm precedent).
+    let sub = r#"
+        [hosts.device.mqtt]
+        broker = "10.0.9.20:1883"
+        cmd_topic = "dev/1/cmd"
+        reply_topic = "dev/1/rsp"
+    "#;
+    assert_eq!(
+        Inventory::parse(&device_host("", "mqtt", sub)),
+        Err(InventoryError::DeviceMqttUnimplemented {
+            host: "esp-1".into()
+        })
+    );
+}
+
+#[test]
 fn device_mqtt_password_auth_is_refused_here_too() {
     let sub = r#"
         [hosts.device.mqtt]
