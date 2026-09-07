@@ -790,36 +790,57 @@ refuses registration).
 chain-pinning to vendor roots; the physical-key/discrete-TPM ceremonies beyond
 the simulators.
 
-### E — the embedded expansion (IN PROGRESS, design of record: [EMBEDDED.md](EMBEDDED.md))
+### E — the embedded expansion — DONE (2026-09-07), bumps to v0.13.0 (design of record: [EMBEDDED.md](EMBEDDED.md))
 
 Extends lychgate to firmware-class devices: devices as targets, as
 self-enforcing grant verifiers (reboot closes the grant), as approval factors,
 and as the access mechanism itself, down to an FPGA whose TTL is enforced in
 gates. Milestones, in order — each closes with both guests green:
 
-- **E0** — this design of record into the repo. **DONE**
-- **E1** — armv7 release target (arm64 already ships).
+All ten milestones landed (one release, v0.13.0, rather than the three
+speculative version splits the plan sketched — nothing shipped in between,
+so intermediate versions would have named no artifact anyone could hold):
+
+- **E0** — the design of record into the repo. **DONE**
+- **E1** — armv7 release target (arm64 already shipped). **DONE**
 - **E2** — generic `http`/`mqtt`/`serial` channel drivers (exec/fd
-  transports, verify-or-named-narrowing).
-- **E3** — `lychgate-wire`: the no_std lgcap./lgrvk. capability-token codec
-  (deterministic CBOR subset; v1 Ed25519 + v2 P-256; committed KAT vectors as
-  the cross-language contract).
-- **E4** — the `device` channel (daemon-signed tokens, seq anti-replay,
-  device-enforced TTL) + `lychgate-embed` (the reusable no_std device engine
-  behind UptimeClock/SeqStore/Gate traits) + the `lychgate-devsim` e2e tier +
-  the ESP32-C3 reference firmware + the manual HIL tier. Bumps to v0.13.0.
-- **E5** — ATECC608 secure-element tooling (the existing `tpm` kind already
-  verifies plain P-256 — zero engine changes).
-- **E6** — the normative wire/protocol spec (E6a) and the hardening profile +
-  provisioning ceremonies (E6b).
-- **E7** — the symmetric `lghmac.` authenticator kind + the AVR C library
-  (lgcap v2 verify via the SE). 
-- **E8** — actuator devices (fail_state policy, current-sense second oracle,
-  hardware drill). Bumps to v0.14.0.
-- **E9** — FPGA: the counter/gate RTL with a formally verified
-  never-open-at-zero property (M1), a picorv32 soft-core verifier driven by
-  the shared KAT vectors (M2), a reference iCE40 build (M3). Bumps to
-  v0.15.0.
+  transports; verify-or-named-narrowing surfaced as `NARROWING:` lines at
+  open time; the mqtt probe polls its eventually-consistent state topic).
+  **DONE**
+- **E3** — `lychgate-wire`: the no_std lgcap./lgrvk. codec (deterministic
+  CBOR subset; v1 Ed25519 + v2 P-256 raw r||s so a secure element can
+  verify; the committed KAT vectors under wire/vectors are the
+  cross-language contract). **DONE**
+- **E4** — the `device` channel (durably-reserved seq anti-replay,
+  device-enforced TTL: a reboot closes the grant) + `lychgate-embed` (the
+  reusable no_std engine behind UptimeClock/SeqStore/Gate — bring your own
+  firmware, docs/EMBEDDED.md §11.5) + `lychgate-devsim` + the device
+  acceptance + the ESP32-C3 reference firmware + the manual HIL script.
+  **DONE**
+- **E5** — ATECC608 tooling (framing KATs shared with the C library, the
+  raw→DER bridge, the firmware `se` feature, `tools/se-register.sh`; zero
+  engine changes — the tpm kind already verifies plain P-256). **DONE**
+- **E6** — the normative wire/protocol spec (§11) and the hardening ladder +
+  one-way-burns-last provisioning ceremonies (§12). **DONE**
+- **E7** — the symmetric `hmac` kind (the sixth) + the AVR C library
+  passing the same committed vectors, every object compiling for the
+  ATmega328p. **DONE**
+- **E8** — actuator devices: explicit fail_state policy, the current-sense
+  second oracle with the reason=boot exception named and checked, and the
+  drill as a standing hardware oracle (a stuck relay fails it loudly).
+  **DONE**
+- **E9** — FPGA: lg_gate with a SymbiYosys k-induction proof and a
+  COMMITTED broken-gate mutation both harnesses must fail on (M1); a
+  vendored picorv32 running the same wire verifier against the shared
+  vectors under verilator, the gate dropping with the core alive (M2); an
+  iCE40-UP5K bitstream that places, routes and closes timing at 12 MHz in
+  ~99 logic cells (M3). **DONE**
+
+**Future hardening (noted, not built):** PCR-style sealed device identity;
+the fabric-sized verifier (the UP5K's 128 KB SPRAM could hold an Ed25519
+image); signed device state reports; the device-mqtt transport (refused at
+load as unimplemented until a race-free client exists); pass-time verify of
+open device grants (safe today — the device TTL bounds the exposure).
 
 **Tests** — the remaining tiers, in §15 order: **~~source-as-data~~ DONE
 (2026-09-06, rides v0.11.0)** — `daemon/tests/source_as_data.rs` parses the

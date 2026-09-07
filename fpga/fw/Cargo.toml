@@ -6,7 +6,7 @@
 
 [package]
 name = "lychgate-fpga-fw"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 license = "BSD-2-Clause"
 publish = false

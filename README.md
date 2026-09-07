@@ -26,13 +26,20 @@ Grant policy, by design:
 
 ## Status
 
-The control plane is real, and all four channels — `ssh`, `authorized-keys`,
-`bmc`, and `vnc` — are live: opening a grant flips the host's `PermitRootLogin`
-posture through a verified drop-in, installs break-glass keys inside a
-lychgate-owned fence in authorized_keys, enables a break-glass iDRAC account
-over Redfish with a fresh one-time password, and brings up a console: a
-daemon-held SSH tunnel to the VM's RFB port plus a rotated one-time VNC password
-(set through a configurable, platform-agnostic command). All are verified
+The control plane is real, and all eight channels are live. The four
+host-facing ones — `ssh`, `authorized-keys`, `bmc`, and `vnc` — flip the
+host's `PermitRootLogin` posture through a verified drop-in, install
+break-glass keys inside a lychgate-owned fence in authorized_keys, enable a
+break-glass iDRAC account over Redfish with a fresh one-time password, and
+bring up a console: a daemon-held SSH tunnel to the VM's RFB port plus a
+rotated one-time VNC password (set through a configurable,
+platform-agnostic command). The four device-facing ones — `http`, `mqtt`,
+`serial`, and `device` — extend the same discipline to firmware-class
+hardware, up to grants a cooperative device enforces ITSELF: a signed
+capability token whose TTL runs on the device's own clock, so a reboot
+closes the grant and daemon death cannot extend it (docs/EMBEDDED.md; the
+same engine ships as a no_std Rust crate, an ESP32-C3 reference firmware,
+an AVR C library, and a formally-proved FPGA gate). All are verified
 against the target's actual state and reverted on close or expiry, with a
 target-side dead-man backstopping the ssh channels and the tunnel dying with the
 daemon it belongs to. Opening a grant is gated on a **weighted-threshold

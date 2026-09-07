@@ -221,14 +221,14 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "lychgate-fpga-fw"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "lychgate-wire",
 ]
 
 [[package]]
 name = "lychgate-wire"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "data-encoding",
  "ed25519-dalek",

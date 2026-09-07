@@ -888,7 +888,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "lychgate"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -904,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "lychgate-core"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "argon2",
  "data-encoding",
@@ -921,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "lychgate-devsim"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "libc",
  "lychgate-embed",
@@ -931,7 +931,7 @@ dependencies = [
 
 [[package]]
 name = "lychgate-embed"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "ed25519-dalek",
  "lychgate-wire",
@@ -939,7 +939,7 @@ dependencies = [
 
 [[package]]
 name = "lychgate-mcp"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -952,7 +952,7 @@ dependencies = [
 
 [[package]]
 name = "lychgate-tpm"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "data-encoding",
@@ -965,7 +965,7 @@ dependencies = [
 
 [[package]]
 name = "lychgate-wire"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "data-encoding",
  "ed25519-dalek",
@@ -975,7 +975,7 @@ dependencies = [
 
 [[package]]
 name = "lychgated"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "clap",

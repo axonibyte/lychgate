@@ -13,7 +13,7 @@ members = ["logic"]
 [package]
 name = "lychgate-esp32c3"
 description = "reference lychgate device firmware for the ESP32-C3 (USB-Serial-JTAG transport)"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 license = "BSD-2-Clause"
 publish = false
