@@ -73,7 +73,7 @@ impl std::error::Error for VncTemplateError {}
 /// or more of `[A-Za-z_]`. A `${name}` shell variable expansion is skipped
 /// (the `$` guard), and anything that is not a clean `{name}` run — brace
 /// expansion like `{a,b}`, `{1..3}`, an empty `{}` — is left for the shell.
-fn placeholders(template: &str) -> Vec<String> {
+pub(crate) fn placeholders(template: &str) -> Vec<String> {
     let bytes = template.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;

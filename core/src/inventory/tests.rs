@@ -51,6 +51,9 @@ fn a_single_host_with_its_fields_parses_intact() {
                 password_len: 8,
                 password_file: None,
             }),
+            http: None,
+            mqtt: None,
+            serial: None,
             access: None,
             drill: false,
         }]
@@ -972,4 +975,401 @@ fn a_host_can_be_marked_a_drill_canary() {
     "#;
     let inv = Inventory::parse(text).unwrap();
     assert!(inv.hosts[0].drill, "drill = true must parse as a canary");
+}
+
+// --- generic channels (http / mqtt / serial), E2 ---------------------------
+//
+// Mutation notes: delete any single validation arm in validate_generic (a
+// Missing/Unused pair, the verify-"none" literal check, a placeholder check,
+// the password-auth refusal, a zero-timeout or status check) or the embedded
+// channel restriction, and its named test below fails.
+
+fn http_host_full(verify_inline: &str, verify_table: &str) -> String {
+    format!(
+        r#"
+        [[hosts]]
+        name = "cam-1"
+        address = "10.0.9.31"
+        os = "embedded"
+        channels = ["http"]
+        [hosts.http]
+        endpoint = "https://10.0.9.31:8443"
+        tls = {{ mode = "insecure" }}
+        {verify_inline}
+        [hosts.http.open]
+        method = "POST"
+        path = "/api/maint"
+        body = '{{"debug_uart": true}}'
+        expect_status = 200
+        [hosts.http.revert]
+        method = "POST"
+        path = "/api/maint"
+        body = '{{"debug_uart": false}}'
+        expect_status = 200
+        {verify_table}
+    "#
+    )
+}
+
+fn http_host(verify_table: &str) -> String {
+    http_host_full("", verify_table)
+}
+
+const HTTP_VERIFY: &str = r#"
+        [hosts.http.verify]
+        method = "GET"
+        path = "/api/maint"
+        expect_status = 200
+        open_marker = '"debug_uart": true'
+        closed_marker = '"debug_uart": false'
+"#;
+
+#[test]
+fn a_full_http_host_parses_with_its_fields_intact() {
+    let inv = Inventory::parse(&http_host(HTTP_VERIFY)).unwrap();
+    let http = inv.hosts[0].http.as_ref().unwrap();
+    assert_eq!(http.open.method, "POST");
+    assert_eq!(http.open.expect_status, 200);
+    match &http.verify {
+        VerifyMode::Probe(v) => assert_eq!(v.open_marker, r#""debug_uart": true"#),
+        other => panic!("expected a probe verify, got {other:?}"),
+    }
+}
+
+#[test]
+fn http_verify_none_parses_as_the_named_narrowing() {
+    let inv = Inventory::parse(&http_host_full(r#"verify = "none""#, "")).unwrap();
+    match &inv.hosts[0].http.as_ref().unwrap().verify {
+        VerifyMode::None(s) => assert_eq!(s, "none"),
+        other => panic!("expected the none narrowing, got {other:?}"),
+    }
+}
+
+#[test]
+fn http_verify_any_other_string_is_refused() {
+    assert_eq!(
+        Inventory::parse(&http_host_full(r#"verify = "nah""#, "")),
+        Err(InventoryError::GenericVerifyNotNone {
+            host: "cam-1".into(),
+            channel: "http",
+            got: "nah".into(),
+        })
+    );
+}
+
+#[test]
+fn http_verify_absent_entirely_is_refused_at_parse() {
+    // Silence about verification is not an option: the field is required, so
+    // omitting it fails serde's missing-field check.
+    assert!(matches!(
+        Inventory::parse(&http_host("")),
+        Err(InventoryError::Toml(_))
+    ));
+}
+
+#[test]
+fn an_http_channel_without_config_and_config_without_channel_are_refused() {
+    let toml = r#"
+        [[hosts]]
+        name = "cam-1"
+        address = "a"
+        os = "embedded"
+        channels = ["http"]
+    "#;
+    assert_eq!(
+        Inventory::parse(toml),
+        Err(InventoryError::GenericConfigMissing {
+            host: "cam-1".into(),
+            channel: "http",
+        })
+    );
+
+    let toml = http_host(HTTP_VERIFY).replace(r#"channels = ["http"]"#, r#"channels = ["bmc"]"#);
+    // (bmc then has no config either, but the http dead-config refusal is
+    // deliberately checked in channel order after bmc — use a channel with
+    // config instead.)
+    let _ = toml;
+    let toml = format!(
+        "{}\n{}",
+        http_host(HTTP_VERIFY).replace(r#"channels = ["http"]"#, r#"channels = ["serial"]"#),
+        r#"
+        [hosts.serial]
+        device = "/dev/null"
+        verify = "none"
+        [hosts.serial.open]
+        send = "on\n"
+        expect = "OK"
+        [hosts.serial.revert]
+        send = "off\n"
+        expect = "OK"
+    "#
+    );
+    assert_eq!(
+        Inventory::parse(&toml),
+        Err(InventoryError::GenericConfigUnused {
+            host: "cam-1".into(),
+            channel: "http",
+        })
+    );
+}
+
+#[test]
+fn a_placeholder_in_a_generic_template_is_refused() {
+    let bad = http_host(HTTP_VERIFY).replace(
+        r#"body = '{"debug_uart": true}'"#,
+        r#"body = 'enable {token} now'"#,
+    );
+    match Inventory::parse(&bad) {
+        Err(InventoryError::GenericPlaceholder {
+            host,
+            channel,
+            field,
+            ..
+        }) => {
+            assert_eq!(host, "cam-1");
+            assert_eq!(channel, "http");
+            assert_eq!(field, "body");
+        }
+        other => panic!("expected a placeholder refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_json_http_body_is_not_a_placeholder() {
+    // The whole point of the {name}-run definition: JSON bodies parse clean.
+    Inventory::parse(&http_host(HTTP_VERIFY)).unwrap();
+}
+
+#[test]
+fn an_http_expect_status_outside_the_http_range_is_refused() {
+    let bad = http_host(HTTP_VERIFY).replacen("expect_status = 200", "expect_status = 42", 1);
+    assert_eq!(
+        Inventory::parse(&bad),
+        Err(InventoryError::GenericBadStatus {
+            host: "cam-1".into(),
+            which: "open",
+        })
+    );
+}
+
+fn mqtt_host(auth: &str, verify: &str) -> String {
+    format!(
+        r#"
+        [[hosts]]
+        name = "iot-7"
+        address = "10.0.9.20"
+        os = "embedded"
+        channels = ["mqtt"]
+        [hosts.mqtt]
+        broker = "10.0.9.20:1883"
+        {auth}
+        [hosts.mqtt.open]
+        topic = "dev/7/cmd"
+        payload = "maint-on"
+        [hosts.mqtt.revert]
+        topic = "dev/7/cmd"
+        payload = "maint-off"
+        {verify}
+    "#
+    )
+}
+
+const MQTT_VERIFY: &str = r#"
+        [hosts.mqtt.verify]
+        topic = "dev/7/state"
+        open_marker = "maint-on"
+        closed_marker = "maint-off"
+"#;
+
+#[test]
+fn a_full_mqtt_host_parses_and_the_verify_timeout_defaults() {
+    let inv = Inventory::parse(&mqtt_host("", MQTT_VERIFY)).unwrap();
+    match &inv.hosts[0].mqtt.as_ref().unwrap().verify {
+        VerifyMode::Probe(v) => assert_eq!(v.timeout_secs, 5),
+        other => panic!("expected a probe verify, got {other:?}"),
+    }
+}
+
+#[test]
+fn mqtt_tls_client_cert_auth_parses() {
+    let auth = r#"auth = { mode = "tls-client-cert", certfile = "c.pem", keyfile = "k.pem", cafile = "ca.pem" }"#;
+    Inventory::parse(&mqtt_host(auth, MQTT_VERIFY)).unwrap();
+}
+
+#[test]
+fn mqtt_password_auth_is_refused_with_the_argv_reason() {
+    let auth = r#"auth = { mode = "password", username = "lychgate" }"#;
+    let err = Inventory::parse(&mqtt_host(auth, MQTT_VERIFY)).unwrap_err();
+    assert_eq!(
+        err,
+        InventoryError::MqttPasswordAuth {
+            host: "iot-7".into()
+        }
+    );
+    assert!(
+        err.to_string().contains("argv"),
+        "the refusal must name the argv leak: {err}"
+    );
+}
+
+#[test]
+fn a_zero_mqtt_verify_timeout_is_refused() {
+    let verify = format!("{MQTT_VERIFY}        timeout_secs = 0\n");
+    assert_eq!(
+        Inventory::parse(&mqtt_host("", &verify)),
+        Err(InventoryError::GenericZeroTimeout {
+            host: "iot-7".into(),
+            channel: "mqtt",
+        })
+    );
+}
+
+fn serial_host(extra: &str, verify: &str) -> String {
+    format!(
+        r#"
+        [[hosts]]
+        name = "bench-1"
+        address = "n/a-serial"
+        os = "embedded"
+        channels = ["serial"]
+        [hosts.serial]
+        device = "/dev/cuaU0"
+        {extra}
+        [hosts.serial.open]
+        send = "maint on\n"
+        expect = "OK MAINT ON"
+        [hosts.serial.revert]
+        send = "maint off\n"
+        expect = "OK MAINT OFF"
+        {verify}
+    "#
+    )
+}
+
+const SERIAL_VERIFY: &str = r#"
+        [hosts.serial.verify]
+        send = "maint?\n"
+        open_marker = "MAINT ON"
+        closed_marker = "MAINT OFF"
+"#;
+
+#[test]
+fn a_full_serial_host_parses_with_defaults() {
+    let inv = Inventory::parse(&serial_host("", SERIAL_VERIFY)).unwrap();
+    let serial = inv.hosts[0].serial.as_ref().unwrap();
+    assert_eq!(serial.timeout_secs, 5);
+    assert_eq!(serial.baud, None);
+}
+
+#[test]
+fn a_zero_serial_timeout_is_refused() {
+    assert_eq!(
+        Inventory::parse(&serial_host("timeout_secs = 0", SERIAL_VERIFY)),
+        Err(InventoryError::GenericZeroTimeout {
+            host: "bench-1".into(),
+            channel: "serial",
+        })
+    );
+}
+
+#[test]
+fn a_serial_channel_without_config_is_refused() {
+    let toml = r#"
+        [[hosts]]
+        name = "bench-1"
+        address = "n/a"
+        os = "embedded"
+        channels = ["serial"]
+    "#;
+    assert_eq!(
+        Inventory::parse(toml),
+        Err(InventoryError::GenericConfigMissing {
+            host: "bench-1".into(),
+            channel: "serial",
+        })
+    );
+}
+
+#[test]
+fn an_mqtt_channel_without_config_is_refused() {
+    let toml = r#"
+        [[hosts]]
+        name = "iot-7"
+        address = "b"
+        os = "embedded"
+        channels = ["mqtt"]
+    "#;
+    assert_eq!(
+        Inventory::parse(toml),
+        Err(InventoryError::GenericConfigMissing {
+            host: "iot-7".into(),
+            channel: "mqtt",
+        })
+    );
+}
+
+#[test]
+fn an_embedded_host_may_not_declare_shell_borne_channels() {
+    // This restriction is what guards the unreachable!() arms at the Os match
+    // sites (core/src/ssh.rs): delete it and those arms become reachable —
+    // this test failing first is the tripwire.
+    for (channel, config) in [
+        (
+            "vnc",
+            r#"
+            [hosts.vnc]
+            agent_user = "lychgate"
+            rfb_port = 5900
+            local_port = 5959
+            target = "vm-01"
+            set_password_cmd = "set {target} {password_file}"
+            clear_password_cmd = "clear {target}"
+        "#,
+        ),
+        (
+            "ssh",
+            r#"
+            [hosts.ssh]
+            agent_user = "root"
+            root_posture_default = "prohibit-password"
+            root_posture_emergency = "yes"
+        "#,
+        ),
+        (
+            "authorized-keys",
+            r#"
+            [hosts.ssh]
+            agent_user = "root"
+            root_posture_default = "prohibit-password"
+            root_posture_emergency = "yes"
+            emergency_keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGb0Vf1XY6cQ4kQ9Ky6+0AaK1Or1v9d3q1Xh4Y5s6z7A x"]
+        "#,
+        ),
+    ] {
+        let toml = format!(
+            r#"
+            [[hosts]]
+            name = "dev-1"
+            address = "a"
+            os = "embedded"
+            channels = ["{channel}"]
+            {config}
+        "#
+        );
+        assert_eq!(
+            Inventory::parse(&toml),
+            Err(InventoryError::EmbeddedChannelUnsupported {
+                host: "dev-1".into(),
+                channel: channel.into(),
+            }),
+            "channel {channel} must be refused on an embedded host"
+        );
+    }
+}
+
+#[test]
+fn an_embedded_host_with_only_deviceless_channels_is_accepted() {
+    Inventory::parse(&http_host(HTTP_VERIFY)).unwrap();
+    Inventory::parse(&mqtt_host("", MQTT_VERIFY)).unwrap();
+    Inventory::parse(&serial_host("", SERIAL_VERIFY)).unwrap();
 }

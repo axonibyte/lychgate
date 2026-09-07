@@ -82,7 +82,22 @@ fn set(items: &[&str]) -> BTreeSet<String> {
 
 /// The channel vocabulary, stated here by hand — the deliberate duplicate that
 /// every artifact is compared against.
-const CHANNELS: &[&str] = &["ssh", "authorized-keys", "bmc", "vnc"];
+const CHANNELS: &[&str] = &[
+    "ssh",
+    "authorized-keys",
+    "bmc",
+    "vnc",
+    "http",
+    "mqtt",
+    "serial",
+];
+
+/// Channels whose schema has landed ahead of their driver, stated BY HAND so
+/// the gap is a named decision, not an accident (the pre-M4 shape: the
+/// channel parses, and an open on it is refused for want of a driver —
+/// fail-closed). The E2 driver commits empty this list; a name lingering
+/// here after its driver lands is a bug in this list.
+const UNDRIVEN_CHANNELS: &[&str] = &["http", "mqtt", "serial"];
 
 #[test]
 fn the_channel_enum_matches_the_stated_vocabulary() {
@@ -108,10 +123,16 @@ fn every_channel_has_a_registered_production_driver() {
         ("vnc", "drivers::vnc::VncDriver"),
     ];
     assert_eq!(
-        drivers.len(),
+        drivers.len() + UNDRIVEN_CHANNELS.len(),
         CHANNELS.len(),
-        "the driver map here must cover the stated channel vocabulary"
+        "the driver map plus the named undriven allowance must cover the stated channel vocabulary"
     );
+    for undriven in UNDRIVEN_CHANNELS {
+        assert!(
+            CHANNELS.contains(undriven) && !drivers.iter().any(|(c, _)| c == undriven),
+            "UNDRIVEN_CHANNELS entry {undriven:?} is stale: not a channel, or already driven"
+        );
+    }
     for (channel, driver) in drivers {
         assert!(
             main.contains(&format!(".register({driver}")),

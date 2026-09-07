@@ -85,6 +85,9 @@ pub fn reload_command(host: &crate::inventory::Host, ssh: &crate::inventory::Ssh
             crate::inventory::Os::Linux => {
                 "systemctl reload sshd 2>/dev/null || systemctl reload ssh".to_string()
             }
+            crate::inventory::Os::Embedded => unreachable!(
+                "embedded hosts cannot declare ssh channels (refused at inventory load)"
+            ),
         },
     }
 }

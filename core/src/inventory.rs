@@ -55,6 +55,15 @@ pub struct Host {
     /// Required exactly when the host declares a `vnc` channel.
     #[serde(default)]
     pub vnc: Option<VncConfig>,
+    /// Required exactly when the host declares an `http` channel.
+    #[serde(default)]
+    pub http: Option<HttpConfig>,
+    /// Required exactly when the host declares an `mqtt` channel.
+    #[serde(default)]
+    pub mqtt: Option<MqttConfig>,
+    /// Required exactly when the host declares a `serial` channel.
+    #[serde(default)]
+    pub serial: Option<SerialConfig>,
     /// Which approval profiles may be opened on this host, and any per-profile
     /// overrides. Absent: the host permits every global profile at its default
     /// authority. Meaningful only when [approval] is configured.
@@ -103,6 +112,163 @@ pub struct BmcConfig {
     /// inventory — the inventory is world-readable config, not a secret store).
     pub auth_password_file: String,
     pub tls: BmcTls,
+}
+
+/// A verify posture for a generic channel: either a probe spec, or the
+/// literal string `"none"` — an explicit, named narrowing (the daemon is then
+/// the sole oracle for this channel's state, and the open response says so).
+/// The field is required: silence about verification is not an option.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum VerifyMode<T> {
+    /// Must be exactly `"none"`; any other string is refused at load.
+    None(String),
+    Probe(T),
+}
+
+/// One HTTP request the http channel makes (open, revert, or verify),
+/// executed against the host's `endpoint`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpRequestSpec {
+    /// HTTP method, e.g. "GET"/"POST"/"PUT".
+    pub method: String,
+    /// Path appended to the endpoint, e.g. "/api/maintenance".
+    pub path: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    /// The exact status the response must carry; anything else is a driver
+    /// error, never silently accepted.
+    pub expect_status: u16,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpVerifySpec {
+    pub method: String,
+    pub path: String,
+    pub expect_status: u16,
+    /// Substring markers mapping the response body onto the channel state.
+    /// Matching neither (or both) is an error, never a guessed state.
+    pub open_marker: String,
+    pub closed_marker: String,
+}
+
+/// `[hosts.http]` — drive a device's HTTP management surface (curl-exec
+/// transport, like the bmc channel's). The daemon is the sole TTL enforcer
+/// here; there is no dead-man on the device (see docs/EMBEDDED.md §2a).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpConfig {
+    /// Base URL, e.g. "https://10.0.9.31:8443".
+    pub endpoint: String,
+    pub tls: BmcTls,
+    /// Optional basic-auth pair; the password lives in a file (never inline,
+    /// never on argv — it reaches curl over stdin).
+    #[serde(default)]
+    pub auth_user: Option<String>,
+    #[serde(default)]
+    pub auth_password_file: Option<String>,
+    pub open: HttpRequestSpec,
+    pub revert: HttpRequestSpec,
+    pub verify: VerifyMode<HttpVerifySpec>,
+}
+
+/// How the daemon authenticates to the MQTT broker.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "kebab-case")]
+pub enum MqttAuth {
+    /// Mutual TLS: the daemon presents a client certificate.
+    TlsClientCert {
+        certfile: String,
+        keyfile: String,
+        cafile: String,
+    },
+    /// Named in the vocabulary but refused at load: mosquitto_pub takes a
+    /// password only via argv or a world-readable -P file handed to every
+    /// invocation, and a secret on argv is a refusal, not a trade-off.
+    Password { username: String },
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MqttMessageSpec {
+    pub topic: String,
+    pub payload: String,
+}
+
+fn default_mqtt_timeout_secs() -> u64 {
+    5
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MqttVerifySpec {
+    /// Topic subscribed for one message (a retained state topic is the
+    /// natural fit). No message within `timeout_secs` is *unverified* — an
+    /// error, never a state.
+    pub topic: String,
+    pub open_marker: String,
+    pub closed_marker: String,
+    #[serde(default = "default_mqtt_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+/// `[hosts.mqtt]` — drive a device through an MQTT broker
+/// (mosquitto_pub/mosquitto_sub exec transport). Broker auth is anonymous or
+/// TLS client-cert; password auth is refused at load (argv leak).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MqttConfig {
+    /// "host:port" of the broker.
+    pub broker: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub auth: Option<MqttAuth>,
+    pub open: MqttMessageSpec,
+    pub revert: MqttMessageSpec,
+    pub verify: VerifyMode<MqttVerifySpec>,
+}
+
+fn default_serial_timeout_secs() -> u64 {
+    5
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SerialCmdSpec {
+    /// Bytes written to the port (include the newline if the device wants one).
+    pub send: String,
+    /// Substring the response must contain.
+    pub expect: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SerialVerifySpec {
+    pub send: String,
+    pub open_marker: String,
+    pub closed_marker: String,
+}
+
+/// `[hosts.serial]` — drive a device over a local serial port (direct fd,
+/// raw termios). `baud` is optional: absent leaves the port's speed alone,
+/// and setting it on a pty is a tolerated no-op, so the same config drives
+/// real ttys and the test simulator.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SerialConfig {
+    /// The tty device path, e.g. "/dev/cuaU0".
+    pub device: String,
+    #[serde(default)]
+    pub baud: Option<u32>,
+    /// Per-transaction reply budget; running out is a transport error.
+    #[serde(default = "default_serial_timeout_secs")]
+    pub timeout_secs: u64,
+    pub open: SerialCmdSpec,
+    pub revert: SerialCmdSpec,
+    pub verify: VerifyMode<SerialVerifySpec>,
 }
 
 fn default_ssh_port() -> u16 {
@@ -213,6 +379,12 @@ pub struct VncConfig {
 pub enum Os {
     Freebsd,
     Linux,
+    /// A firmware-class device: no shell, no cron, no filesystem lychgate can
+    /// reach. Load-time rule: an embedded host may declare only the channels
+    /// that need none of those (http, mqtt, serial, bmc) — the shell-borne
+    /// channels are refused, which is what keeps the `Os` match sites that
+    /// render shell commands unreachable for embedded hosts.
+    Embedded,
 }
 
 // Serialize too: the daemon's audit journal writes channel names, and they
@@ -224,6 +396,9 @@ pub enum Channel {
     AuthorizedKeys,
     Bmc,
     Vnc,
+    Http,
+    Mqtt,
+    Serial,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -305,6 +480,50 @@ pub enum InventoryError {
         host: String,
         other: String,
         port: u16,
+    },
+    /// A generic channel (http/mqtt/serial) declared without its config table,
+    /// or vice versa.
+    GenericConfigMissing {
+        host: String,
+        channel: &'static str,
+    },
+    GenericConfigUnused {
+        host: String,
+        channel: &'static str,
+    },
+    /// `verify = "<something>"` where only the literal "none" is meaningful.
+    GenericVerifyNotNone {
+        host: String,
+        channel: &'static str,
+        got: String,
+    },
+    /// A `{placeholder}` in a template that substitutes nothing.
+    GenericPlaceholder {
+        host: String,
+        channel: &'static str,
+        field: &'static str,
+        message: String,
+    },
+    /// An expect_status outside 100..=599.
+    GenericBadStatus {
+        host: String,
+        which: &'static str,
+    },
+    /// A zero timeout would make every transaction fail instantly.
+    GenericZeroTimeout {
+        host: String,
+        channel: &'static str,
+    },
+    /// Password broker auth would put the secret on mosquitto's argv.
+    MqttPasswordAuth {
+        host: String,
+    },
+    /// An embedded host declaring a shell-borne channel (ssh, authorized-keys,
+    /// vnc): a device with no shell cannot carry them, and the load rule is
+    /// what keeps the shell-rendering Os match sites unreachable.
+    EmbeddedChannelUnsupported {
+        host: String,
+        channel: String,
     },
     /// The [approval] policy is malformed (dangling reference, cycle,
     /// unsatisfiable threshold, unimplemented authenticator kind, …).
@@ -413,6 +632,38 @@ impl fmt::Display for InventoryError {
                 f,
                 "host {host:?}: local_port {port} is also forwarded by host {other:?}; two hosts cannot share one daemon-local forward port"
             ),
+            InventoryError::GenericConfigMissing { host, channel } => write!(
+                f,
+                "host {host:?} declares a {channel} channel but has no [hosts.{channel}] config"
+            ),
+            InventoryError::GenericConfigUnused { host, channel } => write!(
+                f,
+                "host {host:?} has [hosts.{channel}] config but declares no {channel} channel; dead config is a typo"
+            ),
+            InventoryError::GenericVerifyNotNone { host, channel, got } => write!(
+                f,
+                "host {host:?}: [hosts.{channel}] verify = {got:?}; only the literal \"none\" (an explicit narrowing) or a verify table is meaningful"
+            ),
+            InventoryError::GenericPlaceholder { host, channel, field, message } => write!(
+                f,
+                "host {host:?}: [hosts.{channel}] {field} {message}"
+            ),
+            InventoryError::GenericBadStatus { host, which } => write!(
+                f,
+                "host {host:?}: {which} expect_status is not an HTTP status (100..=599)"
+            ),
+            InventoryError::GenericZeroTimeout { host, channel } => write!(
+                f,
+                "host {host:?}: [hosts.{channel}] timeout_secs is zero, so every transaction would fail instantly"
+            ),
+            InventoryError::MqttPasswordAuth { host } => write!(
+                f,
+                "host {host:?}: mqtt password auth is refused — mosquitto clients take the password on argv, where every process on the daemon host can read it; use TLS client certificates or an anonymous listener"
+            ),
+            InventoryError::EmbeddedChannelUnsupported { host, channel } => write!(
+                f,
+                "host {host:?} is os = \"embedded\" but declares the {channel} channel, which needs a shell on the target; embedded hosts may declare only http, mqtt, serial, and bmc"
+            ),
             InventoryError::Approval(e) => write!(f, "[approval] policy is invalid: {e}"),
             InventoryError::AccessWithoutApproval { host } => write!(
                 f,
@@ -442,6 +693,127 @@ impl Inventory {
             toml::from_str(toml_text).map_err(|e| InventoryError::Toml(e.to_string()))?;
         inventory.validate()?;
         Ok(inventory)
+    }
+
+    /// The generic-channel (http/mqtt/serial) rules for one host: paired
+    /// config-vs-channel presence, template placeholder refusals, status and
+    /// timeout sanity, the verify-XOR-"none" rule, and the mqtt password-auth
+    /// refusal.
+    fn validate_generic(&self, host: &Host) -> Result<(), InventoryError> {
+        let err_missing = |channel| InventoryError::GenericConfigMissing {
+            host: host.name.clone(),
+            channel,
+        };
+        let err_unused = |channel| InventoryError::GenericConfigUnused {
+            host: host.name.clone(),
+            channel,
+        };
+        let check_verify_none = |channel: &'static str, s: &str| {
+            if s == "none" {
+                Ok(())
+            } else {
+                Err(InventoryError::GenericVerifyNotNone {
+                    host: host.name.clone(),
+                    channel,
+                    got: s.to_string(),
+                })
+            }
+        };
+        let check_template = |channel: &'static str, field: &'static str, template: &str| {
+            crate::generic::forbid_placeholders(template).map_err(|e| {
+                InventoryError::GenericPlaceholder {
+                    host: host.name.clone(),
+                    channel,
+                    field,
+                    message: e.to_string(),
+                }
+            })
+        };
+        let check_status = |which: &'static str, status: u16| {
+            if (100..=599).contains(&status) {
+                Ok(())
+            } else {
+                Err(InventoryError::GenericBadStatus {
+                    host: host.name.clone(),
+                    which,
+                })
+            }
+        };
+
+        match (&host.http, host.channels.contains(&Channel::Http)) {
+            (None, true) => return Err(err_missing("http")),
+            (Some(_), false) => return Err(err_unused("http")),
+            (Some(http), true) => {
+                for (which, req) in [("open", &http.open), ("revert", &http.revert)] {
+                    check_status(which, req.expect_status)?;
+                    check_template("http", "path", &req.path)?;
+                    if let Some(body) = &req.body {
+                        check_template("http", "body", body)?;
+                    }
+                }
+                match &http.verify {
+                    VerifyMode::None(s) => check_verify_none("http", s)?,
+                    VerifyMode::Probe(v) => {
+                        check_status("verify", v.expect_status)?;
+                        check_template("http", "path", &v.path)?;
+                    }
+                }
+            }
+            (None, false) => {}
+        }
+
+        match (&host.mqtt, host.channels.contains(&Channel::Mqtt)) {
+            (None, true) => return Err(err_missing("mqtt")),
+            (Some(_), false) => return Err(err_unused("mqtt")),
+            (Some(mqtt), true) => {
+                if let Some(MqttAuth::Password { .. }) = &mqtt.auth {
+                    return Err(InventoryError::MqttPasswordAuth {
+                        host: host.name.clone(),
+                    });
+                }
+                for (field, spec) in [("open", &mqtt.open), ("revert", &mqtt.revert)] {
+                    let _ = field;
+                    check_template("mqtt", "topic", &spec.topic)?;
+                    check_template("mqtt", "payload", &spec.payload)?;
+                }
+                match &mqtt.verify {
+                    VerifyMode::None(s) => check_verify_none("mqtt", s)?,
+                    VerifyMode::Probe(v) => {
+                        check_template("mqtt", "topic", &v.topic)?;
+                        if v.timeout_secs == 0 {
+                            return Err(InventoryError::GenericZeroTimeout {
+                                host: host.name.clone(),
+                                channel: "mqtt",
+                            });
+                        }
+                    }
+                }
+            }
+            (None, false) => {}
+        }
+
+        match (&host.serial, host.channels.contains(&Channel::Serial)) {
+            (None, true) => return Err(err_missing("serial")),
+            (Some(_), false) => return Err(err_unused("serial")),
+            (Some(serial), true) => {
+                if serial.timeout_secs == 0 {
+                    return Err(InventoryError::GenericZeroTimeout {
+                        host: host.name.clone(),
+                        channel: "serial",
+                    });
+                }
+                for spec in [&serial.open, &serial.revert] {
+                    check_template("serial", "send", &spec.send)?;
+                }
+                match &serial.verify {
+                    VerifyMode::None(s) => check_verify_none("serial", s)?,
+                    VerifyMode::Probe(v) => check_template("serial", "send", &v.send)?,
+                }
+            }
+            (None, false) => {}
+        }
+
+        Ok(())
     }
 
     fn validate(&self) -> Result<(), InventoryError> {
@@ -589,6 +961,25 @@ impl Inventory {
                     }
                 }
                 (None, false) => {}
+            }
+
+            self.validate_generic(host)?;
+
+            if host.os == Os::Embedded {
+                for ch in &host.channels {
+                    if matches!(ch, Channel::Ssh | Channel::AuthorizedKeys | Channel::Vnc) {
+                        let name = match ch {
+                            Channel::Ssh => "ssh",
+                            Channel::AuthorizedKeys => "authorized-keys",
+                            Channel::Vnc => "vnc",
+                            _ => unreachable!(),
+                        };
+                        return Err(InventoryError::EmbeddedChannelUnsupported {
+                            host: host.name.clone(),
+                            channel: name.to_string(),
+                        });
+                    }
+                }
             }
         }
 

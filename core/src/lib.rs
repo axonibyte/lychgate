@@ -10,6 +10,7 @@ pub mod bmc;
 pub mod channel;
 pub mod deadman;
 pub mod fido2;
+pub mod generic;
 pub mod grant;
 pub mod inventory;
 pub mod password;
@@ -33,10 +34,13 @@ pub use channel::{
     ChannelState, DriverError, DriverSet, ReestablishOutcome, RevertOutcome,
 };
 pub use fido2::{Alg, Fido2Credential, Fido2Error};
+pub use generic::{match_state, GenericTemplateError, MatchError};
 pub use grant::{Grant, GrantError, GrantStatus, PendingView, MAX_APPROVAL_WINDOW_SECS};
 pub use inventory::{
-    BmcConfig, BmcMethod, BmcTls, Channel, Host, HostAccess, Inventory, InventoryError, Os,
-    SshConfig, VncConfig,
+    BmcConfig, BmcMethod, BmcTls, Channel, Host, HostAccess, HttpConfig, HttpRequestSpec,
+    HttpVerifySpec, Inventory, InventoryError, MqttAuth, MqttConfig, MqttMessageSpec,
+    MqttVerifySpec, Os, SerialCmdSpec, SerialConfig, SerialVerifySpec, SshConfig, VerifyMode,
+    VncConfig,
 };
 pub use password::PasswordError;
 pub use registry::{ExpiredGrant, ExpiredPending, GrantRegistry, RegistryError};

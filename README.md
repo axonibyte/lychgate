@@ -143,8 +143,14 @@ cap is enforced client-side before a connection is attempted and daemon-side
 regardless. Refusals are printed in the daemon's words verbatim and exit
 nonzero. `--socket` overrides the per-OS default socket path.
 
-An inventory names each host, its address, its operating system (`freebsd` or
-`linux`), and the access channels lychgate may drive for it:
+An inventory names each host, its address, its operating system (`freebsd`,
+`linux`, or `embedded` — a firmware-class device with no shell, restricted to
+the channels that need none), and the access channels lychgate may drive for
+it. Besides the four below, the generic device channels `http`, `mqtt`, and
+`serial` drive a device's management surface from request/command templates
+(daemon-enforced TTL, no on-device dead-man; each requires a `verify` probe
+or an explicit `verify = "none"`, which the open response surfaces as a named
+narrowing — see docs/EMBEDDED.md):
 
 ```toml
 [[hosts]]
