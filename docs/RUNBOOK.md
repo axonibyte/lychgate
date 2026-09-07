@@ -251,7 +251,23 @@ signing key, seal/unseal round trip). Then either or both of:
   or with an unreachable TPM, refuses the start — it never silently reads the
   blobs as plaintext.
 
-## 7. Operations
+## 7. Embedded devices
+
+A cooperative device (an ESP32-class board running the reference firmware,
+or any embedded Rust project on `lychgate-embed`) is a host like any other:
+declare it with `os = "embedded"`, `channels = ["device"]`, a `[hosts.device]`
+block, and the `[signing]` key the daemon issues its capability tokens with.
+The device then enforces its own TTL — a reboot or power cycle CLOSES the
+grant, never extends it. Its secure element can also be an approval factor
+(`tools/se-register.sh` prints the block; the kind is `tpm` — a
+non-exportable P-256 signer). Before deploying real hardware, walk the
+provisioning ceremony in docs/EMBEDDED.md §12 — eFuse burns and chip locks
+are one-way, and the ceremony orders every one after a verified checkpoint.
+For dumb devices lychgate does not reflash, the `http`/`mqtt`/`serial`
+channels drive their management surface instead (daemon-enforced TTL; a
+`verify = "none"` host prints its narrowing at open time — read it).
+
+## 8. Operations
 
 - **The journal is the audit record.** `<state-dir>/journal.jsonl` records every
   transition — requests, accepted proofs, opens, reverts, expiries — and, unlike

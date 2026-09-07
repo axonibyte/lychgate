@@ -509,7 +509,68 @@ The engine owns every rule in §11.4; the e2e simulator (`devsim/`) and the
 reference ESP32-C3 firmware are both thin wrappers over it, and the
 committed KAT vectors are the cross-language contract for non-Rust ports.
 
-## 12. Decisions (resolved)
+## 12. NORMATIVE: hardening profile and provisioning ceremonies (E6b)
+
+### 12.1 The hardening ladder
+
+Every deployed device sits on a named rung; the inventory's authenticator
+comment (and, for grants, the runbook entry) should state which. Ascending:
+
+1. **`flash`** — keys in plain or NVS-encrypted flash. The reference build's
+   bench posture. Acceptable only for canaries and labs.
+2. **`efuse`** — the ESP32 DS peripheral: the signing key is wrapped by an
+   eFuse-held HMAC key and the CPU never sees plaintext. Requires Secure
+   Boot v2 + flash encryption to mean anything (below).
+3. **`se`** — an ATECC608/SE050: the key is GENERATED IN the chip and is
+   physically non-exportable. What `tools/se-register.sh` and the firmware's
+   `se` feature implement. The strongest rung this document ships.
+
+Cross-cutting, at rung 2 and above: **Secure Boot v2** (only signed firmware
+runs, so the engine and the daemon pubkey it embeds cannot be swapped by
+flash access), **flash encryption** (captured flash reveals nothing), and
+**anti-rollback** (eFuse-versioned firmware; on rung 3 the SE's monotonic
+counter can back `issued_seq`, making the anti-replay mark robust even
+against a full flash restore).
+
+### 12.2 ESP32-C3 provisioning ceremony
+
+Order matters because eFuse burns are ONE-WAY; every burn has a
+verification checkpoint before it.
+
+1. Flash the reference firmware (bench constants) and run
+   `e2e/embedded-hardware.sh` end to end — prove the board, the wiring, and
+   the serial path before any irreversible step.
+2. Provision the real identity: generate the deployment's `[signing]` key
+   (`od -An -tx1 -N32 /dev/urandom | tr -d ' \n'`, mode 600, or TPM-sealed),
+   set the real DEVICE_ID and public key in the firmware build, reflash,
+   re-run the HIL script with real tokens. CHECKPOINT: everything green.
+3. With an ATECC608 (rung `se`): wire it (GPIO2/GPIO3), build with
+   `--features se`, run `tools/se-register.sh`, and verify a full
+   SE-SIGN round trip through `lychgate approve` on a bench daemon.
+   CHECKPOINT: the factor verifies. Then lock the chip's config and data
+   zones (one-way; the key slot must be verified working FIRST).
+4. Enable flash encryption, reboot, re-run the HIL script. CHECKPOINT.
+5. Enable Secure Boot v2 (burns the image-signing digest eFuse), reflash
+   signed, re-run the HIL script. CHECKPOINT.
+6. Only now: any anti-rollback eFuse. The device is deployable.
+
+A failed checkpoint before a burn costs a reflash; after a burn it can cost
+the board. That asymmetry is the whole ceremony.
+
+### 12.3 ATECC608 notes
+
+- Slot 0 holds the device's P-256 identity. Generate with GenKey IN the
+  chip; export only the public half. There is no "import" step on purpose.
+- The config zone must be locked before the chip signs at all reliably, and
+  locking is one-way: dry-run the whole flow on a bench chip first (they
+  cost a dollar; boards cost more).
+- A bare auto-signing SE is a POSSESSION factor. The firmware may gate
+  SE-SIGN behind a physical button press within N seconds to approach a
+  presence factor; the inventory cannot express the difference, so the
+  runbook entry for the authenticator MUST say which the device implements
+  and weight it accordingly (see §4).
+
+## 13. Decisions (resolved)
 
 1. **Token payload encoding** — deterministic CBOR subset (portability of the
    C/FPGA ports and language-neutral vectors beat postcard's size edge).
