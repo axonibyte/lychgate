@@ -633,3 +633,179 @@ fn tampered_payload_field_fails_the_signature() {
         Err(WireError::BadSignature) | Err(WireError::Malformed(_)) | Err(WireError::BadBase64)
     ));
 }
+
+// --- line protocol (E4) ----------------------------------------------------
+//
+// Mutation notes: drop parse_state's unknown-trailer refusal → the
+// newer-dialect line below parses and `line_junk_and_dialect_refusals`
+// fails; drop the saw_seq requirement → the seq-less STATE parses; break
+// hex_nonce/parse_hex_nonce symmetry → the round trip fails.
+
+mod line_protocol {
+    use crate::line::*;
+    use crate::WireError;
+
+    const NONCE: [u8; 16] = [
+        0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae,
+        0xaf,
+    ];
+
+    #[test]
+    fn pinned_lines_render_exactly() {
+        // Pinned strings: the protocol's KAT. A change here is a breaking
+        // dialect change; docs/EMBEDDED.md carries the same examples.
+        let mut buf = [0u8; MAX_LINE_LEN];
+        assert_eq!(
+            render_command(&Command::Token("lgcap.AA.BB"), &mut buf).unwrap(),
+            "TOK lgcap.AA.BB"
+        );
+        let mut buf = [0u8; MAX_LINE_LEN];
+        assert_eq!(render_command(&Command::Status, &mut buf).unwrap(), "STAT");
+        let mut buf = [0u8; MAX_LINE_LEN];
+        assert_eq!(
+            render_reply(
+                &Reply::AckOpen {
+                    nonce: NONCE,
+                    remaining_secs: 900
+                },
+                &mut buf
+            )
+            .unwrap(),
+            "ACK a0a1a2a3a4a5a6a7a8a9aaabacadaeaf 900"
+        );
+        let mut buf = [0u8; MAX_LINE_LEN];
+        assert_eq!(
+            render_reply(
+                &Reply::State(Report {
+                    open: Some((NONCE, 887)),
+                    seq: 42,
+                    load: Some(true),
+                    fail: Some(FailState::Energized),
+                    reason: None,
+                }),
+                &mut buf
+            )
+            .unwrap(),
+            "STATE open a0a1a2a3a4a5a6a7a8a9aaabacadaeaf 887 seq=42 load=on fail=energized"
+        );
+        let mut buf = [0u8; MAX_LINE_LEN];
+        assert_eq!(
+            render_reply(
+                &Reply::State(Report {
+                    open: None,
+                    seq: 7,
+                    load: None,
+                    fail: None,
+                    reason: Some(CloseReason::Boot),
+                }),
+                &mut buf
+            )
+            .unwrap(),
+            "STATE closed seq=7 reason=boot"
+        );
+    }
+
+    #[test]
+    fn every_command_and_reply_round_trips() {
+        let commands = [
+            Command::Token("lgcap.x.y"),
+            Command::Revoke("lgrvk.x.y"),
+            Command::Status,
+            Command::SePubkey,
+            Command::SeSign("lg1.req.CHALLENGE"),
+        ];
+        for cmd in commands {
+            let mut buf = [0u8; MAX_LINE_LEN];
+            let rendered = render_command(&cmd, &mut buf).unwrap();
+            assert_eq!(parse_command(rendered).unwrap(), cmd, "{rendered}");
+        }
+        let replies = [
+            Reply::AckOpen {
+                nonce: NONCE,
+                remaining_secs: 0,
+            },
+            Reply::AckClosed,
+            Reply::Nak("replay"),
+            Reply::State(Report {
+                open: Some((NONCE, u64::MAX)),
+                seq: u64::MAX,
+                load: Some(false),
+                fail: Some(FailState::DeEnergized),
+                reason: Some(CloseReason::Expiry),
+            }),
+            Reply::State(Report {
+                open: None,
+                seq: 0,
+                load: None,
+                fail: None,
+                reason: None,
+            }),
+            Reply::Pubkey("04ab"),
+            Reply::Sig("lgtpm.MEUC"),
+        ];
+        for reply in replies {
+            let mut buf = [0u8; MAX_LINE_LEN];
+            let rendered = render_reply(&reply, &mut buf).unwrap();
+            assert_eq!(parse_reply(rendered).unwrap(), reply, "{rendered}");
+        }
+    }
+
+    #[test]
+    fn crlf_and_newline_endings_are_tolerated() {
+        assert_eq!(parse_command("STAT\r\n").unwrap(), Command::Status);
+        assert_eq!(parse_reply("ACK closed\n").unwrap(), Reply::AckClosed);
+    }
+
+    #[test]
+    fn line_junk_and_dialect_refusals() {
+        // Unknown command/reply words, a newer-dialect trailer, a seq-less
+        // STATE, a malformed nonce, a non-numeric remaining: each refused
+        // with a named reason — never half-understood.
+        assert!(parse_command("FROB x").is_err());
+        assert!(parse_reply("YO").is_err());
+        assert!(matches!(
+            parse_reply("STATE open a0a1a2a3a4a5a6a7a8a9aaabacadaeaf 887 seq=1 sparkle=yes"),
+            Err(WireError::Malformed("unknown trailer"))
+        ));
+        assert!(matches!(
+            parse_reply("STATE closed"),
+            Err(WireError::Malformed("STATE lacks seq="))
+        ));
+        assert!(parse_reply("ACK zz 900").is_err());
+        assert!(parse_reply("ACK a0a1a2a3a4a5a6a7a8a9aaabacadaeaf abc").is_err());
+        assert!(parse_reply("STATE sideways seq=1").is_err());
+    }
+
+    #[test]
+    fn line_junk_never_panics() {
+        let mut state = 0x1234_5678_9abc_def0u64;
+        let mut junk = std::string::String::new();
+        for _ in 0..5_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            junk.clear();
+            for prefix in ["", "ACK ", "STATE ", "TOK "] {
+                junk.push_str(prefix);
+                let n = (state % 40) as usize;
+                for i in 0..n {
+                    let b = (state.rotate_left(i as u32) & 0x7f) as u8;
+                    junk.push(if b.is_ascii_graphic() || b == b' ' {
+                        b as char
+                    } else {
+                        '.'
+                    });
+                }
+                let _ = parse_command(&junk);
+                let _ = parse_reply(&junk);
+            }
+        }
+    }
+
+    #[test]
+    fn a_max_length_token_command_fits_the_line_buffer() {
+        let long = "x".repeat(crate::MAX_TOKEN_LEN);
+        let mut buf = [0u8; MAX_LINE_LEN];
+        render_command(&Command::Token(&long), &mut buf).unwrap();
+    }
+}

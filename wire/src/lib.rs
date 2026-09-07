@@ -31,6 +31,7 @@
 #![forbid(unsafe_code)]
 
 mod cbor;
+pub mod line;
 mod token;
 
 pub use token::{
