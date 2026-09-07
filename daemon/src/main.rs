@@ -230,6 +230,11 @@ fn main() -> anyhow::Result<()> {
             )))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         driver_set
+            .register(drivers::serial::SerialDriver::new(Box::new(
+                drivers::serial::FdSerialTransport,
+            )))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        driver_set
             .register(drivers::vnc::VncDriver::new(
                 Box::new(drivers::vnc::ExecSshVncTransport),
                 Box::new(drivers::vnc::UrandomVncPasswords),
