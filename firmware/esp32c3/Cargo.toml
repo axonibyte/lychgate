@@ -15,7 +15,7 @@ name = "lychgate-esp32c3"
 description = "reference lychgate device firmware for the ESP32-C3 (USB-Serial-JTAG transport)"
 version = "0.13.0"
 edition = "2021"
-license = "BSD-2-Clause"
+license = "BlueOak-1.0.0"
 publish = false
 
 [features]

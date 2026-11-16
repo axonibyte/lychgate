@@ -11,7 +11,7 @@ edition = "2021"
 # bitbucket-pipelines.yml; bump that deliberately and this only when the
 # floor genuinely rises.
 rust-version = "1.96"
-license = "BSD-2-Clause"
+license = "BlueOak-1.0.0"
 authors = ["Axonibyte Innovations, LLC"]
 repository = "https://bitbucket.org/axonibyte/lychgate"
 

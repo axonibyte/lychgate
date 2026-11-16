@@ -6,7 +6,7 @@
 name = "lychgate-esp32c3-logic"
 version = "0.13.0"
 edition = "2021"
-license = "BSD-2-Clause"
+license = "BlueOak-1.0.0"
 publish = false
 
 [dependencies]
